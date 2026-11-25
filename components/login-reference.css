@@ -1,0 +1,166 @@
+.auth-page.auth-reference-page {
+  --foreground: 224 34% 13%;
+  --muted-foreground: 217 14% 40%;
+  --control-border: 225 14% 79%;
+  --primary: 237 67% 48%;
+  --primary-foreground: 0 0% 100%;
+  --danger: 354 60% 41%;
+  color-scheme: light;
+  background: #f8f8fd url("../app/login/login-background.png") center / cover no-repeat;
+}
+
+.login-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 568fr) minmax(0, 736fr);
+  align-items: center;
+  gap: clamp(32px, 6vw, 102px);
+  width: min(84.5%, 1406px);
+  min-height: 100dvh;
+  margin: 0 auto;
+  padding-block: 48px;
+}
+
+.login-intro-column { min-width: 0; padding-block-end: 132px; }
+.login-form-column { min-width: 0; }
+.login-wordmark { display: inline-flex; align-items: center; gap: 17px; color: inherit; text-decoration: none; font-size: 38px; font-weight: 800; line-height: 1.2; }
+.login-book { display: block; width: 72px; height: 76px; flex: none; }
+.login-intro { margin-top: 58px; word-break: keep-all; overflow-wrap: anywhere; }
+.login-intro h2 { margin: 0; font-size: 38px; font-weight: 800; line-height: 1.4; }
+.login-intro > p { margin: 22px 0 0 4px; color: hsl(var(--muted-foreground)); font-size: 22px; line-height: 1.68; }
+.login-highlights { display: grid; gap: 31px; padding: 0; margin: 56px 0 0 12px; list-style: none; }
+.login-highlights li { display: grid; grid-template-columns: 68px minmax(0, 1fr); align-items: center; gap: 28px; }
+.login-highlight-icon { display: grid; place-items: center; width: 68px; height: 68px; border-radius: 19px; color: #4946ce; background: #eae9fb; }
+.login-highlights strong { display: block; font-weight: 780; font-size: 22px; line-height: 1.42; }
+.login-highlights p { margin: 6px 0 0; color: hsl(var(--muted-foreground)); font-size: 18px; line-height: 1.55; }
+
+.auth-reference-page .auth-panel {
+  padding: 56px 76px 50px;
+  border-radius: 28px;
+  background: rgb(255 255 255 / 90%);
+  box-shadow: 0 24px 56px rgb(49 55 132 / 12%);
+}
+.auth-reference-page .auth-heading h1 { margin: 0 0 10px; font-size: 46px; font-weight: 800; line-height: 60px; }
+.auth-reference-page .auth-heading > p { font-size: 23px; line-height: 38px; }
+.auth-reference-page .auth-form { margin-top: 40px; gap: 52px; }
+.auth-reference-page .auth-fieldset { gap: 31px; }
+.auth-reference-page .auth-field { gap: 10px; }
+.auth-reference-page .auth-field label { font-size: 22px; font-weight: 750; line-height: 32px; }
+.login-input-wrap { position: relative; }
+.login-field-icon { position: absolute; inset-inline-start: 23px; inset-block-start: 50%; transform: translateY(-50%); color: hsl(var(--muted-foreground)); pointer-events: none; }
+.auth-page.auth-reference-page .auth-input { height: 67px; min-height: 67px; padding-inline: 73px 16px; border-radius: 16px; font-size: 22px; background: rgb(255 255 255 / 65%); }
+.auth-page.auth-reference-page .auth-password-wrap .auth-input { padding-inline-end: 68px; }
+.auth-reference-page .auth-password-toggle { width: 66px; }
+.auth-reference-page .auth-submit { position: relative; min-height: 70px; padding-inline: 48px; border-radius: 14px; background: linear-gradient(154deg, #5345eb 0%, #383da8 100%); font-size: 23px; font-weight: 750; }
+.login-submit-arrow { position: absolute; inset-inline-end: 26px; }
+.auth-reference-page .auth-switch { gap: 18px; margin-top: 38px; padding-top: 31px; border-top: 1px solid #e2e5ef; font-size: 20px; line-height: 34px; }
+.auth-reference-page .auth-switch a { font-size: 23px; font-weight: 780; }
+.auth-reference-page .auth-error-summary { margin-block: -34px; }
+
+@media (max-width: 1399px) {
+  .login-layout { width: min(88%, 1200px); }
+  .login-intro-column { padding-block-end: 76px; }
+  .login-intro { margin-top: 42px; }
+  .login-intro h2 { font-size: 34px; }
+  .login-intro > p { font-size: 19px; }
+  .login-intro-break { display: none; }
+  .login-wordmark { font-size: 32px; }
+  .login-book { width: 58px; height: 62px; }
+  .login-highlights { margin-top: 40px; gap: 23px; }
+  .login-highlights li { grid-template-columns: 55px minmax(0, 1fr); gap: 20px; }
+  .login-highlight-icon { width: 55px; height: 55px; border-radius: 15px; }
+  .login-highlight-icon svg { width: 28px; height: 28px; }
+  .login-highlights strong { font-size: 19px; }
+  .login-highlights p { font-size: 16px; }
+  .auth-reference-page .auth-panel { padding: 44px 48px 40px; }
+  .auth-reference-page .auth-heading h1 { font-size: 40px; line-height: 50px; }
+  .auth-reference-page .auth-heading > p { font-size: 19px; line-height: 32px; }
+  .auth-reference-page .auth-form { gap: 38px; margin-top: 28px; }
+  .auth-reference-page .auth-fieldset { gap: 24px; }
+  .auth-reference-page .auth-field label { font-size: 19px; line-height: 27px; }
+  .auth-page.auth-reference-page .auth-input { height: 58px; min-height: 58px; font-size: 19px; padding-inline-start: 58px; }
+  .login-field-icon { inset-inline-start: 18px; width: 24px; height: 24px; }
+  .auth-reference-page .auth-submit { min-height: 61px; font-size: 20px; }
+  .auth-reference-page .auth-switch { margin-top: 28px; padding-top: 23px; font-size: 17px; }
+  .auth-reference-page .auth-switch a { font-size: 19px; }
+  .auth-reference-page .auth-error-summary { margin-block: -22px; }
+}
+
+@media (max-width: 900px) {
+  .login-layout { grid-template-columns: minmax(0, 1fr); align-content: start; width: min(100% - 48px, 544px); gap: 24px; padding-block: 40px 52px; }
+  .login-intro-column { display: contents; }
+  .login-intro { grid-row: 3; margin: 0; padding: 9px 6px 0; }
+  .login-intro h2 { font-size: 25px; }
+  .login-intro > p { margin-inline-start: 0; font-size: 16px; }
+  .login-highlights { margin: 24px 0 0; gap: 16px; }
+  .login-highlights strong { font-size: 16px; }
+  .login-highlights p { font-size: 14px; }
+  .login-wordmark { width: fit-content; font-size: 28px; gap: 11px; }
+  .login-book { width: 48px; height: 51px; }
+  .auth-page.auth-reference-page { background-position: 63% top; }
+}
+
+@media (max-width: 460px) {
+  .login-layout { width: calc(100% - 32px); gap: 19px; padding-block-start: 28px; }
+  .auth-reference-page .auth-panel { border-radius: 22px; padding: 27px 23px 24px; }
+  .auth-reference-page .auth-heading h1 { font-size: 31px; line-height: 40px; }
+  .auth-reference-page .auth-heading > p { font-size: 16px; line-height: 25px; }
+  .auth-reference-page .auth-form { margin-top: 24px; gap: 26px; }
+  .auth-reference-page .auth-fieldset { gap: 17px; }
+  .auth-reference-page .auth-field { gap: 6px; }
+  .auth-reference-page .auth-field label { font-size: 16px; line-height: 24px; }
+  .auth-page.auth-reference-page .auth-input { height: 50px; min-height: 50px; padding-inline-start: 44px; border-radius: 12px; font-size: 16px; }
+  .auth-page.auth-reference-page .auth-password-wrap .auth-input { padding-inline-end: 46px; }
+  .login-field-icon { inset-inline-start: 13px; width: 20px; height: 20px; }
+  .auth-reference-page .auth-password-toggle { width: 44px; }
+  .auth-reference-page .auth-password-toggle svg { width: 20px; height: 20px; }
+  .auth-reference-page .auth-submit { min-height: 51px; font-size: 17px; border-radius: 11px; }
+  .login-submit-arrow { inset-inline-end: 15px; width: 21px; height: 21px; }
+  .auth-reference-page .auth-switch { margin-top: 21px; padding-top: 16px; font-size: 14px; line-height: 23px; gap: 9px; }
+  .auth-reference-page .auth-switch a { font-size: 16px; }
+  .auth-reference-page .auth-error-summary { margin-block: -12px; }
+  .auth-page.auth-reference-page { background-size: auto 100%; }
+}
+
+.auth-signup-page .auth-panel { padding-block: 36px 34px; }
+.auth-signup-page .auth-heading h1 { margin-bottom: 4px; font-size: 41px; line-height: 53px; }
+.auth-signup-page .auth-heading > p { font-size: 20px; line-height: 31px; }
+.auth-signup-page .auth-form { margin-top: 23px; gap: 24px; }
+.auth-signup-page .auth-fieldset { gap: 13px; }
+.auth-signup-page .auth-field { gap: 6px; }
+.auth-signup-page .auth-field label { font-size: 17px; line-height: 23px; }
+.auth-signup-page .auth-input-row { grid-template-columns: minmax(0, 1fr) 82px; }
+.auth-page.auth-signup-page .auth-input { height: 48px; min-height: 48px; padding-inline-start: 53px; border-radius: 12px; font-size: 16px; }
+.auth-page.auth-signup-page .auth-password-wrap .auth-input { padding-inline-end: 49px; }
+.auth-signup-page .login-field-icon { inset-inline-start: 16px; width: 22px; height: 22px; }
+.auth-signup-page .auth-password-toggle { width: 48px; }
+.auth-page.auth-signup-page .auth-verify { min-height: 48px; border: 1px solid #dedff4; border-radius: 12px; background: #eeeffc; color: hsl(var(--primary)); font-size: 15px; font-weight: 700; }
+.auth-page.auth-signup-page .auth-verify:hover { background: #e4e6fb; }
+.auth-signup-page .auth-invite-result { margin-top: -5px; padding: 8px 12px; }
+.auth-signup-page .auth-submit { min-height: 53px; font-size: 19px; }
+.auth-signup-page .login-submit-arrow { width: 23px; height: 23px; }
+.auth-signup-page .auth-switch { gap: 12px; margin-top: 20px; padding-top: 17px; font-size: 16px; line-height: 25px; }
+.auth-signup-page .auth-switch a { font-size: 18px; }
+.auth-signup-page .auth-error-summary { margin-block: -8px; }
+
+@media (max-width: 1399px), (max-height: 880px) {
+  .auth-signup-page .auth-panel { padding-block: 27px 24px; }
+  .auth-signup-page .auth-heading h1 { font-size: 35px; line-height: 45px; }
+  .auth-signup-page .auth-heading > p { font-size: 17px; line-height: 27px; }
+  .auth-signup-page .auth-form { margin-top: 19px; gap: 19px; }
+  .auth-signup-page .auth-fieldset { gap: 10px; }
+  .auth-signup-page .auth-field { gap: 5px; }
+  .auth-signup-page .auth-field label { font-size: 15px; line-height: 21px; }
+  .auth-page.auth-signup-page .auth-input, .auth-page.auth-signup-page .auth-verify { height: 44px; min-height: 44px; }
+  .auth-signup-page .auth-submit { min-height: 49px; }
+  .auth-signup-page .auth-switch { margin-top: 17px; padding-top: 13px; }
+}
+
+@media (max-width: 460px) {
+  .auth-signup-page .auth-heading h1 { font-size: 31px; line-height: 40px; }
+  .auth-signup-page .auth-heading > p { font-size: 15px; line-height: 24px; }
+  .auth-signup-page .auth-input-row { grid-template-columns: minmax(0, 1fr) 64px; }
+  .auth-page.auth-signup-page .auth-input { padding-inline-start: 44px; }
+  .auth-signup-page .login-field-icon { inset-inline-start: 13px; width: 20px; height: 20px; }
+  .auth-signup-page .auth-switch { gap: 8px; font-size: 14px; line-height: 22px; }
+  .auth-signup-page .auth-switch a { font-size: 16px; }
+}

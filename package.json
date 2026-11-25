@@ -1,0 +1,42 @@
+{
+  "name": "church-event-assistant-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1",
+    "build": "next build",
+    "start": "next start --hostname 127.0.0.1",
+    "test": "vitest",
+    "lint": "next lint",
+    "backup:server": "node scripts/backup-server.mjs --backup",
+    "setup:owner": "node scripts/bootstrap-admin.mjs --create-owner"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "6.0.5",
+    "csv-parse": "7.0.3",
+    "fflate": "0.8.3",
+    "google-auth-library": "^11.3.4",
+    "lucide-react": "1.28.0",
+    "next": "16.2.12",
+    "pdfjs-dist": "6.5.438",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "7.0.0",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "26.1.2",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "autoprefixer": "10.5.4",
+    "jsdom": "30.0.1",
+    "postcss": "8.5.25",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^6.0.0",
+    "vitest": "4.1.10"
+  }
+}

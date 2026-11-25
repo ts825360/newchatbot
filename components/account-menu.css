@@ -1,0 +1,7 @@
+.account-menu { position: relative; }
+.account-menu summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; border-radius: var(--control-radius); padding: 4px 8px; }
+.account-menu summary::-webkit-details-marker { display: none; }
+.account-menu summary:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 3px; }
+.account-menu nav { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; min-width: 180px; padding: 6px; border: 1px solid hsl(var(--border)); border-radius: var(--floating-radius); background: hsl(var(--panel)); box-shadow: var(--shadow-floating); }
+.account-menu nav a { display: flex; align-items: center; gap: 8px; min-height: var(--control-height); padding: 8px 10px; font-size: 14px; border-radius: var(--control-radius); }
+.account-menu nav a:hover, .account-menu nav a:focus-visible { background: hsl(var(--muted)); }

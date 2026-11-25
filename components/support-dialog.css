@@ -1,0 +1,13 @@
+.support-open { display: inline-grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: hsl(var(--muted-foreground)); }
+.support-open:hover { background: hsl(var(--muted)); color: hsl(var(--foreground)); }
+.support-open.report-open { color: hsl(var(--danger)); background: hsl(var(--danger) / .08); }
+.support-open.report-open:hover { color: hsl(var(--danger)); background: hsl(var(--danger) / .16); }
+.support-body { min-width: 0; }
+.support-topic { border-bottom: 1px solid hsl(var(--border)); padding-bottom: 16px; }
+.support-topic summary { font-size: 14px; font-weight: 600; cursor: pointer; }
+.support-topic p { margin-top: 12px; font-size: 13px; line-height: 1.9; color: hsl(var(--muted-foreground)); overflow-wrap: anywhere; }
+.support-context { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.support-context input { width: 16px; height: 16px; accent-color: hsl(var(--primary)); }
+.support-context-info, .support-note { color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.support-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.support-saved { font-size: 13px; line-height: 1.9; color: hsl(var(--primary)); }

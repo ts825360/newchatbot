@@ -1,0 +1,6 @@
+.settings-entry { box-sizing: border-box; border: 0; border-radius: 8px; color: hsl(var(--foreground)); text-decoration: none; }
+.settings-entry[data-settings-entry="rail"] { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 46px; padding: 8px 12px; font-size: 15px; font-weight: 600; text-align: start; }
+.settings-entry[data-settings-entry="toolbar"] { display: inline-grid; place-items: center; width: 32px; height: 32px; flex: none; color: hsl(var(--muted-foreground)); }
+.settings-entry svg { flex: none; }
+.settings-entry:hover, .settings-entry[aria-current="page"] { background: hsl(var(--selection)); color: hsl(var(--primary)); }
+.settings-entry:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 1px; }

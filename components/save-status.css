@@ -1,0 +1,4 @@
+.save-status { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; color: hsl(var(--muted-foreground)); font-size: 10px; line-height: 18px; white-space: nowrap; }
+.save-status.is-failed { color: hsl(var(--danger)); }
+.save-status.is-saving { color: hsl(var(--primary)); }
+.save-status > svg { flex-shrink: 0; }

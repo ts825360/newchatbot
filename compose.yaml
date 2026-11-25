@@ -1,0 +1,24 @@
+services:
+  app:
+    image: ${CHURCH_IMAGE:-nowchatbot:2026-11-25-lodging-planner}
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${CHURCH_BIND_IP:-127.0.0.1}:${CHURCH_PORT:-3020}:3000"
+    volumes:
+      - state:/data
+    cpus: 1.0
+    mem_limit: 768m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/auth/session').then(async r=>{if(!r.ok || (await r.json()).profile!==null)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 15s
+volumes:
+  state:

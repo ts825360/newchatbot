@@ -1,0 +1,26 @@
+node_modules
+.next
+out
+dist
+coverage
+# Local integration settings and secrets must stay out of source control.
+.env*
+pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.tsbuildinfo
+# Local calculation runtime, private design notes, and Python bytecode.
+.local/
+# Private design notes and local operating data are not public source.
+/docs/superpowers/plans/2026-08-02-church-event-assistant-prototype.md
+/docs/prototypes/church-event-assistant-v0-prompt.md
+*.sqlite*
+*.db
+*.db-*
+*.pem
+*.key
+*.pfx
+*.p12
+__pycache__/
+*.py[cod]

@@ -1,0 +1,15 @@
+.proposal-panel { min-width: 0; padding: 16px; }
+.proposal-intro { margin-bottom: 18px; }
+.proposal-intro p { margin-top: 8px; color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.8; }
+.proposal-item { display: grid; gap: 14px; min-width: 0; margin-bottom: 16px; padding: 16px; border: 1px solid hsl(var(--border)); border-radius: 8px; background: hsl(var(--background)); }
+.proposal-item > header { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
+.proposal-item h3 { min-width: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.proposal-item header > span { flex-shrink: 0; }
+.proposal-destination { font-size: 11px; color: hsl(var(--primary)); }
+.proposal-source { min-width: 0; font-size: 12px; color: hsl(var(--muted-foreground)); }
+.proposal-source summary { cursor: pointer; }
+.proposal-source blockquote { margin: 10px 0 0; padding-left: 10px; border-left: 2px solid hsl(var(--border)); overflow-wrap: anywhere; }
+.proposal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.proposal-actions > button { padding-inline: 10px; }
+.proposal-reason { font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.workspace-review-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; padding: 6px 0; border: 0; background: transparent; color: hsl(var(--primary)); font-size: 12px; }

@@ -1,0 +1,28 @@
+.transport-survey-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-block: 8px; }
+.transport-survey-actions button[aria-pressed="true"] { color: hsl(var(--primary)); border-color: hsl(var(--primary)); }
+.transport-survey-google { display: grid; gap: 8px; justify-items: start; padding-block: 6px; }
+.transport-survey-google label { display: grid; gap: 6px; width: min(100%, 520px); }
+.transport-survey.transport-survey-page { max-width: 960px; margin-block: 0; padding: 22px 0; border: 0; background: transparent; }
+.transport-survey-page > header h3 { font-size: 15px; }
+.transport-survey-google .transport-footnote { margin: 0; }
+.transport-survey-prerequisite { color: hsl(var(--muted-foreground)); }
+.transport-survey-preview { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; margin-top: 12px; font-size: 13px; }
+.transport-survey-mapping { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr)); gap: 10px; }
+.transport-survey-mapping label { display: grid; gap: 5px; min-width: 0; }
+.transport-survey-stats, .transport-survey-filter, .transport-survey-pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.transport-survey-stats { margin-block: 6px; gap: 14px; }
+.transport-survey-filter select, .transport-survey-pagination button {
+  min-height: 32px; max-width: 100%; padding: 4px 8px; border: 1px solid hsl(var(--border));
+  border-radius: 4px; background: hsl(var(--panel)); color: hsl(var(--foreground));
+}
+.transport-survey-pagination button:disabled { opacity: .45; cursor: not-allowed; }
+.transport-survey-response { min-width: 0; padding: 8px 0; border-bottom: 1px solid hsl(var(--border)); }
+.transport-survey-response > summary { cursor: pointer; overflow-wrap: anywhere; }
+.transport-survey-response dl { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 8px; }
+.transport-survey-response dt { color: hsl(var(--muted-foreground)); font-size: 11px; overflow-wrap: anywhere; }
+.transport-survey-response dd { white-space: pre-wrap; overflow-wrap: anywhere; }
+.transport-survey-pagination { justify-content: flex-end; }
+.transport-survey-preview > button { justify-self: start; }
+.transport-survey-preview > .transport-check { margin: 0; }
+.transport-survey-preview > .transport-footnote { margin: 0; font-size: 11px; line-height: 1.7; color: hsl(var(--muted-foreground)); overflow-wrap: anywhere; }
+.transport-survey-stats > .transport-warning { color: hsl(var(--danger)); }
