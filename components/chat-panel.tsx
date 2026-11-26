@@ -2,13 +2,13 @@
 import { isBackendConnected } from "@/lib/backend-client";
 import { internalChatAction } from "@/lib/assistant-privacy";
 
-import { CalendarDays, CalendarPlus, ChevronDown, ClipboardCheck, ListPlus, LockKeyhole, Paperclip, RefreshCw, Send, UserRound, UsersRound } from "lucide-react";
+import { CalendarDays, CalendarPlus, ChevronDown, ClipboardCheck, ListPlus, LoaderCircle, LockKeyhole, Paperclip, RefreshCw, Send, UserRound, UsersRound } from "lucide-react";
 import { chatProposalCandidates, type ChatRosterSource } from "@/lib/chat-tool-candidates";
 import { isAdvisorPresentation } from "@/lib/chat-advisor";
 import { venueHistoryReplyAction } from "@/lib/retreat-venue-history";
 import type { ConversationScope } from "@/lib/conversation-scope";
 import { RetreatVenueHistory } from "./retreat-venue-history";
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Conversation } from "@/lib/conversation-store";
 import type { ChatMessage } from "@/lib/types";
 import { WorkspaceBrandMark } from "./workspace-brand-mark";
@@ -26,13 +26,13 @@ type TurnActions = {
 type ComposerProps = {
   conversation: Conversation | null;
   onDraftChange: (text: string) => void; onSendMessage: (text: string) => void;
-  busy?: boolean; onRetryReply?: () => void;
+  replyStartedAt?: number | null; onRetryReply?: () => void;
   onManageConsent?: () => void;
   onOpenDocuments: () => void;
   onImportRoster?: (source: ChatRosterSource) => void;
 };
 
-export function ChatPanel({ conversation, visible = true, onDraftChange, onSendMessage, busy, onRetryReply, onManageConsent, onNewConversation, onOpenDocuments, shortcuts, progress, ...actions }:
+export function ChatPanel({ conversation, visible = true, onDraftChange, onSendMessage, replyStartedAt, onRetryReply, onManageConsent, onNewConversation, onOpenDocuments, shortcuts, progress, ...actions }:
   ComposerProps & TurnActions & { visible?: boolean; onNewConversation: () => void; shortcuts?: ReactNode; progress?: ReactNode }) {
   const scroll = useRef<HTMLDivElement>(null);
   const lastScrolled = useRef<{ id?: string; count?: number }>({});
@@ -57,7 +57,7 @@ export function ChatPanel({ conversation, visible = true, onDraftChange, onSendM
         {conversation ? shortcuts : <button type="button" className="workspace-start-button" onClick={onNewConversation}>새 대화 만들기</button>}
       </div>}
     </div>
-    <Composer conversation={conversation} onDraftChange={onDraftChange} onSendMessage={onSendMessage} busy={busy} onRetryReply={onRetryReply} onManageConsent={onManageConsent} onOpenDocuments={onOpenDocuments} onImportRoster={actions.onImportRoster} server={server} />
+    <Composer conversation={conversation} onDraftChange={onDraftChange} onSendMessage={onSendMessage} replyStartedAt={replyStartedAt} onRetryReply={onRetryReply} onManageConsent={onManageConsent} onOpenDocuments={onOpenDocuments} onImportRoster={actions.onImportRoster} server={server} />
   </section>;
 }
 
@@ -71,7 +71,7 @@ function MessageTurn({ message, previous, server, actions }: { message: ChatMess
   return <article className={`workspace-message ${assistant ? "from-assistant" : "from-user"}`}>
     <span className="workspace-message-avatar" aria-hidden="true">{assistant ? <WorkspaceBrandMark size={19} /> : <UserRound size={17} />}</span>
     <div className="workspace-message-content">
-      <div className="workspace-message-meta"><strong>{assistant ? "행사비서" : "나"}</strong><time>{message.time}</time>
+      <div className="workspace-message-meta"><strong>{assistant ? "행사비서" : "나"}</strong>
         {assistant && !server && <span className="workspace-sample-label">샘플 응답</span>}
         {message.actions?.includes(internalChatAction) && <span className="workspace-sample-label">내부 기록</span>}
       </div>
@@ -87,8 +87,20 @@ function MessageTurn({ message, previous, server, actions }: { message: ChatMess
   </article>;
 }
 
-function Composer({ conversation, onDraftChange, onSendMessage, busy, onRetryReply, onManageConsent, onOpenDocuments, onImportRoster, server }: ComposerProps & { server: boolean }) {
+function ReplyActivity({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(() => performance.now());
+  const seconds = Math.floor(Math.max(0, now - startedAt) / 1000);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(performance.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  return <span className="workspace-reply-activity" role="status"><LoaderCircle size={14} aria-hidden="true" /><span>답변 작성 중</span>
+    <span aria-hidden="true">·</span><span className="workspace-reply-elapsed" aria-hidden="true">{seconds}초</span></span>;
+}
+
+function Composer({ conversation, onDraftChange, onSendMessage, replyStartedAt, onRetryReply, onManageConsent, onOpenDocuments, onImportRoster, server }: ComposerProps & { server: boolean }) {
   const input = useRef<HTMLTextAreaElement>(null);
+  const busy = replyStartedAt != null;
   const send = () => {
     const value = conversation?.draft.trim();
     if (!value || busy) return;
@@ -105,9 +117,9 @@ function Composer({ conversation, onDraftChange, onSendMessage, busy, onRetryRep
           }} />
           <button type="submit" className="workspace-send" aria-label="전송" title="전송" disabled={busy || !conversation?.draft.trim()}><Send size={17} aria-hidden="true" /></button>
         </form>
-        <div className="workspace-composer-caption">{!busy && onManageConsent
+        <div className="workspace-composer-caption">{replyStartedAt != null ? <ReplyActivity key={replyStartedAt} startedAt={replyStartedAt} /> : onManageConsent
           ? <button type="button" className="workspace-consent-link" aria-label="OpenAI 전송 동의 관리" onClick={onManageConsent}><LockKeyhole size={12} aria-hidden="true" />외부 전송 동의됨</button>
-          : <span role="status">{server && !busy && <LockKeyhole size={12} aria-hidden="true" />}{busy ? "답변 작성 중…" : server ? "첫 외부 전송 전 동의" : "화면 체험용 · 샘플 응답"}</span>}
+          : <span role="status">{server && <LockKeyhole size={12} aria-hidden="true" />}{server ? "첫 외부 전송 전 동의" : "화면 체험용 · 샘플 응답"}</span>}
           {!busy && onRetryReply && <div><button type="button" className="workspace-start-button gap-2" onClick={onRetryReply}><RefreshCw size={14} aria-hidden="true" />답변 다시 요청</button></div>}
         </div>
       </footer>;

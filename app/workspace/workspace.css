@@ -238,6 +238,13 @@
 .workspace-send:disabled { cursor: not-allowed; background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
 .workspace-composer-caption { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; margin-top: 6px; padding-inline: 3px; font-size: 12px; color: hsl(var(--muted-foreground)); }
 .workspace-composer-caption > span { display: inline-flex; align-items: center; gap: 5px; }
+.workspace-reply-activity { min-height: 20px; font-weight: 650; }
+.workspace-reply-activity > svg { flex: none; color: hsl(var(--primary)); }
+.workspace-reply-elapsed { min-inline-size: 3.5ch; font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: no-preference) {
+  .workspace-reply-activity > svg { animation: workspace-reply-spin 1s linear infinite; }
+}
+@keyframes workspace-reply-spin { to { transform: rotate(360deg); } }
 .workspace-consent-link { display: inline-flex; align-items: center; gap: 5px; padding: 2px; }
 .workspace-consent-link:hover { text-decoration: underline; }
 .workspace-documents, .workspace-location, .workspace-proposals { flex: 1; min-height: 0; min-width: 0; overflow: auto; }

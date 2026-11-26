@@ -298,10 +298,11 @@ describe("workspace 3-1", () => {
     await waitFor(() => expect(calls).toHaveLength(1));
     expect(calls[0].consent).toBe(openAIChatConsentVersion);
     expect(calls[0].userMessageText).toBe("Synthetic question");
-    expect(screen.getByText("답변 작성 중…")).toBeDefined();
+    expect(screen.getByText("답변 작성 중")).toBeDefined();
     expect((screen.getByRole("button", { name: "전송" }) as HTMLButtonElement).disabled).toBe(true);
     release(Response.json({ error: "OpenAI를 사용할 수 없습니다." }, { status: 503 }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "OpenAI를 사용할 수 없습니다.");
+    await waitFor(() => expect(screen.queryByText("답변 작성 중")).toBeNull());
     view.unmount();
     render(<EventWorkspace {...props} renderProposals={() => null} />);
     await screen.findByRole("button", { name: "OpenAI 전송 동의 관리" });
