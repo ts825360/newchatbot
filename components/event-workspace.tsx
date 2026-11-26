@@ -68,7 +68,8 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   const [proposalReply, setProposalReply] = useState<{ identity: string; id: string } | null>(null);
   const [error, setError] = useState("");
   const [unsavedDraft, setUnsavedDraft] = useState(false);
-  const [chatBusy, setChatBusy] = useState(false);
+  const [replyStartedAt, setReplyStartedAt] = useState<number | null>(null);
+  const chatBusy = replyStartedAt !== null;
   const chatRequest = useRef<AbortController | null>(null);
   const [confirmation, setConfirmation] = useState<ChatConfirmation | null>(null);
   const [approvedAccount, setApprovedAccount] = useState<string | null>(null);
@@ -191,7 +192,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     const controller = new AbortController();
     const stillCurrent = () => !controller.signal.aborted && getBackendProfile()?.accountId === accountId;
     chatRequest.current = controller;
-    setChatBusy(true); setError("");
+    setReplyStartedAt(performance.now()); setError("");
     try {
       await flushBackendWrites();
       if (!stillCurrent()) return;
@@ -218,7 +219,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
         } catch { /* The next turn can still use the approval dialog. */ }
       }
       chatRequest.current = null;
-      if (!controller.signal.aborted) setChatBusy(false);
+      if (!controller.signal.aborted) setReplyStartedAt(null);
     }
   };
   const sendChat = (text: string, localOnly = false, approve = false) => {
@@ -361,7 +362,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     const { Icon, name } = workspaceTools[mode];
     return <button key={mode} type="button" className="workspace-start-button" onClick={() => openTool(mode)}><Icon size={17} aria-hidden="true" />{name} 보기</button>;
   })}<BlankGoogleFormLink className="workspace-start-button" /></div>;
-  const chat = <>{(error || notice) && <div className={`workspace-notice ${error || noticeError ? "is-error" : ""}`} role={error || noticeError ? "alert" : "status"}>{error || notice}</div>}{canChat ? <ChatPanel conversation={active} visible={chatVisible} shortcuts={shortcuts} onDraftChange={changeDraft} onSendMessage={submitChat} busy={chatBusy} onRetryReply={retryReply} onNewConversation={() => create()} onOpenDocuments={() => openTool("documents")} onReviewProposals={renderProposals ? replyId => openTool("proposals", replyId) : undefined}
+  const chat = <>{(error || notice) && <div className={`workspace-notice ${error || noticeError ? "is-error" : ""}`} role={error || noticeError ? "alert" : "status"}>{error || notice}</div>}{canChat ? <ChatPanel conversation={active} visible={chatVisible} shortcuts={shortcuts} onDraftChange={changeDraft} onSendMessage={submitChat} replyStartedAt={replyStartedAt} onRetryReply={retryReply} onNewConversation={() => create()} onOpenDocuments={() => openTool("documents")} onReviewProposals={renderProposals ? replyId => openTool("proposals", replyId) : undefined}
         onManageConsent={server && consentApproved ? () => { setConsentError(""); setManageConsent(true); } : undefined}
         progress={progressScope && <PreparationProgressShortcut {...progress} onOpen={openProgress} />}
         retreatVenueScope={isRetreat ? readyScope ?? undefined : undefined}
