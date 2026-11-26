@@ -6,7 +6,7 @@ import type { CalendarEvent, ChecklistItem } from "../types";
 import type { ConversationScope } from "../conversation-scope";
 import { readConversationPlaces } from "../conversation-places";
 import { requirePermission, requireUser, type Actor } from "./auth";
-import { canonicalPrivateTool, requireOwnedConversation } from "./conversation-scope";
+import { canonicalWorkspaceTool, inheritWorkspaceRecords, requireOwnedConversation } from "./conversation-scope";
 import { getDatabase } from "./database";
 import { ApiError, assertSameOrigin, errorResponse, json } from "./http";
 import { id, object, validateRecord } from "./record-schema";
@@ -130,11 +130,12 @@ export function loadRetreatReview(db: DatabaseSync, actor: Actor, scope: Convers
     if (!object(room) || room.category !== "retreat" || typeof room.name !== "string") {
       throw new ApiError(404, "준비 점검은 수련회 행사방에서만 사용할 수 있습니다.");
     }
+    inheritWorkspaceRecords(db, scope);
     const eventRow = db.prepare("SELECT data_json FROM records WHERE key=? AND room_id=? AND owner_id IS NULL AND kind='events'")
       .get(`preparation:${roomId}:events`, roomId) as Saved;
     const privateRecord = (kind: "checklist" | "location" | "transport"): Saved =>
       db.prepare("SELECT data_json FROM records WHERE key=? AND room_id=? AND owner_id=? AND kind=?")
-        .get(canonicalPrivateTool(scope, kind), roomId, actor.id, kind) as Saved;
+        .get(canonicalWorkspaceTool(scope, kind), roomId, actor.id, kind) as Saved;
     const locationRecord = privateRecord("location");
     let location = "";
     if (locationRecord) {

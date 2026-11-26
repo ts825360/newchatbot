@@ -436,7 +436,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     {confirmation?.identity === identity && <RoomDialog className="workspace-theme" title="OpenAI에 메시지 보내기" onClose={() => setConfirmation(null)}>
       <div className="room-dialog-body">
         <p>{consentApproved ? "이 메시지는 전송 전에 확인이 필요합니다." : "동의하면 앞으로 일반 질문을 보낼 때마다 확인창을 띄우지 않습니다. 전송 동의는 언제든 철회할 수 있습니다."}</p>
-        <p>이번 메시지와 이 대화에서 이전에 OpenAI로 보낸 내 메시지 최대 3개를 사용합니다. 답장으로 지정한 외부 대화의 일부도 포함될 수 있습니다. 내부 기록, 다른 대화, 저장된 행사 자료, 첨부자료, 개인 지침은 보내지 않습니다.</p>
+        <p>이번 메시지와 이 대화에서 이전에 OpenAI로 보낸 내 메시지 최대 3개를 사용합니다. 답장으로 지정한 외부 대화의 일부도 포함될 수 있습니다. 장소가 필요한 질문에는 확인된 대표 장소의 공개 이름·주소·출처를 사용할 수 있습니다. 내부 기록, 다른 대화, 첨부자료, 개인 지침은 보내지 않습니다.</p>
         <label className="grid gap-2 text-sm">외부로 보낼 메시지
           <textarea className="w-full rounded-md border border-border bg-background p-3" rows={5} maxLength={8000}
             value={confirmation.text} readOnly={confirmation.kind === "retry"} onChange={(event) => setConfirmation({ ...confirmation, text: event.target.value })} />

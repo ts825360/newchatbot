@@ -1,6 +1,6 @@
 services:
   app:
-    image: ${CHURCH_IMAGE:-nowchatbot:v0.2.0-rc.4}
+    image: ${CHURCH_IMAGE:-nowchatbot:v0.2.0-rc.5}
     pull_policy: never
     init: true
     restart: unless-stopped

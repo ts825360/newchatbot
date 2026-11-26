@@ -8,7 +8,7 @@ import { validDate } from "../room-timing";
 import type { CalendarEvent, ChecklistItem } from "../types";
 import { requirePermission, requireUser, type Actor } from "./auth";
 import { generateOpenAIText } from "./chat-openai";
-import { canonicalPrivateTool, preparationProgressKey, requireOwnedConversation } from "./conversation-scope";
+import { canonicalWorkspaceTool, inheritWorkspaceRecords, legacyProgressPrefix, preparationProgressKey, requireOwnedConversation } from "./conversation-scope";
 import { getDatabase } from "./database";
 import { ApiError, assertSameOrigin, errorResponse, json, readJson } from "./http";
 import { id, object, validateRecord } from "./record-schema";
@@ -29,8 +29,9 @@ function requireReviewer(request: Request, db: DatabaseSync) {
 
 function collect(db: DatabaseSync, actor: Actor, scope: ConversationScope) {
   requireOwnedConversation(db, scope);
+  inheritWorkspaceRecords(db, scope);
   const source = (key: string, kind: string, owner: string | null) => db.prepare("SELECT data_json,revision FROM records WHERE key=? AND kind=? AND room_id=? AND owner_id IS ?").get(key, kind, scope.roomId, owner);
-  const privateSource = (kind: PrivateToolKind) => source(canonicalPrivateTool(scope, kind), kind, actor.id);
+  const privateSource = (kind: PrivateToolKind) => source(canonicalWorkspaceTool(scope, kind), kind, actor.id);
   const room = db.prepare("SELECT data_json,revision FROM rooms WHERE id=?").get(scope.roomId)!;
   const events = source(`preparation:${scope.roomId}:events`, "events", null);
   const checklist = privateSource("checklist"), risks = privateSource("risks"), decisions = privateSource("decisions");
@@ -86,9 +87,13 @@ export function readPreparationProgress(request: Request, database?: DatabaseSyn
     requireOwnedConversation(db, scope);
     const row = db.prepare("SELECT data_json FROM records WHERE key=? AND kind='preparation-progress' AND owner_id=? AND room_id=?")
       .get(preparationProgressKey(scope), actor.id, roomId);
-    const saved = row ? JSON.parse(String(row.data_json)) as { signature: string; report: PreparationProgress } : null;
-    const stale = saved !== null && saved.signature !== collect(db, actor, scope).signature;
-    return json({ report: stale ? null : saved?.report ?? null, stale } satisfies SavedPreparationProgress);
+    const prefix = legacyProgressPrefix(scope);
+    const candidates = row ? [row] : db.prepare(`SELECT data_json FROM records WHERE kind='preparation-progress' AND owner_id=? AND room_id=? AND substr(key,1,?)=?
+      ORDER BY updated_at DESC,revision DESC,key`).all(actor.id, roomId, prefix.length, prefix);
+    const signature = candidates.length ? collect(db, actor, scope).signature : null;
+    const saved = candidates.map(r => JSON.parse(String(r.data_json)) as { signature: string; report: PreparationProgress })
+      .find(review => review.signature === signature);
+    return json({ report: saved?.report ?? null, stale: !saved && candidates.length > 0 } satisfies SavedPreparationProgress);
   } catch (cause) { return errorResponse(cause); }
 }
 

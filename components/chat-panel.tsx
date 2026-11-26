@@ -6,6 +6,7 @@ import { CalendarDays, CalendarPlus, ChevronDown, ClipboardCheck, Copy, Ellipsis
 import { chatProposalCandidates, type ChatRosterSource } from "@/lib/chat-tool-candidates";
 import { isAdvisorPresentation } from "@/lib/chat-advisor";
 import { venueHistoryReplyAction } from "@/lib/retreat-venue-history";
+import { eventPublicVenueUsedAction } from "@/lib/assistant-privacy";
 import type { ConversationScope } from "@/lib/conversation-scope";
 import { RetreatVenueHistory } from "./retreat-venue-history";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
@@ -91,6 +92,7 @@ function MessageTurn({ message, previous, source, server, actions, busy, onRefer
         {message.replyElapsedMs < 1000 ? "1초 미만" : `${Math.floor(message.replyElapsedMs / 1000)}초`} 소요
       </p>}
       <MessageBody message={message} review={review} />
+      {assistant && message.actions?.includes(eventPublicVenueUsedAction) && <p className="workspace-reply-elapsed workspace-reply-completed">행사방 대표 장소 참고</p>}
       {retreatVenueScope && assistant && message.actions?.includes(venueHistoryReplyAction) &&
         <RetreatVenueHistory scope={retreatVenueScope} question={previous?.sender === "user" ? previous.text : ""} />}
     </div>

@@ -4,6 +4,7 @@ export const maxConversationPlaces = 12;
 export type ConversationPlaceDetails = { name: string; address: string; notes: string };
 type ConversationPlaceRecord = { location: string; places?: string[]; details?: ConversationPlaceDetails[] };
 const verifiedPlace = {
+  name: "한화리조트 대천 파로스",
   address: "충청남도 보령시 해수욕장3길 11-10",
   notes: "숙박 리조트 · 마리스 식당 · 대표전화 041-931-5500",
   source: "https://m2.hanwharesort.co.kr/resort/resort_place/view.do?locCd=0901",
@@ -24,11 +25,16 @@ export function isConversationPlaceRecord(value: unknown): value is Conversation
     && new Set(details.map(entry => entry.name)).size === details.length;
 }
 
+export function verifiedPublicPlace(name: string) {
+  if (!/^(한화리조트대천파로스|한화리조트\/대천파로스)$/.test(name.normalize("NFC").replace(/\s/g, ""))) return;
+  return verifiedPlace;
+}
+
 export function conversationPlaceDetails(name: string, saved: ConversationPlaceDetails[] = []) {
   const entry = saved.find(place => place.name === name);
-  const exact = /^(한화리조트대천파로스|한화리조트\/대천파로스)$/.test(name.normalize("NFC").replace(/\s/g, ""));
-  if (entry) return { address: entry.address, notes: entry.notes, source: exact ? verifiedPlace.source : undefined };
-  return exact ? verifiedPlace : undefined;
+  const verified = verifiedPublicPlace(name);
+  if (entry) return { address: entry.address, notes: entry.notes, source: verified?.source };
+  if (verified) return { address: verified.address, notes: verified.notes, source: verified.source };
 }
 
 export function readConversationPlaces(value: unknown): string[] {
