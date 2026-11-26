@@ -38,6 +38,28 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("settings access", () => {
+  it("stores and revokes external AI consent from security settings", async () => {
+    let approved = false;
+    backendFetch.mockImplementation(async (path, init) => {
+      if (path !== "/api/chat") return connectionStatuses;
+      if (init?.method === "PUT") {
+        const request = JSON.parse(init.body);
+        expect(request.accountId).toBe("settings-fixture");
+        approved = request.approved;
+      }
+      return { approved };
+    });
+    window.history.replaceState(null, "", "/settings?section=security#external-ai");
+    render(<SettingsScreen />);
+    const control = await screen.findByRole<HTMLInputElement>("checkbox", { name: "외부 AI 이용 및 전송 동의" });
+    expect(control.checked).toBe(false);
+    fireEvent.click(control);
+    expect(await screen.findByText("외부 AI 이용을 허용했습니다.")).toBeDefined();
+    expect(control.checked).toBe(true);
+    fireEvent.click(control);
+    expect(await screen.findByText("외부 AI 이용을 해제했습니다.")).toBeDefined();
+    expect(control.checked).toBe(false);
+  });
   it("opens the account with six vertical sections and keeps password change in security", async () => {
     render(<SettingsScreen />);
     const nav = within(screen.getByRole("navigation", { name: "주 메뉴" }));
@@ -305,13 +327,13 @@ describe("reply preferences", () => {
     expect(screen.getByRole<HTMLInputElement>("radio", { name: assistantLengthLabels.brief }).checked).toBe(true);
     fireEvent.click(save);
     expect(await screen.findByText("답변 스타일을 저장했습니다.")).toBeDefined();
-    for (const [path, init] of backendFetch.mock.calls.slice(1)) {
+    for (const [path, init] of backendFetch.mock.calls.filter(([path]) => path === "/api/preferences").slice(1)) {
       expect(path).toBe("/api/preferences");
       expect(init.method).toBe("PUT");
       expect(init.headers).toEqual({ "Content-Type": "application/json" });
       expect(JSON.parse(init.body)).toEqual(changed);
     }
-    expect(backendFetch).toHaveBeenCalledTimes(3);
+    expect(backendFetch.mock.calls.filter(([path]) => path === "/api/preferences")).toHaveLength(3);
   });
 
   it("saves personal instructions only on request and discloses that OpenAI does not receive them", async () => {

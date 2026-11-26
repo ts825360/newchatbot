@@ -14,11 +14,12 @@ import type { ChatMessage } from "../types";
 import { requirePermission, requireUser } from "./auth";
 import { generateOpenAIText, type OpenAIChatTurn } from "./chat-openai";
 import { eventVenueTool, readPublicEventVenue } from "./chat-venue-tool";
-import { diningVisit, isDiningSearch, recommendDining } from "./chat-dining";
+import { diningVisit, nearbySearchKind, recommendDining } from "./chat-dining";
 import { chatAdvisorPrompt, chatOutputInstruction } from "./chat-advisor-prompt";
 import { assistantStyleInstruction, formatAssistantReply, loadAssistantPreferences } from "./assistant-preferences";
 import { canonicalConversationHistory, requireOwnedConversation } from "./conversation-scope";
 import { bumpRevision, getDatabase, transaction } from "./database";
+import { hasChatConsent, saveChatConsent } from "./chat-consent";
 import { ApiError, assertSameOrigin, errorResponse, json, readJson } from "./http";
 import { id, object, text, validateRecord } from "./record-schema";
 
@@ -26,19 +27,24 @@ const changed = () => new ApiError(409, "대화가 변경되었습니다. 최신
 const full = () => new ApiError(413, "대화 저장 한도에 도달했습니다. 새 대화를 시작해 주세요.");
 let generating = false;
 
-const consentKind = "chat-external-consent";
-const consentKey = (accountId: string) => `${consentKind}:${accountId}`;
-const hasConsent = (db: DatabaseSync, accountId: string) => db.prepare("SELECT 1 FROM records WHERE key=? AND owner_id=? AND kind=? AND data_json=?")
-  .get(consentKey(accountId), accountId, consentKind, JSON.stringify(openAIChatConsentVersion)) !== undefined;
-
-export function handleChatConsent(request: Request, database = getDatabase()): Response {
+export async function handleChatConsent(request: Request, database = getDatabase()): Promise<Response> {
   try {
     assertSameOrigin(request);
     const actor = requireUser(request, database);
     requirePermission(actor, "chat");
-    if (request.method === "GET") return json({ approved: hasConsent(database, actor.id) });
+    if (request.method === "GET") return json({ approved: hasChatConsent(database, actor.id) });
+    if (request.method === "PUT") {
+      const body = await readJson(request, 4096);
+      if (!object(body) || !id(body.accountId) || typeof body.approved !== "boolean" || body.version !== openAIChatConsentVersion
+        || Object.keys(body).some(key => !["accountId", "approved", "version"].includes(key))) throw new ApiError(400, "외부 AI 이용 동의 내용을 다시 확인해 주세요.");
+      if (body.accountId !== actor.id) throw new ApiError(409, "접속 계정이 변경되었습니다.");
+      const current = requireUser(request, database);
+      requirePermission(current, "chat");
+      saveChatConsent(database, actor.id, body.approved);
+      return json({ approved: body.approved });
+    }
     if (request.method === "DELETE") {
-      database.prepare("DELETE FROM records WHERE key=? AND owner_id=? AND kind=?").run(consentKey(actor.id), actor.id, consentKind);
+      saveChatConsent(database, actor.id, false);
       return json({ approved: false });
     }
     return json({ error: "지원하지 않는 동의 요청입니다." }, 405);
@@ -95,7 +101,7 @@ function findTurn(db: DatabaseSync, scope: ConversationScope, userMessageId: str
   const index = messages.findIndex(({ id }) => id === userMessageId);
   if (index < 0 || messages[index].sender !== "user" || messages[index].text !== userMessageText) throw changed();
   if (messages[index].actions?.includes(internalChatAction)) throw new ApiError(422, "내부 저장 메시지는 외부로 전송하지 않습니다.");
-  const replyId = replyIdFor(scope, messages[index], internal, retreatVenueReview, !internal && isDiningSearch(messages[index].text));
+  const replyId = replyIdFor(scope, messages[index], internal, retreatVenueReview, !internal && !!nearbySearchKind(messages[index].text));
   const existing = messages[index + 1];
   const complete = existing?.sender === "assistant" && (existing.id === replyId || !internal && existing.id === replyIdFor(scope, messages[index], false, false));
   if (!complete) {
@@ -121,9 +127,9 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
     const retreatVenueReview = isVenueHistoryChat(data.userMessageText) && isRetreatRoom(db, data.roomId);
     const detailedPreparation = isPreparationChat(data.userMessageText) && isRetreatRoom(db, data.roomId);
     const localReview = isPreparationChat(data.userMessageText) || isPreparationStatusChat(data.userMessageText) || retreatVenueReview;
-    const approved = !localReview && hasConsent(db, actor.id);
-    if (!localReview && (data.consent !== undefined ? data.consent !== openAIChatConsentVersion : !approved)) {
-      throw new ApiError(423, "OpenAI로 처음 보내기 전에 외부 전송에 동의해 주세요.");
+    const nearbyKind = localReview ? null : nearbySearchKind(data.userMessageText);
+    if (!localReview && (!hasChatConsent(db, actor.id) || data.consent !== undefined && data.consent !== openAIChatConsentVersion)) {
+      throw new ApiError(423, "환경설정의 보안 및 개인정보에서 외부 AI 이용을 허용해 주세요.");
     }
     if (!localReview && hasObviousPrivateData(data.userMessageText)) throw new ApiError(422, openAIPrivacyWarning);
     const scope = { accountId: actor.id, roomId: data.roomId, conversationId: data.conversationId };
@@ -139,11 +145,6 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
     const assertSameHistory = (turn: typeof original) => {
       if (turn.row.revision !== original.row.revision || turn.row.data_json !== original.row.data_json) throw changed();
     };
-    if (!localReview && !approved && data.consent === openAIChatConsentVersion) {
-      db.prepare(`INSERT INTO records(key,owner_id,kind,data_json,updated_at) VALUES(?,?,?,?,?)
-        ON CONFLICT(key) DO UPDATE SET data_json=excluded.data_json,revision=revision+1,updated_at=excluded.updated_at`)
-        .run(consentKey(actor.id), actor.id, consentKind, JSON.stringify(openAIChatConsentVersion), new Date().toISOString());
-    }
     if (original.complete) return json({ ok: true });
     if (generating) return json({ error: "다른 답변을 작성 중입니다. 잠시 후 다시 시도해 주세요." }, 429);
     generating = true;
@@ -158,16 +159,16 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         reply = { text: formatAssistantReply(summarizeRetreatReview(loadRetreatReview(db, actor, scope)), preferences.emoji) };
       } else if (localReview) {
         reply = loadPreparationStatus(db, actor, scope);
-      } else if (isDiningSearch(data.userMessageText)) {
+      } else if (nearbyKind) {
         const venue = readPublicEventVenue(db, scope);
         const now = new Date();
-        const visit = diningVisit(data.userMessageText, now);
+        const visit = diningVisit(data.userMessageText, now, nearbyKind);
         if (!venue) reply = { text: "이 행사방에서 검색에 사용할 공개 대표 장소를 확인하지 못했어요. 장소에서 대표 숙소를 확인해 주세요." };
         else if (!visit) reply = { text: "어느 날짜와 시간에 방문할까요? 예를 들어 ‘내일 아침’이나 ‘토요일 오후 6시’라고 알려주세요." };
         else {
-          reply = await recommendDining(venue, visit, now, request.signal);
+          reply = await recommendDining(nearbyKind, venue, visit, now, request.signal);
           assertSameHistory(currentTurn());
-          if (!hasConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
+          if (!hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
           if (JSON.stringify(venue) !== JSON.stringify(readPublicEventVenue(db, scope))) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
         }
       } else {
@@ -175,7 +176,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         let venueUsed: string | undefined;
         const tool = publicVenue ? { definition: eventVenueTool, run: () => {
           assertSameHistory(currentTurn());
-          if (!hasConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
+          if (!hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
           const venue = readPublicEventVenue(db, scope);
           if (!venue) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
           venueUsed = JSON.stringify(venue);
@@ -185,7 +186,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
           [chatAdvisorPrompt, chatOutputInstruction, assistantStyleInstruction(preferences), ...(tool ? ["사용자가 우리 숙소나 행사 장소, 그 주변 식당·활동을 물으면 장소를 다시 묻기 전에 get_current_event_venue를 호출하세요. 결과는 저장된 대표 장소의 공개 기본 정보이며 주변 시설의 최신 검색 결과가 아닙니다."] : [])].join("\n\n"), advisorReplyFormat, tool);
         if (venueUsed) {
           assertSameHistory(currentTurn());
-          if (!hasConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
+          if (!hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
           if (venueUsed !== JSON.stringify(readPublicEventVenue(db, scope))) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
         }
         const answer = parseAdvisorReply(raw);

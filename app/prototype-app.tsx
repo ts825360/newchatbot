@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { EventWorkspace } from "@/components/event-workspace";
+import { externalAISettingsHref } from "@/lib/assistant-privacy";
 import type { WorkspaceOverviewData } from "@/components/workspace-overview";
 import { AUTH_CHANGED_EVENT, createBrowserAuth } from "@/lib/prototype-auth";
 import { backendFetch, flushBackendWrites, isBackendConnected, refreshBackendData } from "@/lib/backend-client";
@@ -300,7 +301,7 @@ export function PrototypeApp() {
   };
 
   const resolveRisk = (riskId: string) => { if (canEditChecklist) commitWrite(() => persistRiskResolution(riskId), () => {}); };
-  const leaveWorkspace = async (href: "/rooms" | "/settings?from=workspace") => {
+  const leaveWorkspace = async (href: "/rooms" | "/settings?from=workspace" | typeof externalAISettingsHref) => {
     try {
       if (isBackendConnected()) await flushBackendWrites();
       if (href === "/rooms") router.replace(href);
@@ -396,7 +397,7 @@ export function PrototypeApp() {
 
   return (
     <main className="workspace-page h-dvh overflow-hidden bg-background text-foreground" aria-busy={saving}>
-      <EventWorkspace key={`${state.profile.accountId}:${activeRoom.id}`} room={activeRoom} profile={state.profile} seedMessages={activeMessages} notice={workspaceNotice || calendarNotice.text} noticeError={!workspaceNotice && calendarNotice.failed} darkMode={darkMode} onToggleTheme={toggleTheme} onSignOut={signOut} onBackToRooms={backToRooms} onOpenSettings={() => leaveWorkspace("/settings?from=workspace")} onAddExtractedEvent={addDocumentEventCandidate} onAddExtractedChecklist={addDocumentChecklistCandidate} onAddChatEvent={openChatEvent} canAddChatEvent={canAddChatEvent} onAddChatChecklist={openChatChecklist} onScopeChange={setSelectedScope}
+      <EventWorkspace key={`${state.profile.accountId}:${activeRoom.id}`} room={activeRoom} profile={state.profile} seedMessages={activeMessages} notice={workspaceNotice || calendarNotice.text} noticeError={!workspaceNotice && calendarNotice.failed} darkMode={darkMode} onToggleTheme={toggleTheme} onSignOut={signOut} onBackToRooms={backToRooms} onOpenSettings={() => leaveWorkspace("/settings?from=workspace")} onOpenPrivacySettings={() => leaveWorkspace(externalAISettingsHref)} onAddExtractedEvent={addDocumentEventCandidate} onAddExtractedChecklist={addDocumentChecklistCandidate} onAddChatEvent={openChatEvent} canAddChatEvent={canAddChatEvent} onAddChatChecklist={openChatChecklist} onScopeChange={setSelectedScope}
         overview={canOpenOverview ? overview : undefined}
         renderTools={renderTools} renderProposals={(scope, messages) => <ProposalPanel room={activeRoom} scope={scope} messages={messages} onApply={(draft) => applyProposal(scope, draft)} />} />
 

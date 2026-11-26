@@ -7,6 +7,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { createBrowserAuth, validateSignup, type AdminGrade, type SignupErrors, type SignupInput } from "@/lib/prototype-auth";
 import { isBackendConnected } from "@/lib/backend-client";
 import { usePrototypeTheme } from "@/lib/use-theme";
+import { externalAIConsentDetails, externalAIConsentTitle, openAIChatConsentVersion } from "@/lib/assistant-privacy";
 import { AuthReference } from "./login-reference";
 
 type AuthMode = "signup" | "login";
@@ -19,6 +20,7 @@ export function AuthScreen({ mode }: { mode: AuthMode }) {
   const [errors, setErrors] = useState<SignupErrors>({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [externalAI, setExternalAI] = useState(false);
   const [notice, setNotice] = useState("");
   const [invite, setInvite] = useState<{ grade: AdminGrade; expiresAt: string | null } | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
@@ -93,7 +95,7 @@ export function AuthScreen({ mode }: { mode: AuthMode }) {
     try {
       const auth = createBrowserAuth();
       if (mode === "signup") {
-        await auth.signup(values);
+        await auth.signup({ ...values, ...(externalAI && isBackendConnected() && { openAIConsent: openAIChatConsentVersion }) });
         router.push("/login");
       } else {
         await auth.login(values.username, values.password);
@@ -142,6 +144,10 @@ export function AuthScreen({ mode }: { mode: AuthMode }) {
           </AuthField>
           <PasswordField name="password" label="비밀번호" value={values.password} onChange={(value) => update("password", value)} error={errors.password} signup={mode === "signup"} />
           {mode === "signup" && <PasswordField name="confirmation" label="비밀번호 확인" value={values.confirmation} onChange={(value) => update("confirmation", value)} error={errors.confirmation} signup />}
+          {mode === "signup" && isBackendConnected() && <div className="auth-consent">
+            <label><input type="checkbox" checked={externalAI} onChange={event => setExternalAI(event.target.checked)} aria-describedby="signup-ai-consent-details" />{externalAIConsentTitle} (선택)</label>
+            <p id="signup-ai-consent-details">{externalAIConsentDetails} 미동의해도 가입할 수 있으며, 환경설정에서 변경할 수 있습니다.</p>
+          </div>}
         </fieldset>
         {error && <div className="auth-error-summary" role="alert" tabIndex={-1} ref={errorRef}>{error}</div>}
         <button type="submit" className="auth-submit" disabled={busy}>

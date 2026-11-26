@@ -5,7 +5,7 @@ import { internalChatAction } from "@/lib/assistant-privacy";
 import { CalendarDays, CalendarPlus, ChevronDown, ClipboardCheck, Copy, Ellipsis, ExternalLink, ListPlus, LoaderCircle, LockKeyhole, MapPin, Paperclip, Pencil, RefreshCw, Reply, Send, UserRound, UsersRound, Utensils, X } from "lucide-react";
 import { chatProposalCandidates, type ChatRosterSource } from "@/lib/chat-tool-candidates";
 import { isAdvisorPresentation } from "@/lib/chat-advisor";
-import { diningMapUrl, isDiningRecommendations } from "@/lib/chat-dining";
+import { diningMapUrl, isDiningRecommendations, nearbyDirectionsUrl } from "@/lib/chat-dining";
 import { venueHistoryReplyAction } from "@/lib/retreat-venue-history";
 import { eventPublicVenueUsedAction } from "@/lib/assistant-privacy";
 import type { ConversationScope } from "@/lib/conversation-scope";
@@ -29,14 +29,14 @@ type ComposerProps = {
   conversation: Conversation | null;
   onDraftChange: (text: string) => void; onSendMessage: (text: string, reference?: ChatMessageReference) => void;
   replyStartedAt?: number | null; onRetryReply?: () => void;
-  onManageConsent?: () => void;
+  externalAIApproved?: boolean; privacyNotice?: ReactNode;
   onOpenDocuments: () => void;
   onImportRoster?: (source: ChatRosterSource) => void;
 };
 
 type DraftReference = { kind: ChatMessageReference["kind"]; source: ChatMessage; text: string; conversationId: string; count: number };
 
-export function ChatPanel({ conversation, visible = true, onDraftChange, onSendMessage, replyStartedAt, onRetryReply, onManageConsent, onNewConversation, onOpenDocuments, shortcuts, progress, ...actions }:
+export function ChatPanel({ conversation, visible = true, onDraftChange, onSendMessage, replyStartedAt, onRetryReply, externalAIApproved, privacyNotice, onNewConversation, onOpenDocuments, shortcuts, progress, ...actions }:
   ComposerProps & TurnActions & { visible?: boolean; onNewConversation: () => void; shortcuts?: ReactNode; progress?: ReactNode }) {
   const scroll = useRef<HTMLDivElement>(null);
   const lastScrolled = useRef<{ id?: string; count?: number; pending?: boolean }>({});
@@ -69,7 +69,7 @@ export function ChatPanel({ conversation, visible = true, onDraftChange, onSendM
         {conversation ? shortcuts : <button type="button" className="workspace-start-button" onClick={onNewConversation}>새 대화 만들기</button>}
       </div>}
     </div>
-    <Composer conversation={conversation} reference={activeReference} onClearReference={() => setReference(null)} onEditReference={text => setReference(current => current && { ...current, text })} onDraftChange={onDraftChange} onSendMessage={onSendMessage} replyStartedAt={replyStartedAt} onRetryReply={onRetryReply} onManageConsent={onManageConsent} onOpenDocuments={onOpenDocuments} onImportRoster={actions.onImportRoster} server={server} />
+    <Composer conversation={conversation} reference={activeReference} onClearReference={() => setReference(null)} onEditReference={text => setReference(current => current && { ...current, text })} onDraftChange={onDraftChange} onSendMessage={onSendMessage} replyStartedAt={replyStartedAt} onRetryReply={onRetryReply} externalAIApproved={externalAIApproved} privacyNotice={privacyNotice} onOpenDocuments={onOpenDocuments} onImportRoster={actions.onImportRoster} server={server} />
   </section>;
 }
 
@@ -153,7 +153,7 @@ function ReplyActivity({ startedAt }: { startedAt: number }) {
     <span aria-hidden="true">·</span><span className="workspace-reply-elapsed" aria-hidden="true">{seconds}초</span></span>;
 }
 
-function Composer({ conversation, reference, onClearReference, onEditReference, onDraftChange, onSendMessage, replyStartedAt, onRetryReply, onManageConsent, onOpenDocuments, onImportRoster, server }: ComposerProps & { server: boolean; reference: DraftReference | null; onClearReference: () => void; onEditReference: (text: string) => void }) {
+function Composer({ conversation, reference, onClearReference, onEditReference, onDraftChange, onSendMessage, replyStartedAt, onRetryReply, externalAIApproved, privacyNotice, onOpenDocuments, onImportRoster, server }: ComposerProps & { server: boolean; reference: DraftReference | null; onClearReference: () => void; onEditReference: (text: string) => void }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const busy = replyStartedAt != null;
   const editing = reference?.kind === "edit";
@@ -167,6 +167,7 @@ function Composer({ conversation, reference, onClearReference, onEditReference, 
     input.current?.focus();
   };
   return <footer className="workspace-composer-area">
+        {privacyNotice}
         {reference && <div className="workspace-composer-reference">
           <div className="workspace-message-quote"><strong>{editing ? "내 메시지 수정" : reference.source.sender === "assistant" ? "행사비서에게 답장" : "내 메시지에 답장"}</strong><span>{reference.source.text}</span></div>
           <button type="button" className="workspace-icon-button" aria-label={editing ? "수정 취소" : "답장 취소"} onClick={() => { onClearReference(); input.current?.focus(); }}><X size={16} aria-hidden="true" /></button>
@@ -180,9 +181,7 @@ function Composer({ conversation, reference, onClearReference, onEditReference, 
           }} />
           <button type="submit" className="workspace-send" aria-label={editing ? "수정하고 다시 보내기" : "전송"} title={editing ? "수정하고 다시 보내기" : "전송"} disabled={busy || !draft.trim()}><Send size={17} aria-hidden="true" /></button>
         </form>
-        <div className="workspace-composer-caption">{busy ? null : onManageConsent
-          ? <button type="button" className="workspace-consent-link" aria-label="OpenAI 전송 동의 관리" onClick={onManageConsent}><LockKeyhole size={12} aria-hidden="true" />외부 전송 동의됨</button>
-          : <span role="status">{server && <LockKeyhole size={12} aria-hidden="true" />}{server ? "첫 외부 전송 전 동의" : "화면 체험용 · 샘플 응답"}</span>}
+        <div className="workspace-composer-caption">{!busy && (!server || externalAIApproved !== undefined) && <span role="status">{server && <LockKeyhole size={12} aria-hidden="true" />}{!server ? "화면 체험용 · 샘플 응답" : externalAIApproved ? "외부 AI 허용됨" : "외부 AI 꺼짐"}</span>}
           {!busy && onRetryReply && <div><button type="button" className="workspace-start-button gap-2" onClick={onRetryReply}><RefreshCw size={14} aria-hidden="true" />답변 다시 요청</button></div>}
         </div>
       </footer>;
@@ -190,19 +189,32 @@ function Composer({ conversation, reference, onClearReference, onEditReference, 
 
 function MessageBody({ message, review }: { message: ChatMessage; review: ReactNode }) {
   if (message.sender === "assistant" && isDiningRecommendations(message.dining)) {
-    const { venue, checkedAt, restaurants } = message.dining;
+    const { kind, venue, checkedAt, restaurants, transportMode } = message.dining;
+    const attraction = kind === "attraction";
+    const title = attraction ? "주변 관광지 추천" : "주변 식당 추천";
+    const modes = { walking: "도보", driving: "차량", transit: "대중교통" } as const;
+    const notation = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 });
     const checked = new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(checkedAt));
-    return <section className="workspace-plan workspace-dining" aria-label="주변 식당 추천">
-      <div className="workspace-plan-heading"><span className="workspace-plan-icon"><Utensils size={17} aria-hidden="true" /></span><h3>주변 식당 추천</h3><span className="workspace-plan-state">웹 검색</span></div>
+    return <section className="workspace-plan workspace-dining" aria-label={title}>
+      <div className="workspace-plan-heading"><span className="workspace-plan-icon">{attraction ? <MapPin size={17} aria-hidden="true" /> : <Utensils size={17} aria-hidden="true" />}</span><h3>{title}</h3><span className="workspace-plan-state">웹 검색</span></div>
       <p className="workspace-message-text">{message.text}</p>
       <ol className="workspace-dining-list">{restaurants.map((restaurant, index) => <li key={restaurant.name}>
         <h4><span>{index + 1}순위</span>{restaurant.name}</h4>
         <p>{restaurant.reason}</p>
-        <p className="workspace-dining-facts"><strong>영업</strong> {restaurant.hours}</p>
+        {restaurant.address && <p className="workspace-dining-facts"><strong>주소</strong> {restaurant.address}</p>}
+        <p className="workspace-dining-facts"><strong>{attraction ? "운영시간" : "영업시간"}</strong> {restaurant.hours}</p>
+        {kind && <>
+          <p className="workspace-dining-facts"><strong>휴무</strong> {restaurant.closures ?? "미확인"}</p>
+          <p className="workspace-dining-facts"><strong>{attraction ? "볼거리·체험" : "추천 메뉴"}</strong> {restaurant.feature ? <>{restaurant.feature.text} <a href={restaurant.feature.source.url} target="_blank" rel="noopener noreferrer">출처</a></> : "미확인"}</p>
+          <p className="workspace-dining-facts"><strong>숙소에서 이동</strong> {restaurant.route ? <>
+            {modes[restaurant.route.mode]} · {restaurant.route.distanceKm === null ? "거리 미확인" : `${notation.format(restaurant.route.distanceKm)}km`} · {restaurant.route.durationMinutes === null ? "시간 미확인" : `약 ${restaurant.route.durationMinutes}분`} <a href={restaurant.route.source.url} target="_blank" rel="noopener noreferrer">경로 출처</a>
+          </> : "거리·소요 시간 미확인"}</p>
+        </>}
         <p className="workspace-dining-facts"><strong>평점</strong>{restaurant.rating ? <> {restaurant.rating.value}/5 · {restaurant.rating.count ? `리뷰 ${restaurant.rating.count.toLocaleString("ko-KR")}개` : "리뷰 수 미확인"} <a href={restaurant.rating.source.url} target="_blank" rel="noopener noreferrer">평점 출처</a></> : " 확인되지 않음"}</p>
         <div className="workspace-dining-links">
-          <a href={diningMapUrl(restaurant.name, venue)} target="_blank" rel="noopener noreferrer"><MapPin size={14} aria-hidden="true" /> 지도에서 찾기</a>
-          {restaurant.sources.map((source, index) => <a key={source.url} href={source.url} title={source.label} target="_blank" rel="noopener noreferrer"><ExternalLink size={13} aria-hidden="true" />{index === 0 ? "영업 출처" : `추가 출처 ${index}`}</a>)}
+          <a href={diningMapUrl(restaurant.name, venue, restaurant.address)} target="_blank" rel="noopener noreferrer"><MapPin size={14} aria-hidden="true" /> 지도에서 찾기</a>
+          <a href={nearbyDirectionsUrl(venue, restaurant.name, restaurant.address, restaurant.route?.mode ?? transportMode)} target="_blank" rel="noopener noreferrer"><MapPin size={14} aria-hidden="true" />숙소에서 길찾기</a>
+          {restaurant.sources.map((source, index) => <a key={source.url} href={source.url} title={source.label} target="_blank" rel="noopener noreferrer"><ExternalLink size={13} aria-hidden="true" />{index === 0 ? attraction ? "운영 출처" : "영업 출처" : `추가 출처 ${index}`}</a>)}
         </div>
       </li>)}</ol>
       <p className="workspace-dining-checked">검색 {checked} (한국 시각) · 영업시간이 바뀔 수 있으니 출발 전 확인하세요.</p>
