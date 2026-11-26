@@ -10,7 +10,7 @@ import { isTransportSurvey } from "../transport-survey";
 import { isLodgingPlan } from "../lodging-plan";
 import { isTimetable } from "../timetable";
 import { isAdvisorPresentation } from "../chat-advisor";
-import { isDiningRecommendations } from "../chat-dining";
+import { isDiningRecommendations, isNearbyTask } from "../chat-dining";
 import { ApiError } from "./http";
 import { internalChatAction } from "../assistant-privacy";
 
@@ -33,6 +33,7 @@ function validConversationMessages(value: unknown) {
     if (m.actions !== undefined && (!Array.isArray(m.actions) || m.actions.length > 20 || !m.actions.every((a: unknown) => text(a, 100)))) return false;
     if (m.advisor !== undefined && (m.sender !== "assistant" || !isAdvisorPresentation(m.advisor))) return false;
     if (m.dining !== undefined && (m.sender !== "assistant" || !isDiningRecommendations(m.dining))) return false;
+    if (m.nearbyTask !== undefined && (m.sender !== "assistant" || !isNearbyTask(m.nearbyTask))) return false;
     if (m.replyElapsedMs !== undefined && (m.sender !== "assistant" || !Number.isSafeInteger(m.replyElapsedMs) || m.replyElapsedMs < 0)) return false;
     if (m.reference !== undefined) {
       if (m.sender !== "user" || !object(m.reference) || Object.keys(m.reference).length !== 2 || !id(m.reference.messageId)) return false;

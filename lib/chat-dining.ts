@@ -1,15 +1,22 @@
 import { validDate } from "./room-timing";
+import type { VisitBasis } from "./chat-continuity";
 
 export type DiningSource = { url: string; label: string };
 export type NearbyKind = "restaurant" | "attraction";
 export const nearbyRouteModes = ["walking", "driving", "transit"] as const;
 export type NearbyRouteMode = typeof nearbyRouteModes[number];
+export type NearbyVisit = {
+  date: string | null; basis: VisitBasis; visitTime: string | null; meal: string | null; assumedMeal: boolean;
+  groupBand: string | null; people: number | null; transport: NearbyRouteMode | null;
+  cuisine: string[]; interests: string[]; excludedCuisine: string[]; budgetPerPerson: number | null;
+};
+export type NearbyTask = { kind: NearbyKind; visit: NearbyVisit | null; origin: "saved" | "hypothetical" | "unverified"; venueName?: string; temporaryResult?: true };
 export type NearbyRoute = { mode: NearbyRouteMode; distanceKm: number | null; durationMinutes: number | null; source: DiningSource };
 export type DiningRestaurant = {
   name: string; reason: string; hours: string; rating: { value: number; count: number | null; source: DiningSource } | null; sources: DiningSource[];
   address?: string | null; closures?: string | null; feature?: { text: string; source: DiningSource } | null; route?: NearbyRoute | null;
 };
-export type DiningRecommendations = { kind?: NearbyKind; date: string; visitTime: string; checkedAt: string; venue: string; restaurants: DiningRestaurant[]; transportMode?: NearbyRouteMode | null };
+export type DiningRecommendations = { kind?: NearbyKind; date: string | null; visitTime: string | null; checkedAt: string; venue: string; restaurants: DiningRestaurant[]; transportMode?: NearbyRouteMode | null };
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 export const diningLine = (value: unknown, limit: number): value is string => typeof value === "string" && !!value.trim() && value.length <= limit && !/[\x00-\x1f\x7f]/.test(value);
@@ -35,9 +42,28 @@ export const isNearbyDuration = (value: unknown): value is number => typeof valu
 const validRoute = (value: unknown) => record(value) && isNearbyRouteMode(value.mode) && source(value.source)
   && (value.distanceKm === null || isNearbyDistance(value.distanceKm)) && (value.durationMinutes === null || isNearbyDuration(value.durationMinutes))
   && (value.distanceKm !== null || value.durationMinutes !== null);
+const nullableDate = (value: unknown) => value === null || typeof value === "string" && validDate(value);
+const nullableInteger = (value: unknown, max: number) => value === null || typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= max;
+const terms = (values: unknown) => Array.isArray(values) && values.length <= 15 && values.every(value => diningLine(value, 15));
+
+export function isNearbyTask(value: unknown): value is NearbyTask {
+  if (!record(value) || !(value.kind === "restaurant" || value.kind === "attraction")
+    || !(value.origin === "saved" || value.origin === "hypothetical" || value.origin === "unverified")
+    || (value.temporaryResult !== undefined && value.temporaryResult !== true)
+    || (value.origin === "hypothetical" ? !diningLine(value.venueName, 100) : value.venueName !== undefined)) return false;
+  const visit = value.visit;
+  return visit === null || record(visit) && record(visit.basis) && nullableDate(visit.date) && visit.basis.date === visit.date
+    && ["explicit", "now", "event", "undecided"].includes(String(visit.basis.origin))
+    && (visit.basis.eventDay === undefined || visit.basis.eventDay === -1 || typeof visit.basis.eventDay === "number"
+      && Number.isInteger(visit.basis.eventDay) && visit.basis.eventDay >= 0 && visit.basis.eventDay <= 99)
+    && (visit.visitTime === null || diningClock(visit.visitTime)) && (visit.meal === null || diningLine(visit.meal, 10))
+    && typeof visit.assumedMeal === "boolean" && (visit.groupBand === null || diningLine(visit.groupBand, 24))
+    && nullableInteger(visit.people, 999) && (visit.transport === null || isNearbyRouteMode(visit.transport))
+    && terms(visit.cuisine) && terms(visit.interests) && terms(visit.excludedCuisine) && nullableInteger(visit.budgetPerPerson, 1_000_000);
+}
 
 export function isDiningRecommendations(value: unknown): value is DiningRecommendations {
-  return record(value) && typeof value.date === "string" && validDate(value.date) && diningClock(value.visitTime)
+  return record(value) && nullableDate(value.date) && (value.visitTime === null || diningClock(value.visitTime))
     && diningLine(value.checkedAt, 24) && Number.isFinite(Date.parse(value.checkedAt)) && diningLine(value.venue, 100)
     && (value.kind === undefined || value.kind === "restaurant" || value.kind === "attraction")
     && (value.transportMode == null || isNearbyRouteMode(value.transportMode))
