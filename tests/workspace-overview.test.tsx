@@ -15,7 +15,7 @@ it("keeps the next event visible even after two timed events earlier today have 
   render(<WorkspaceOverview event={{ name: "가상 행사", period: "2026.11.22", status: "진행 중" }} scope={null} calendar={{ state: "ready", items: [
     event("early", "오전 일정", "09:00", "10:00"), event("noon", "점심 일정", "12:00"),
     event("current", "진행 중인 일정", "15:00", "16:00"), event("next", "저녁 일정", "19:00"),
-  ] }} onCalendar={vi.fn()} onChecklist={vi.fn()} onEvent={vi.fn()} />);
+  ] }} onCalendar={vi.fn()} onEvent={vi.fn()} />);
   expect(screen.queryByText("오전 일정")).toBeNull();
   expect(screen.queryByText("점심 일정")).toBeNull();
   expect(screen.getByText("진행 중인 일정")).toBeDefined();

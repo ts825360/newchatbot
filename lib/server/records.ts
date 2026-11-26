@@ -9,7 +9,7 @@ import { profileFor, requirePermission, type Actor } from "./auth";
 import { ApiError } from "./http";
 import { id, object, text, validateRecord } from "./record-schema";
 import { conversationHistoryKey, privateToolKey, privateToolKinds, type ConversationScope, type PrivateToolKind } from "../conversation-scope";
-import { canonicalConversationHistory, canonicalPrivateTool, conversationIds, requireOwnedConversation } from "./conversation-scope";
+import { canonicalConversationHistory, canonicalPrivateTool, conversationIds, preparationProgressKey, requireOwnedConversation } from "./conversation-scope";
 
 type Location = { canonical: string; kind: string; ownerId: string | null; roomId: string | null; scope?: ConversationScope };
 const catalogKey = (actor: Actor) => `church-planner-room-catalog-v1:${actor.id}`;
@@ -113,7 +113,7 @@ function saveCatalog(actor: Actor, value: unknown, db: DatabaseSync) {
 }
 
 function permissionFor(kind: string): Permission | null {
-  return ({ documents: "uploadDocument", checklist: "editChecklist", events: "editEvent", decisions: "editChecklist", risks: "editChecklist", transport: "editChecklist", conversations: "chat", location: "chat" } as Record<string, Permission>)[kind] ?? null;
+  return ({ documents: "uploadDocument", checklist: "editChecklist", events: "editEvent", decisions: "editChecklist", risks: "editChecklist", transport: "editChecklist", conversations: "chat", location: "chat", timetable: "editChecklist" } as Record<string, Permission>)[kind] ?? null;
 }
 function sameFile(row: any, file: any) { return row && row.name === file.name && Number(row.size) === file.size && row.mime === file.type; }
 function saveRecord(actor: Actor, location: Location, value: any, db: DatabaseSync) {
@@ -149,6 +149,7 @@ function saveRecord(actor: Actor, location: Location, value: any, db: DatabaseSy
       if (remaining.has(conversationId)) continue;
       const scope = { accountId: actor.id, roomId: location.roomId!, conversationId };
       for (const kind of privateToolKinds) db.prepare("DELETE FROM records WHERE key=? AND owner_id=?").run(canonicalPrivateTool(scope, kind), actor.id);
+      db.prepare("DELETE FROM records WHERE key=? AND owner_id=?").run(preparationProgressKey(scope), actor.id);
       db.prepare("DELETE FROM conversation_files WHERE owner_id=? AND room_id=? AND conversation_id=?").run(actor.id, scope.roomId, conversationId);
     }
   }

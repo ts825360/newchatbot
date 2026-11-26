@@ -8,6 +8,7 @@ import { isTransportResult, validateTransportInput, validateTransportResult } fr
 import { isTransportComparison } from "../transport-comparison";
 import { isTransportSurvey } from "../transport-survey";
 import { isLodgingPlan } from "../lodging-plan";
+import { isTimetable } from "../timetable";
 import { isAdvisorPresentation } from "../chat-advisor";
 import { ApiError } from "./http";
 
@@ -30,6 +31,7 @@ export function validateRecord(kind: string, value: unknown): void {
     case "checklist": valid = object(value) && value.version === 1 && items(value.items, checklistValid); break;
     case "events": valid = object(value) && value.version === 1 && items(value.items, eventValid); break;
     case "location": valid = isConversationPlaceRecord(value); break;
+    case "timetable": valid = isTimetable(value); break;
     case "decisions": valid = object(value) && value.version === 1 && items(value.items, (v) => ["pending", "accepted", "deferred", "excluded"].includes(v.status) && text(v.reason, 300, v.status !== "excluded") && (v.title === undefined || text(v.title, 120, true)) && (v.date === undefined || v.date === "" || validDate(v.date))); break;
     case "risks": valid = object(value) && value.version === 1 && items(value.items, (v) => ["title", "detail", "action"].every((k) => text(v[k], 1000)) && typeof v.resolved === "boolean"); break;
     case "categories": valid = items(value, (v) => text(v.name, 20) && Array.isArray(v.roomIds) && v.roomIds.length <= 500 && v.roomIds.every(id) && new Set(v.roomIds).size === v.roomIds.length, 50); break;

@@ -1,0 +1,6 @@
+services:
+  app:
+    environment:
+      AI_PROVIDER: openai
+      OPENAI_API_KEY: "${OPENAI_API_KEY:?OPENAI_API_KEY is required when starting with compose.openai.yaml}"
+      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-6-luna}"

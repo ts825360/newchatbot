@@ -30,7 +30,7 @@ RUN apt-get update \
 FROM runtime-base AS runtime
 RUN --mount=type=bind,from=transport-wheels,target=/wheels \
     if test -f /wheels/transport-lock.txt; then \
-      grep -F "$(sed -n '/^ortools==/p' requirements-transport.txt) --hash=sha256:" /wheels/transport-lock.txt >/dev/null || exit 1; \
+      grep -F "$(tr -d '\r' < requirements-transport.txt | sed -n '/^ortools==/p') --hash=sha256:" /wheels/transport-lock.txt >/dev/null || exit 1; \
       set -- --no-index --find-links=/wheels --require-hashes -r /wheels/transport-lock.txt; \
     else set -- --timeout=120 --retries=3 -r requirements-transport.txt; fi; \
     .local/transport-venv/bin/pip install --no-cache-dir --only-binary=:all: "$@"

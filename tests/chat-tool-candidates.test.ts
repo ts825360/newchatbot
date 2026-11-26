@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { buildChatChecklist, chatProposalCandidates, mergeChatRoster, parseChatRoster } from "@/lib/chat-tool-candidates";
+import { buildChatChecklist, chatProposalCandidates, isPreparationStatusChat, mergeChatRoster, parseChatRoster } from "@/lib/chat-tool-candidates";
 import { createTransportDraft } from "@/lib/transport";
 
 const scope = { accountId: "one", roomId: "room", conversationId: "talk" };
 
 describe("chat tool candidates", () => {
+  it("reads actual progress requests locally without intercepting prompt questions and hypothetical plans", () => {
+    for (const text of ["지금까지 진행된 진행도에 대해서 알려줘", "지금 준비 현황 좀 보여줘", "준비는 지금 어디까지 됐어?"]) expect(isPreparationStatusChat(text)).toBe(true);
+    for (const text of ["준비 진행도 계산 방법 알려줘", "가상의 행사 준비 상태를 어떻게 설명하는지 알려줘", "준비할 것들을 알려줘"]) expect(isPreparationStatusChat(text)).toBe(false);
+  });
   it("opens a stable checklist draft without inferring a relative deadline", () => {
     const text = "준비 항목: 안내문 작성\n담당자: 안내팀\n마감: 내일";
     const draft = buildChatChecklist(scope, { id: "message", text });

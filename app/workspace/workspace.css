@@ -102,13 +102,12 @@
 .overview-progress progress::-moz-progress-bar { background: hsl(var(--primary)); border-radius: 4px; }
 .overview-records { display: grid; margin-top: 6px; }
 .overview-records li + li { border-top: 1px solid hsl(var(--border) / .78); }
-.overview-event, .overview-task { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 2px; text-align: start; }
+.overview-event { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 2px; text-align: start; }
 .overview-event { border-radius: var(--control-radius); }
 .overview-event:hover { background: hsl(var(--surface-input)); }
 .overview-day { display: grid; place-content: center; flex: none; width: 36px; min-height: 42px; border-radius: 7px; background: hsl(var(--selection)); color: hsl(var(--primary)); text-align: center; font-variant-numeric: tabular-nums; line-height: 1.15; }
 .overview-day span { font-size: 10px; }
 .overview-day b { font-size: 16px; }
-.overview-task > svg { flex: none; color: hsl(var(--muted-foreground)); }
 .overview-record-label { flex: 1; min-width: 0; }
 .overview-records strong, .overview-records small { display: block; overflow-wrap: anywhere; word-break: keep-all; }
 .overview-records strong { font-size: 14px; font-weight: 650; line-height: 1.45; }
@@ -158,20 +157,19 @@
 .workspace-chat-progress:hover { background: hsl(var(--muted)); }
 .workspace-progress-review:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }
 .workspace-progress-review .overview-progress-number { font-size: 18px; color: hsl(var(--foreground)); font-variant-numeric: tabular-nums; }
-.workspace-progress-review .overview-progress { margin-block: 9px 13px; }
-.workspace-progress-review .overview-progress progress { height: 8px; }
-.workspace-progress-review .overview-checklist > header { gap: 2px 8px; margin-block-start: 6px; }
-.workspace-progress-review .overview-checklist h3 { flex-wrap: wrap; font-size: 13px; }
-.overview-checklist h3 small { color: hsl(var(--muted-foreground)); font-size: 11px; font-weight: 550; }
-.overview-checklist-rows .overview-task { padding: 7px 6px; }
-.overview-checklist-rows .overview-task[data-next="true"] { background: hsl(var(--selection)); border-radius: 6px; }
-.overview-checklist-rows .overview-task[data-done="true"] > svg { color: hsl(var(--positive)); }
+.workspace-progress-review .overview-progress { display: grid; gap: 5px; margin-block: 9px 13px; }
+.workspace-progress-review .overview-progress progress { width: 100%; height: 8px; }
+.overview-progress-basis { margin: 0; line-height: 1.5; }
 .overview-review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: flex-start; gap: 4px 10px; margin-top: 7px; }
 .overview-review-actions details { flex: 1 1 160px; min-width: 0; }
 .overview-review-actions summary { min-height: 30px; padding-block: 6px; font-size: 13px; color: hsl(var(--muted-foreground)); cursor: pointer; }
 .workspace-messages { flex: 1; min-height: 0; overflow: auto; padding: 24px var(--reading-gutter) var(--space-5); scrollbar-width: thin; overscroll-behavior: contain; }
 .workspace-message-list { display: flex; flex-direction: column; gap: 26px; }
 .workspace-message { display: grid; grid-template-columns: 38px minmax(0,1fr); align-items: start; gap: 12px; min-width: 0; font-size: 15px; line-height: 1.65; word-break: keep-all; }
+.workspace-message.from-user { grid-template-columns: minmax(0,1fr) 38px; }
+.from-user .workspace-message-avatar { grid-area: 1 / 2; }
+.from-user .workspace-message-content { grid-area: 1 / 1; justify-self: end; max-width: min(100%, 68ch); }
+.from-user :is(.workspace-message-actions, .workspace-message-meta) { justify-content: flex-end; }
 .workspace-message-avatar { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: hsl(var(--selection)); color: hsl(var(--primary)); }
 .from-assistant .workspace-message-avatar { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
 .workspace-message-content { min-width: 0; }
@@ -181,7 +179,7 @@
 .workspace-message-meta { display: flex; align-items: baseline; gap: 4px 9px; flex-wrap: wrap; margin: 0 0 5px; font-size: 12px; line-height: 21px; color: hsl(var(--muted-foreground)); }
 .workspace-message-meta strong { font-size: 14px; font-weight: 750; color: hsl(var(--foreground)); }
 .workspace-message-text { max-width: 68ch; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.from-user .workspace-message-text { width: fit-content; max-width: min(100%, 68ch); padding: 9px 13px; border-radius: var(--card-radius); background: hsl(var(--selection)); }
+.from-user .workspace-message-text { width: fit-content; max-width: 100%; margin-inline-start: auto; padding: 9px 13px; border-radius: var(--card-radius); background: hsl(var(--selection)); }
 .workspace-plan { max-width: 900px; padding: 16px 17px 12px; border: 1px solid hsl(var(--border)); border-radius: var(--card-radius); overflow-wrap: anywhere; box-shadow: var(--shadow-raised); }
 .workspace-plan-heading { display: flex; align-items: center; gap: 7px 10px; flex-wrap: wrap; margin-bottom: 9px; }
 .workspace-plan-heading h3 { margin: 0; flex: 1; min-width: min(100%, 8ch); font-size: 17px; font-weight: 750; line-height: 1.4; }
@@ -240,6 +238,8 @@
 .workspace-send:disabled { cursor: not-allowed; background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
 .workspace-composer-caption { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; margin-top: 6px; padding-inline: 3px; font-size: 12px; color: hsl(var(--muted-foreground)); }
 .workspace-composer-caption > span { display: inline-flex; align-items: center; gap: 5px; }
+.workspace-consent-link { display: inline-flex; align-items: center; gap: 5px; padding: 2px; }
+.workspace-consent-link:hover { text-decoration: underline; }
 .workspace-documents, .workspace-location, .workspace-proposals { flex: 1; min-height: 0; min-width: 0; overflow: auto; }
 .retreat-review { flex: 1; min-height: 0; min-width: 0; overflow: auto; padding: 16px; font-size: 13px; overflow-wrap: anywhere; }
 .retreat-review-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-bottom: 12px; }
@@ -338,6 +338,7 @@
   .workspace-messages { padding-block-start: 17px; }
   .workspace-message-list { gap: 20px; }
   .workspace-message { grid-template-columns: 30px minmax(0,1fr); gap: 8px; }
+  .workspace-message.from-user { grid-template-columns: minmax(0,1fr) 30px; }
   .workspace-message-avatar { width: 30px; height: 30px; }
   .workspace-plan { padding: 10px; }
   .workspace-plan-heading h3 { font-size: 15px; }

@@ -1,4 +1,4 @@
-import { CalendarDays, ChevronRight, Circle, CircleCheck, ListChecks, MapPin } from "lucide-react";
+import { CalendarDays, ChevronRight, MapPin } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { dataStorage } from "@/lib/backend-client";
 import { readConversationPlaces } from "@/lib/conversation-places";
@@ -6,18 +6,12 @@ import { privateToolKey, type ConversationScope } from "@/lib/conversation-scope
 import { calendarStatusDisplay, normalizeCalendarStatus } from "@/lib/calendar-status";
 import { normalizeCalendarTime, resolveCalendarHours, storedCalendarHours } from "@/lib/calendar-time";
 import { koreaDate } from "@/lib/devotions";
-import type { CalendarEvent, ChecklistItem } from "@/lib/types";
+import type { CalendarEvent } from "@/lib/types";
 import { Badge } from "./ui";
 import { WorkspaceBrandMark } from "./workspace-brand-mark";
 
-type Preview<T> = { state: "ready"; items: readonly T[] } | { state: "loading" | "error" | "noConversation" };
-export type WorkspaceOverviewData = { calendar?: Preview<CalendarEvent>; checklist?: Preview<ChecklistItem>; onEvent: (id: string) => void };
-const statusCopy = {
-  risk: { label: "누락 위험", tone: "red", order: 0 },
-  needsReview: { label: "확인 필요", tone: "amber", order: 1 },
-  inProgress: { label: "진행 중", tone: "blue", order: 2 },
-  done: { label: "완료", tone: "green", order: 3 },
-} as const;
+type CalendarPreview = { state: "ready"; items: readonly CalendarEvent[] } | { state: "loading" | "error" };
+export type WorkspaceOverviewData = { calendar?: CalendarPreview; onEvent: (id: string) => void };
 const byDate = (left: string, right: string) => left.localeCompare(right);
 const dateLabel = (value: string) => value.replaceAll("-", ".");
 function stillUpcoming(event: CalendarEvent, today: string, now: Date) {
@@ -27,12 +21,11 @@ function stillUpcoming(event: CalendarEvent, today: string, now: Date) {
   return !hours || hours.nextDay || Date.parse(`${event.date}T${hours.end}:00+09:00`) > now.getTime();
 }
 
-export function WorkspaceOverview({ event, scope, calendar, checklist, onCalendar, onChecklist, onEvent, renderProgress }: WorkspaceOverviewData & {
+export function WorkspaceOverview({ event, scope, calendar, onCalendar, onEvent, progress }: WorkspaceOverviewData & {
   event: { name: string; period: string; status: string };
   scope: ConversationScope | null;
   onCalendar: () => void;
-  onChecklist: () => void;
-  renderProgress?: (checklist: ReactNode) => ReactNode;
+  progress?: ReactNode;
 }) {
   const now = new Date();
   const today = koreaDate(now);
@@ -40,23 +33,6 @@ export function WorkspaceOverview({ event, scope, calendar, checklist, onCalenda
     ? calendar.items.filter(item => stillUpcoming(item, today, now))
       .sort((a, b) => byDate(a.date, b.date) || byDate(normalizeCalendarTime(a.time) || "24:00", normalizeCalendarTime(b.time) || "24:00"))
     : [];
-  const unfinished = checklist?.state === "ready" ? checklist.items.filter(item => item.status !== "done")
-    .sort((a, b) => statusCopy[a.status].order - statusCopy[b.status].order || byDate(a.due || "9999", b.due || "9999")) : [];
-  const taskCount = checklist?.state === "ready" ? checklist.items.length : 0;
-  const done = checklist?.state === "ready" ? checklist.items.filter(item => item.status === "done") : [];
-  const visibleTasks = [...done.slice(0, unfinished.length ? 2 : 5), ...unfinished].slice(0, 5);
-
-  const checklistPreview = checklist && <section className="overview-checklist" aria-label="이 대화의 준비">
-    <header><h3>{!renderProgress && <ListChecks size={18} aria-hidden="true" />}이 대화의 준비{taskCount > 0 && <small>{done.length} / {taskCount} 완료</small>}</h3>
-      <button type="button" className="overview-link" onClick={onChecklist}>체크리스트 보기<ChevronRight size={14} aria-hidden="true" /></button></header>
-    {checklist.state !== "ready" ? <p className="overview-empty" role="status">{checklist.state === "loading" ? "준비 항목을 불러오는 중…" : checklist.state === "noConversation" ? "대화를 선택하면 준비 항목을 볼 수 있어요." : "준비 항목을 불러오지 못했습니다."}</p>
-      : visibleTasks.length ? <ul className="overview-records overview-checklist-rows">{visibleTasks.map(item => <li className="overview-task" key={item.id} data-next={item.id === unfinished[0]?.id} data-done={item.status === "done"}>
-        {item.status === "done" ? <CircleCheck size={16} aria-hidden="true" /> : <Circle size={16} aria-hidden="true" />}
-        <span className="overview-record-label"><strong>{item.title}</strong>{item.due && <small>마감 <time dateTime={item.due}>{dateLabel(item.due)}</time></small>}</span>
-        <Badge tone={statusCopy[item.status].tone}>{statusCopy[item.status].label}</Badge>
-      </li>)}</ul> : <p className="overview-empty">등록된 준비 항목이 없어요.</p>}
-  </section>;
-
   const calendarSection = calendar && <section aria-label="공동 캘린더">
         <header><h3><CalendarDays size={18} aria-hidden="true" />다가오는 일정</h3>
           <button type="button" className="overview-link" onClick={onCalendar}>전체 일정 보기<ChevronRight size={14} aria-hidden="true" /></button></header>
@@ -77,7 +53,7 @@ export function WorkspaceOverview({ event, scope, calendar, checklist, onCalenda
         <p><CalendarDays size={15} aria-hidden="true" />{event.period || "일정 미정"}{event.period && <Badge tone="neutral">{event.status}</Badge>}</p>
         {scope && <OverviewLocation key={privateToolKey(scope, "location")} recordKey={privateToolKey(scope, "location")} />}
       </section>
-      {renderProgress ? renderProgress(checklistPreview) : checklistPreview}
+      {progress}
       {calendarSection}
   </div>;
 }

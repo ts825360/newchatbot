@@ -27,11 +27,12 @@ type ComposerProps = {
   conversation: Conversation | null;
   onDraftChange: (text: string) => void; onSendMessage: (text: string) => void;
   busy?: boolean; onRetryReply?: () => void;
+  onManageConsent?: () => void;
   onOpenDocuments: () => void;
   onImportRoster?: (source: ChatRosterSource) => void;
 };
 
-export function ChatPanel({ conversation, visible = true, onDraftChange, onSendMessage, busy, onRetryReply, onNewConversation, onOpenDocuments, shortcuts, progress, ...actions }:
+export function ChatPanel({ conversation, visible = true, onDraftChange, onSendMessage, busy, onRetryReply, onManageConsent, onNewConversation, onOpenDocuments, shortcuts, progress, ...actions }:
   ComposerProps & TurnActions & { visible?: boolean; onNewConversation: () => void; shortcuts?: ReactNode; progress?: ReactNode }) {
   const scroll = useRef<HTMLDivElement>(null);
   const lastScrolled = useRef<{ id?: string; count?: number }>({});
@@ -56,7 +57,7 @@ export function ChatPanel({ conversation, visible = true, onDraftChange, onSendM
         {conversation ? shortcuts : <button type="button" className="workspace-start-button" onClick={onNewConversation}>새 대화 만들기</button>}
       </div>}
     </div>
-    <Composer conversation={conversation} onDraftChange={onDraftChange} onSendMessage={onSendMessage} busy={busy} onRetryReply={onRetryReply} onOpenDocuments={onOpenDocuments} onImportRoster={actions.onImportRoster} server={server} />
+    <Composer conversation={conversation} onDraftChange={onDraftChange} onSendMessage={onSendMessage} busy={busy} onRetryReply={onRetryReply} onManageConsent={onManageConsent} onOpenDocuments={onOpenDocuments} onImportRoster={actions.onImportRoster} server={server} />
   </section>;
 }
 
@@ -86,7 +87,7 @@ function MessageTurn({ message, previous, server, actions }: { message: ChatMess
   </article>;
 }
 
-function Composer({ conversation, onDraftChange, onSendMessage, busy, onRetryReply, onOpenDocuments, onImportRoster, server }: ComposerProps & { server: boolean }) {
+function Composer({ conversation, onDraftChange, onSendMessage, busy, onRetryReply, onManageConsent, onOpenDocuments, onImportRoster, server }: ComposerProps & { server: boolean }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const send = () => {
     const value = conversation?.draft.trim();
@@ -104,7 +105,9 @@ function Composer({ conversation, onDraftChange, onSendMessage, busy, onRetryRep
           }} />
           <button type="submit" className="workspace-send" aria-label="전송" title="전송" disabled={busy || !conversation?.draft.trim()}><Send size={17} aria-hidden="true" /></button>
         </form>
-        <div className="workspace-composer-caption"><span role="status">{server && !busy && <LockKeyhole size={12} aria-hidden="true" />}{busy ? "답변 작성 중…" : server ? "외부 전송 전 확인" : "화면 체험용 · 샘플 응답"}</span>
+        <div className="workspace-composer-caption">{!busy && onManageConsent
+          ? <button type="button" className="workspace-consent-link" aria-label="OpenAI 전송 동의 관리" onClick={onManageConsent}><LockKeyhole size={12} aria-hidden="true" />외부 전송 동의됨</button>
+          : <span role="status">{server && !busy && <LockKeyhole size={12} aria-hidden="true" />}{busy ? "답변 작성 중…" : server ? "첫 외부 전송 전 동의" : "화면 체험용 · 샘플 응답"}</span>}
           {!busy && onRetryReply && <div><button type="button" className="workspace-start-button gap-2" onClick={onRetryReply}><RefreshCw size={14} aria-hidden="true" />답변 다시 요청</button></div>}
         </div>
       </footer>;

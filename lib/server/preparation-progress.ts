@@ -2,13 +2,13 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { normalizeCalendarStatus } from "../calendar-status";
 import type { ConversationScope, PrivateToolKind } from "../conversation-scope";
-import { preparationProgressConsent, type PreparationProgress } from "../preparation-progress";
+import { preparationProgressConsent, type PreparationProgress, type SavedPreparationProgress } from "../preparation-progress";
 import { retreatReviewAccountHeader, retreatReviewPermissions } from "../retreat-preparation";
 import { validDate } from "../room-timing";
 import type { CalendarEvent, ChecklistItem } from "../types";
 import { requirePermission, requireUser, type Actor } from "./auth";
 import { generateOpenAIText } from "./chat-openai";
-import { canonicalPrivateTool, requireOwnedConversation } from "./conversation-scope";
+import { canonicalPrivateTool, preparationProgressKey, requireOwnedConversation } from "./conversation-scope";
 import { getDatabase } from "./database";
 import { ApiError, assertSameOrigin, errorResponse, json, readJson } from "./http";
 import { id, object, validateRecord } from "./record-schema";
@@ -18,6 +18,14 @@ let evaluating = false;
 const instructions = "Review anonymous event preparation evidence conservatively. Answer only ready, remaining, or uncertain. Return ready only if the evidence is substantial and shows no unresolved preparation. A final signoff alone is insufficient. Do not infer unrecorded approvals; return uncertain if the event scope or evidence coverage cannot be trusted. The percentage is decided by the server.";
 const modelFormat = { type: "json_schema", name: "preparation_verdict_v1", strict: true, schema: { type: "object", additionalProperties: false, required: ["verdict"], properties: { verdict: { type: "string", enum: ["ready", "remaining", "uncertain"] } } } };
 const pending = (...notes: string[]): PreparationProgress => ({ state: "pending", percent: null, notes });
+
+function requireReviewer(request: Request, db: DatabaseSync) {
+  assertSameOrigin(request);
+  const actor = requireUser(request, db);
+  if (request.headers.get(retreatReviewAccountHeader) !== actor.id) throw new ApiError(409, "접속 계정이 변경되었습니다. 다시 확인해 주세요.");
+  for (const permission of retreatReviewPermissions) requirePermission(actor, permission);
+  return actor;
+}
 
 function collect(db: DatabaseSync, actor: Actor, scope: ConversationScope) {
   requireOwnedConversation(db, scope);
@@ -55,28 +63,50 @@ function collect(db: DatabaseSync, actor: Actor, scope: ConversationScope) {
   if (unresolvedRisks) remaining.push(`해결하지 않은 위험 ${unresolvedRisks}개`);
   if (unresolvedDecisions) remaining.push(`결정하지 않은 제안 ${unresolvedDecisions}개`);
   if (unconfirmedRetreatFields) remaining.push(`확인이 필요한 수련회 준비 사항 ${unconfirmedRetreatFields}개`);
-  const signature = createHash("sha256").update(JSON.stringify([room, events, checklist, risks, decisions, ...(retreat ? [privateSource("location"), privateSource("transport")] : [])])).digest("hex");
+  const signature = createHash("sha256").update(JSON.stringify(["preparation-progress-v1", room, events, checklist, risks, decisions, ...(retreat ? [privateSource("location"), privateSource("transport")] : [])])).digest("hex");
   const evidence = { retreat: !!retreat, tasks: work.length, done: workDone, confirmedSchedules: confirmed, finalHumanReviewRecorded: signoff, unresolvedRisks, unresolvedDecisions, unconfirmedRetreatFields };
   return { remaining, missing, signature, evidence };
 }
 
+function saveReview(db: DatabaseSync, scope: ConversationScope, signature: string, report: PreparationProgress) {
+  db.prepare(`INSERT INTO records(key,owner_id,room_id,kind,data_json,updated_at) VALUES(?,?,?,'preparation-progress',?,?)
+    ON CONFLICT(key) DO UPDATE SET data_json=excluded.data_json,revision=revision+1,updated_at=excluded.updated_at`)
+    .run(preparationProgressKey(scope), scope.accountId, scope.roomId, JSON.stringify({ signature, report }), new Date().toISOString());
+  return json(report);
+}
+
+export function readPreparationProgress(request: Request, database?: DatabaseSync): Response {
+  try {
+    const db = database ?? getDatabase();
+    const actor = requireReviewer(request, db);
+    const params = new URL(request.url).searchParams;
+    const roomId = params.get("roomId"), conversationId = params.get("conversationId");
+    if (!id(roomId) || !id(conversationId)) throw new ApiError(400, "검토할 대화를 확인해 주세요.");
+    const scope = { accountId: actor.id, roomId, conversationId };
+    requireOwnedConversation(db, scope);
+    const row = db.prepare("SELECT data_json FROM records WHERE key=? AND kind='preparation-progress' AND owner_id=? AND room_id=?")
+      .get(preparationProgressKey(scope), actor.id, roomId);
+    const saved = row ? JSON.parse(String(row.data_json)) as { signature: string; report: PreparationProgress } : null;
+    const stale = saved !== null && saved.signature !== collect(db, actor, scope).signature;
+    return json({ report: stale ? null : saved?.report ?? null, stale } satisfies SavedPreparationProgress);
+  } catch (cause) { return errorResponse(cause); }
+}
+
 export async function handlePreparationProgress(request: Request, database?: DatabaseSync): Promise<Response> {
   try {
-    assertSameOrigin(request);
     const db = database ?? getDatabase();
-    const actor = requireUser(request, db);
-    if (request.headers.get(retreatReviewAccountHeader) !== actor.id) throw new ApiError(409, "접속 계정이 변경되었습니다. 다시 확인해 주세요.");
-    for (const permission of retreatReviewPermissions) requirePermission(actor, permission);
+    const actor = requireReviewer(request, db);
     const body = await readJson(request, 4096);
     if (!object(body) || Object.keys(body).some(key => !["roomId", "conversationId", "consent"].includes(key)) || !id(body.roomId) || !id(body.conversationId)) throw new ApiError(400, "검토할 대화를 확인해 주세요.");
     if (body.consent !== preparationProgressConsent) throw new ApiError(423, "모델에 보낼 항목을 먼저 확인해 주세요.");
     const scope = { accountId: actor.id, roomId: body.roomId, conversationId: body.conversationId };
     const { remaining, missing, signature, evidence } = collect(db, actor, scope);
+    const save = (report: PreparationProgress) => saveReview(db, scope, signature, report);
     if (remaining.length) {
       const percent = evidence.done < evidence.tasks ? Math.floor(evidence.done * 100 / evidence.tasks) : null;
-      return json({ state: "remaining", percent, notes: [...remaining, ...missing] } satisfies PreparationProgress);
+      return save({ state: "remaining", percent, notes: [...remaining, ...missing] });
     }
-    if (missing.length) return json(pending(...missing));
+    if (missing.length) return save(pending(...missing));
     if (evaluating) throw new ApiError(429, "다른 준비 검토가 진행 중입니다. 잠시 후 다시 시도해 주세요.");
     evaluating = true;
     try {
@@ -91,8 +121,9 @@ export async function handlePreparationProgress(request: Request, database?: Dat
       if (current.id !== actor.id || current.sessionVersion !== actor.sessionVersion) throw new ApiError(401, "다시 로그인해 주세요.");
       for (const permission of retreatReviewPermissions) requirePermission(current, permission);
       if (request.signal.aborted || collect(db, current, scope).signature !== signature) throw new ApiError(409, "검토 중 자료가 변경되었습니다. 다시 확인해 주세요.");
-      if (verdict === "ready") return json({ state: "ready", percent: 100, notes: ["저장된 준비 기록과 모델 검토에서 남은 항목을 찾지 못했습니다."] } satisfies PreparationProgress);
-      return json(pending(verdict === "remaining" ? "모델이 추가 확인을 권장했습니다." : "모델이 완료를 판단할 만큼 충분한 근거를 확인하지 못했습니다."));
+      if (verdict === "ready") return save({ state: "ready", percent: 100, notes: ["저장된 준비 기록과 모델 검토에서 남은 항목을 찾지 못했습니다."] });
+      if (verdict !== "remaining" && verdict !== "uncertain") return json(pending("모델 검토 결과를 확인하지 못했습니다. 다시 시도해 주세요."));
+      return save(pending(verdict === "remaining" ? "모델이 추가 확인을 권장했습니다." : "모델이 완료를 판단할 만큼 충분한 근거를 확인하지 못했습니다."));
     } finally { evaluating = false; }
   } catch (cause) { return errorResponse(cause); }
 }
