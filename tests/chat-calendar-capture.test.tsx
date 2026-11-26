@@ -41,6 +41,17 @@ beforeAll(() => {
 beforeEach(() => { sessionStorage.clear(); localStorage.clear(); vi.clearAllMocks(); access.permissions = null; backend.connected = false; backend.flush.mockResolvedValue(undefined); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
+function messageActions(sender: "user" | "assistant" = "user") {
+  const row = screen.getAllByRole("article").find(item => item.classList.contains(`from-${sender}`))!;
+  const options = within(row);
+  const trigger = options.getByRole("button", { name: "메시지 작업" });
+  if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
+  return options;
+}
+
+const addEvent = () => fireEvent.click(messageActions().getByRole("button", { name: "일정으로 추가" }));
+const addChecklist = () => fireEvent.click(messageActions().getByRole("button", { name: "준비 항목으로 추가" }));
+
 async function enterRoom(text = "2028년 2월 29일 오후 3시 개인 상담\n비공개 내용") {
   const auth = createBrowserAuth();
   await auth.signup({ inviteCode: "CHURCH-STAFF-2026", name: "담당자", username: "chat-calendar-owner", password: "DemoPass123!", confirmation: "DemoPass123!" });
@@ -58,9 +69,8 @@ it("opens a reviewed, private-safe editor without writing; repeated adds reopen 
   const { events } = await enterRoom();
   const initialCount = events.loadEvents().length;
   render(<PrototypeApp />);
-  const action = screen.getByRole("button", { name: "일정으로 추가" });
-  expect(action.title).toBe("일정으로 추가");
-  fireEvent.click(action);
+  expect(screen.queryByRole("button", { name: "일정으로 추가" })).toBeNull();
+  addEvent();
   expect(screen.getByRole("button", { name: "일정 닫기" })).toBeDefined();
   expect((screen.getByLabelText("날짜") as HTMLInputElement).value).toBe("2028-02-29");
   expect((screen.getByLabelText("시작 시간") as HTMLInputElement).value).toBe("15:00");
@@ -71,7 +81,7 @@ it("opens a reviewed, private-safe editor without writing; repeated adds reopen 
   const saved = events.loadEvents().find(event => event.title === "공유할 회의 제목")!;
   expect(saved.status).toBe("confirmed");
   expect(JSON.stringify(saved)).not.toContain("비공개");
-  fireEvent.click(action);
+  addEvent();
   expect(screen.getByRole("dialog", { name: "일정 상세 및 수정" })).toBeDefined();
   expect((screen.getByLabelText("일정 제목") as HTMLInputElement).value).toBe("공유할 회의 제목");
   fireEvent.change(screen.getByLabelText("시작 시간"), { target: { value: "16:00" } });
@@ -83,7 +93,7 @@ it("opens a reviewed, private-safe editor without writing; repeated adds reopen 
 it.each(["내일 3시 회의", "2026-11-18 또는 2026-11-19 회의", "2026-02-29 회의"])("requires manual date review for %s", async text => {
   const { events } = await enterRoom(text);
   render(<PrototypeApp />);
-  fireEvent.click(screen.getByRole("button", { name: "일정으로 추가" }));
+  addEvent();
   expect((screen.getByLabelText("날짜") as HTMLInputElement).value).toBe("");
   fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "저장" }));
   expect(screen.getByRole("dialog")).toBeDefined();
@@ -96,7 +106,7 @@ it.each(["내일 3시 회의", "2026-11-18 또는 2026-11-19 회의", "2026-02-2
 it("does not write on cancel", async () => {
   const { events } = await enterRoom();
   render(<PrototypeApp />);
-  fireEvent.click(screen.getByRole("button", { name: "일정으로 추가" }));
+  addEvent();
   fireEvent.click(screen.getByRole("button", { name: "취소" }));
   expect(events.loadEvents()).toEqual([]);
 });
@@ -106,7 +116,7 @@ it("keeps the reviewed draft open during a flush and after a CAS conflict", asyn
   let reject!: (reason: Error) => void;
   backend.flush.mockReturnValue(new Promise((_, fail) => { reject = fail; }));
   render(<PrototypeApp />);
-  fireEvent.click(screen.getByRole("button", { name: "일정으로 추가" }));
+  addEvent();
   fireEvent.change(screen.getByLabelText("일정 제목"), { target: { value: "검토한 제목" } });
   fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "저장" }));
   expect(backend.flush).toHaveBeenCalledTimes(1);
@@ -128,30 +138,30 @@ it("only shows the capture action for user messages and forwards the conversatio
   const state = createInitialState(); const capture = vi.fn();
   const message = { id: "user-message", sender: "user" as const, text: "2026-11-18", time: "" };
   render(<EventWorkspace room={state.rooms[0]} profile={state.profile} seedMessages={[message, { ...message, id: "assistant-message", sender: "assistant" }]} notice="" darkMode={false} onToggleTheme={vi.fn()} onSignOut={vi.fn()} onBackToRooms={vi.fn()} onAddExtractedEvent={vi.fn()} onAddExtractedChecklist={vi.fn()} onAddChatEvent={capture} renderTools={() => null} />);
-  expect(screen.getAllByRole("button", { name: "일정으로 추가" })).toHaveLength(1);
-  fireEvent.click(screen.getByRole("button", { name: "일정으로 추가" }));
+  expect(messageActions("assistant").queryByRole("button", { name: "일정으로 추가" })).toBeNull();
+  addEvent();
   expect(capture).toHaveBeenCalledWith(`initial-${state.rooms[0].id}`, message);
 });
 
 it("requires create permission for a new capture, then edit permission for the existing source", async () => {
   await enterRoom(); access.permissions = ["chat", "editEvent"];
   render(<PrototypeApp />);
-  expect(screen.queryByRole("button", { name: "일정으로 추가" })).toBeNull();
+  expect(messageActions().queryByRole("button", { name: "일정으로 추가" })).toBeNull();
   access.permissions = ["chat", "createEvent"];
   act(() => window.dispatchEvent(new Event("focus")));
-  fireEvent.click(screen.getByRole("button", { name: "일정으로 추가" }));
+  addEvent();
   fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "저장" }));
-  expect(screen.queryByRole("button", { name: "일정으로 추가" })).toBeNull();
+  expect(messageActions().queryByRole("button", { name: "일정으로 추가" })).toBeNull();
   access.permissions = ["chat", "editEvent"];
   act(() => window.dispatchEvent(new Event("focus")));
-  fireEvent.click(screen.getByRole("button", { name: "일정으로 추가" }));
+  addEvent();
   expect(screen.getByRole("dialog", { name: "일정 상세 및 수정" })).toBeDefined();
 });
 
 it("refuses a new capture save if create permission was revoked while reviewing", async () => {
   const { events } = await enterRoom();
   render(<PrototypeApp />);
-  fireEvent.click(screen.getByRole("button", { name: "일정으로 추가" }));
+  addEvent();
   access.permissions = ["chat", "viewCalendar"];
   act(() => window.dispatchEvent(new Event("focus")));
   expect(within(screen.getByRole("dialog")).queryByRole("button", { name: "저장" })).toBeNull();
@@ -163,7 +173,7 @@ it("allows a create-only user to retry the same draft after a failed flush", asy
   await enterRoom(); access.permissions = ["chat", "createEvent"]; backend.connected = true;
   backend.flush.mockRejectedValueOnce(Error("연결 실패"));
   render(<PrototypeApp />);
-  fireEvent.click(screen.getByRole("button", { name: "일정으로 추가" }));
+  addEvent();
   await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "저장" })); });
   expect(within(screen.getByRole("dialog")).getByRole("alert").textContent).toContain("연결 실패");
   await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "저장" })); });
@@ -174,10 +184,10 @@ it("allows a create-only user to retry the same draft after a failed flush", asy
 it("does not resurrect a captured event deleted while its editor was open", async () => {
   const { events } = await enterRoom();
   render(<PrototypeApp />);
-  fireEvent.click(screen.getByRole("button", { name: "일정으로 추가" }));
+  addEvent();
   fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "저장" }));
   const id = events.loadEvents()[0].id;
-  fireEvent.click(screen.getByRole("button", { name: "일정으로 추가" }));
+  addEvent();
   act(() => { events.deleteEvent(id); });
   fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "저장" }));
   expect(within(screen.getByRole("dialog")).getByRole("alert").textContent).toContain("이미 삭제된 일정");
@@ -187,12 +197,12 @@ it("does not resurrect a captured event deleted while its editor was open", asyn
 it("retains the source identity and reviewed event after reloading the workspace", async () => {
   const { events } = await enterRoom();
   const view = render(<PrototypeApp />);
-  fireEvent.click(screen.getByRole("button", { name: "일정으로 추가" }));
+  addEvent();
   fireEvent.change(screen.getByLabelText("일정 제목"), { target: { value: "검토 후 공유" } });
   fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "저장" }));
   const id = events.loadEvents()[0].id;
   view.unmount(); render(<PrototypeApp />);
-  fireEvent.click(screen.getByRole("button", { name: "일정으로 추가" }));
+  addEvent();
   expect(screen.getByRole("dialog", { name: "일정 상세 및 수정" })).toBeDefined();
   expect((screen.getByLabelText("일정 제목") as HTMLInputElement).value).toBe("검토 후 공유");
   fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "저장" }));
@@ -204,13 +214,13 @@ it("opens a checklist draft from a message and reopens the saved item without du
   const scope = { accountId: profile.accountId!, roomId, conversationId: conversations.load().activeId! };
   const materials = createRoomMaterialsStore(localStorage, roomId, [], scope);
   render(<PrototypeApp />);
-  fireEvent.click(screen.getByRole("button", { name: "준비 항목으로 추가" }));
+  addChecklist();
   const dialog = screen.getByRole("dialog", { name: "준비 항목 추가" });
   expect(within(dialog).getByLabelText<HTMLInputElement>("항목").value).toBe("차량 안내문 작성");
   expect(materials.loadChecklist()).toEqual([]);
   fireEvent.click(within(dialog).getByRole("button", { name: "저장" }));
   expect(materials.loadChecklist()).toMatchObject([{ title: "차량 안내문 작성", owner: "안내팀", due: "2028-02-29" }]);
-  fireEvent.click(screen.getByRole("button", { name: "준비 항목으로 추가" }));
+  addChecklist();
   expect(screen.getByRole("dialog", { name: "준비 항목 수정" })).toBeDefined();
   expect(materials.loadChecklist()).toHaveLength(1);
 });
