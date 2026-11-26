@@ -77,13 +77,21 @@ export type InviteValidationResult =
       error: string;
     };
 
+export type ChatMessageReference = { kind: "reply" | "edit"; messageId: string };
+
 export type ChatMessage = {
   id: string;
   sender: ChatSender;
   text: string;
   time: string;
+  replyElapsedMs?: number;
+  reference?: ChatMessageReference;
   actions?: string[];
   advisor?: import("./chat-advisor").AdvisorPresentation;
+  workProposal?: import("./chat-work-proposal").ChatWorkProposal;
+  dining?: import("./chat-dining").DiningRecommendations;
+  nearbyTask?: import("./chat-dining").NearbyTask;
+  venueRoute?: import("./chat-venue-route").VenueRoute;
 };
 
 export type CalendarEvent = {

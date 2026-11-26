@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventWorkspace } from "../components/event-workspace";
+import { ChatPanel } from "../components/chat-panel";
+import { PreparationProgressReview, PreparationProgressShortcut } from "../components/preparation-progress-review";
 import { createInitialState } from "../lib/prototype-state";
 import { configureBackendUser, enableBackendConnection, refreshBackendData, resetBackendClient } from "../lib/backend-client";
 import { conversationHistoryKey } from "../lib/conversation-scope";
@@ -33,6 +35,35 @@ const props = {
 };
 
 describe("workspace 3-1", () => {
+  it("links a locally verified lodging route to Maps with only the public origin and destination", () => {
+    render(<ChatPanel conversation={{ id: "thread", title: "숙소 위치", draft: "", createdAt: "", updatedAt: "", messages: [
+      { id: "route", sender: "assistant", text: "실제 소요 시간은 지도에서 확인하세요.", time: "", venueRoute: { venueName: "한화리조트 대천 파로스", origin: "대전역" } },
+    ] }} onDraftChange={vi.fn()} onSendMessage={vi.fn()} onNewConversation={vi.fn()} onOpenDocuments={vi.fn()} />);
+    const details = new URL(screen.getByRole("link", { name: "대전역에서 숙소까지 길찾기" }).getAttribute("href")!);
+    expect(details.host).toBe("www.google.com");
+    expect(details.searchParams.get("origin")).toBe("대전역");
+    expect(details.searchParams.get("destination")).toContain("해수욕장3길 11-10");
+    expect(details.searchParams.has("travelmode")).toBe(false);
+  });
+  it("gives a plain AI answer a bubble and requires an explicit click to save a selected public candidate", async () => {
+    enableBackendConnection(true);
+    configureBackendUser(props.profile);
+    const save = vi.fn(async () => "added" as const);
+    const dining: ChatMessage = { id: "proposal", sender: "assistant", text: "장소 저장 확인", time: "", dining: {
+      venue: "대표 숙소", date: null, visitTime: null, checkedAt: "2026-11-26T00:00:00.000Z", selectedRank: 2, placeSaveRequested: true,
+      restaurants: [{ name: "가상 백반집", reason: "식사 후보", hours: "확인 필요", rating: null, sources: [{ url: "https://example.org/shop", label: "후보 출처" }] }],
+    } };
+    render(<ChatPanel conversation={{ id: "thread", title: "후보", draft: "", createdAt: "", updatedAt: "", messages: [
+      { id: "plain", sender: "assistant", text: "일반 답변", time: "" }, dining,
+    ] }} onDraftChange={vi.fn()} onSendMessage={vi.fn()} onNewConversation={vi.fn()} onOpenDocuments={vi.fn()} onSaveNearbyPlace={save} />);
+    expect(screen.getByText("일반 답변").classList.contains("workspace-message-bubble")).toBe(true);
+    const proposal = screen.getByRole("region", { name: "주변 식당 추천" });
+    expect(within(proposal).getByText("장소 저장 확인").classList.contains("workspace-message-bubble")).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.click(within(proposal).getByRole("button", { name: "장소에 저장" }));
+    expect(save).toHaveBeenCalledWith("가상 백반집");
+    expect(await within(proposal).findByText("장소에 저장했습니다.")).toBeDefined();
+  });
   it("moves keyboard focus into conversation history when opening it", () => {
     render(<EventWorkspace {...props} />);
     fireEvent.click(screen.getByRole("button", { name: "대화 목록 닫기" }));
@@ -141,6 +172,7 @@ describe("workspace 3-1", () => {
     const review = vi.fn(() => Response.json({ state: "remaining", percent: 33, notes: ["미완료 항목 2개"] }));
     vi.stubGlobal("fetch", vi.fn(async (path: string, init: RequestInit) => {
       if (path === "/api/preparation-progress") return review();
+      if (path.startsWith("/api/preparation-progress?")) return Response.json({ report: null, stale: false });
       if (path === "/api/data" && init.method === "POST") {
         const [write] = JSON.parse(init.body as string).writes;
         Object.assign(record, { value: write.value, version: "2" });
@@ -155,10 +187,14 @@ describe("workspace 3-1", () => {
     const chat = within(screen.getByRole("region", { name: "개인 대화" }));
     fireEvent.click(await chat.findByRole("button", { name: "준비 진행도 · 미검토" }));
     const summary = within(screen.getByRole("complementary", { name: "행사 요약" }));
-    fireEvent.click(summary.getByRole("button", { name: "모델로 검토" }));
+    expect((await summary.findByRole("progressbar", { name: "준비 진행도" })).getAttribute("value")).toBe("0");
+    expect(summary.getByText("0%")).toBeDefined();
+    expect(summary.getByText("아직 점검하지 않았어요.")).toBeDefined();
+    fireEvent.click(summary.getByRole("button", { name: "중간점검" }));
     expect(review).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "확인하고 검토" }));
+    fireEvent.click(screen.getByRole("button", { name: "확인하고 점검" }));
     expect(await chat.findByRole("button", { name: "준비 진행도 · 33%" })).toBeDefined();
+    expect(summary.getByRole("progressbar", { name: "준비 진행도" }).getAttribute("value")).toBe("33");
     openGroupedTool("참가·이동", "차량 배정 열기");
     fireEvent.click(screen.getByRole("button", { name: "대화" }));
     expect(chat.getByRole("button", { name: "준비 진행도 · 33%" })).toBeDefined();
@@ -166,6 +202,17 @@ describe("workspace 3-1", () => {
     expect(chat.queryByRole("button", { name: "준비 진행도 · 33%" })).toBeNull();
     expect(await chat.findByRole("button", { name: "준비 진행도 · 미검토" })).toBeDefined();
     expect(review).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["pending", "remaining"] as const)("displays an empty graph and preserves the reasons when %s has no calculated score", state => {
+    const view = { busy: false, loading: false, saving: false, error: "", stale: false, report: { state, percent: null, notes: ["확정된 일정이 필요합니다."] } };
+    render(<><PreparationProgressShortcut {...view} onOpen={vi.fn()} /><PreparationProgressReview {...view} review={vi.fn()} /></>);
+    expect(screen.getByRole("button", { name: "준비 진행도 · 0%" })).toBeDefined();
+    expect(screen.getByRole("progressbar", { name: "준비 진행도" }).getAttribute("value")).toBe("0");
+    expect(screen.queryByText("판단 보류")).toBeNull();
+    const details = screen.getByText("판단 근거").closest("details");
+    expect(details?.open).toBe(false);
+    expect(details?.textContent).toContain("확정된 일정이 필요합니다.");
   });
 
   it("does not repeat the empty conversation title and preserves a draft across grouped tools", () => {
@@ -221,15 +268,16 @@ describe("workspace 3-1", () => {
     expect(props.onAddExtractedEvent).not.toHaveBeenCalled();
   });
 
-  it("confirms every send and retry, saving the approved text before requesting a reply", async () => {
+  it("links to settings instead of asking for consent in chat and still blocks detected private messages", async () => {
     const profile = props.profile;
     const { id: roomId } = props.room;
     const key = conversationHistoryKey(profile.accountId, roomId);
     let stored: string | null = null;
     let revision = 0;
+    let approved = false;
     let release!: (response: Response) => void;
     const firstReply = new Promise<Response>((resolve) => { release = resolve; });
-    const calls: { roomId: string; conversationId: string; userMessageId: string; userMessageText: string; consent: string }[] = [];
+    const calls: { roomId: string; conversationId: string; userMessageId: string; userMessageText: string }[] = [];
     const snapshot = (written: boolean) => {
       const record = { key, value: stored, version: String(revision) };
       return Response.json({ records: [record], profile, activeRoomId: roomId, written: written ? [record] : undefined });
@@ -240,6 +288,7 @@ describe("workspace 3-1", () => {
         revision++;
         return snapshot(true);
       }
+      if (path === "/api/chat" && init.method !== "POST") return Response.json({ approved });
       if (path === "/api/chat") {
         const call = JSON.parse(init.body as string) as typeof calls[number];
         calls.push(call);
@@ -260,30 +309,33 @@ describe("workspace 3-1", () => {
     configureBackendUser(profile);
     await refreshBackendData(roomId);
     const view = render(<EventWorkspace {...props} renderProposals={() => null} />);
+    await screen.findByText("외부 AI 꺼짐");
     fireEvent.change(screen.getByRole("textbox", { name: "메시지" }), { target: { value: "Unapproved draft" } });
     fireEvent.click(screen.getByRole("button", { name: "전송" }));
     expect(calls).toHaveLength(0);
     expect(screen.queryByText("Synthetic question", { selector: "p" })).toBeNull();
-    fireEvent.click(within(screen.getByRole("dialog", { name: "OpenAI에 메시지 보내기" })).getByRole("button", { name: "취소" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("link", { name: "보안 및 개인정보 설정" }).getAttribute("href")).toContain("section=security");
     expect((screen.getByRole("textbox", { name: "메시지" }) as HTMLTextAreaElement).value).toBe("Unapproved draft");
+    approved = true;
+    view.unmount();
+    const approvedView = render(<EventWorkspace {...props} renderProposals={() => null} />);
+    await screen.findByText("외부 AI 허용됨");
+    fireEvent.change(screen.getByRole("textbox", { name: "메시지" }), { target: { value: "Synthetic question" } });
     fireEvent.click(screen.getByRole("button", { name: "전송" }));
-    const preview = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "외부로 보낼 메시지" });
-    expect(preview.value).toBe("Unapproved draft");
-    fireEvent.change(preview, { target: { value: "Synthetic question" } });
-    fireEvent.click(screen.getByRole("button", { name: "동의하고 보내기" }));
     await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0].consent).toBe("openai-single-turn-v1");
+    expect(calls[0]).not.toHaveProperty("consent");
     expect(calls[0].userMessageText).toBe("Synthetic question");
-    expect(screen.getByText("답변 작성 중…")).toBeDefined();
+    expect(screen.getByText("답변 작성 중")).toBeDefined();
     expect((screen.getByRole("button", { name: "전송" }) as HTMLButtonElement).disabled).toBe(true);
     release(Response.json({ error: "OpenAI를 사용할 수 없습니다." }, { status: 503 }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "OpenAI를 사용할 수 없습니다.");
-    view.unmount();
-    render(<EventWorkspace {...props} renderProposals={() => null} />);
+    await waitFor(() => expect(screen.queryByText("답변 작성 중")).toBeNull());
+    approvedView.unmount();
+    const retriedView = render(<EventWorkspace {...props} renderProposals={() => null} />);
+    await screen.findByText("외부 AI 허용됨");
     fireEvent.click(screen.getByRole("button", { name: "답변 다시 요청" }));
-    expect(calls).toHaveLength(1);
-    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "외부로 보낼 메시지" }).readOnly).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "동의하고 보내기" }));
+    expect(screen.queryByRole("dialog", { name: "OpenAI에 메시지 보내기" })).toBeNull();
     expect(await screen.findByText("Synthetic model reply")).toBeDefined();
     expect(calls).toEqual([calls[0], calls[0]]);
     expect(screen.queryByText("샘플 응답")).toBeNull();
@@ -291,13 +343,22 @@ describe("workspace 3-1", () => {
     expect(screen.queryByRole("button", { name: "답변 다시 요청" })).toBeNull();
     fireEvent.change(screen.getByRole("textbox", { name: "메시지" }), { target: { value: "가상 담당자 010-0000-0000" } });
     fireEvent.click(screen.getByRole("button", { name: "전송" }));
-    expect(screen.getByRole("dialog", { name: "OpenAI에 메시지 보내기" })).toBeDefined();
-    expect(screen.getByRole<HTMLButtonElement>("button", { name: "동의하고 보내기" }).disabled).toBe(true);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("연락처");
     fireEvent.click(screen.getByRole("button", { name: "내부에만 저장" }));
     expect(screen.getByText("내부 기록")).toBeDefined();
     await waitFor(() => expect(stored).toContain("local-only"));
     expect(calls).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "답변 다시 요청" })).toBeNull();
+    approved = false;
+    retriedView.unmount();
+    render(<EventWorkspace {...props} renderProposals={() => null} />);
+    await screen.findByText("외부 AI 꺼짐");
+    fireEvent.change(screen.getByRole("textbox", { name: "메시지" }), { target: { value: "After revocation" } });
+    fireEvent.click(screen.getByRole("button", { name: "전송" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("link", { name: "보안 및 개인정보 설정" })).toBeDefined();
+    expect(calls).toHaveLength(2);
   });
 
   it("opens only lodging tools and switches to the participant table without overlap", () => {

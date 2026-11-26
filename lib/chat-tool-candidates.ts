@@ -23,6 +23,17 @@ export function buildChatChecklist(scope: ConversationScope, message: Pick<ChatM
 export const preparationChatQuery = "준비 점검 요약";
 export const isPreparationChat = (value: string) => value.trim() === preparationChatQuery;
 
+export function isPreparationStatusChat(value: string) {
+  const question = value.normalize("NFKC").trim();
+  if (question.length > 350 || /[\r\n]/.test(question)) return false;
+  if (!/(알려|보여|확인|요약|정리|어디까지|어떤\s*상태|어떻게\s*됐|됐어|되어\s*있)/.test(question)) return false;
+  if (/프롬프트|구현\s*방법|계산\s*(?:법|방식|방법|기준)|설계|사용법/.test(question)) return false;
+  if (/가상의?\s*(?:행사|모임)|가정해|예시로/.test(question) && !/저장된|우리\s*행사방/.test(question)) return false;
+  return /진행도|준비도|준비\s*(?:현황|상황|상태)|진행\s*(?:현황|상황|상태)|(?:준비|진행).{0,12}어디까지/.test(question)
+    || /어디까지\s*(?:준비|진행)|(?:준비|진행).{0,20}(?:안\s*되었|안\s*됐)/.test(question)
+    || /(?:웹사이트|사이트|행사방)(?:의)?\s*(?:저장된\s*)?상태/.test(question);
+}
+
 export function chatProposalCandidates(messages: readonly ChatMessage[]): ProposalDraft[] {
   const result: ProposalDraft[] = [];
   for (let index = messages.length - 1; index >= 0; index--) {

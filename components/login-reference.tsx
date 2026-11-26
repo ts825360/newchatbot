@@ -20,7 +20,7 @@ export function AuthReference({ mode, children }: { mode: "login" | "signup"; ch
   return <main className={`auth-page auth-reference-page auth-${mode}-page`}>
     <div className="login-layout">
       <div className="login-intro-column">
-        <Link href="/" className="login-wordmark" aria-label="행사비서 홈">
+        <Link href="/login" className="login-wordmark" aria-label="행사비서 홈">
           <svg viewBox="0 0 72 76" className="login-book" aria-hidden="true">
             <defs>
               <linearGradient id="login-book-cover" x1="0" y1="0" x2="1" y2="1">

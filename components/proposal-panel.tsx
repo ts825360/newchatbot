@@ -10,11 +10,15 @@ import "./proposal-panel.css";
 import { flushBackendWrites, isBackendConnected } from "@/lib/backend-client";
 import type { ConversationScope } from "@/lib/conversation-scope";
 import type { ChatMessage } from "@/lib/types";
+import { ChatWorkCard } from "./chat-work-card";
 
-export function ProposalPanel({ room, scope, messages, onApply }: { room: { id: string; date?: string | null }; scope?: ConversationScope; messages?: readonly ChatMessage[]; onApply: (draft: ProposalDraft) => ProposalApplyResult | Promise<ProposalApplyResult> }) {
+export function ProposalPanel({ room, scope, messages, onApply, canApprove = () => true, remember = true }: { room: { id: string; date?: string | null }; scope?: ConversationScope; messages?: readonly ChatMessage[]; onApply: (draft: ProposalDraft) => ProposalApplyResult | Promise<ProposalApplyResult>;
+  canApprove?: (kind: ProposalDraft["kind"]) => boolean; remember?: boolean;
+}) {
   const [decisions, setDecisions] = useState<ProposalDecision[] | null>(null);
   const [error, setError] = useState("");
   const real = isBackendConnected() && !!scope;
+  const modern = real ? (messages ?? []).filter(message => message.sender === "assistant" && message.workProposal).toReversed() : [];
   const proposals = useMemo(() => real ? chatProposalCandidates(messages ?? []) : sampleProposals(room), [real, messages, room]);
   useEffect(() => {
     const store = createPreparationStore(localStorage, room.id, [], scope);
@@ -38,7 +42,9 @@ export function ProposalPanel({ room, scope, messages, onApply }: { room: { id: 
     {!real && <div className="proposal-intro"><Badge tone="amber">샘플 제안</Badge><p>회의록 예시로 구성된 체험 자료입니다. 실제 업로드 자료의 분석 결과가 아닙니다.</p></div>}
     {error && <p role="alert" className="documents-error">{error}</p>}
     {decisions === null && !error && <p role="status" className="text-xs text-muted-foreground">제안 불러오는 중...</p>}
-    {decisions && real && !proposals.length && <p className="text-sm text-muted-foreground">이 대화에서 검토할 제안이 없습니다.</p>}
+    {decisions && real && !proposals.length && !modern.length && <p className="text-sm text-muted-foreground">이 대화에서 검토할 제안이 없습니다.</p>}
+    {scope && modern.map(message => <ChatWorkCard key={`${scope.accountId}:${scope.roomId}:${scope.conversationId}:${message.id}`} scope={scope} message={message} onApply={onApply}
+      canApprove={message.workProposal?.kind === "survey" || canApprove(message.workProposal!.kind)} remember={remember} />)}
     {decisions && proposals.map(proposal => <ProposalRow key={`${room.id}:${proposal.id}:${room.date ?? ""}`} proposal={proposal} privateReview={!!scope} decision={decisions.find(item => item.id === proposal.id)} onApply={onApply} onDecide={decide} />)}
   </div>;
 }

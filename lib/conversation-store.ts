@@ -1,5 +1,5 @@
 import { createAssistantReply } from "./prototype-state";
-import type { ChatMessage } from "./types";
+import type { ChatMessage, ChatMessageReference } from "./types";
 import { writeBrowserRecord } from "./storage-status";
 import { dataStorage, isBackendConnected } from "./backend-client";
 import { conversationHistoryKey, initialConversationId } from "./conversation-scope";
@@ -98,16 +98,20 @@ export function createConversationStore(storage: BrowserStorage, accountId: stri
       find(data, id).draft = draft;
       return save(data);
     },
-    send(id: string, text: string, { localOnly = false } = {}) {
+    send(id: string, text: string, { localOnly = false, reference }: { localOnly?: boolean; reference?: ChatMessageReference } = {}) {
       const data = load();
       const conversation = find(data, id);
       const message = text.trim();
       if (!message) return data;
       if (message.length > 8000) throw new Error("메시지는 8,000자 이내로 입력해 주세요.");
+      if (reference) {
+        const original = conversation.messages.find(item => item.id === reference.messageId);
+        if (!original || (reference.kind === "edit" && (original.sender !== "user" || localOnly))) throw new Error("답장하거나 수정할 메시지를 확인해 주세요.");
+      }
       if (!conversation.messages.length && conversation.title === "새 대화") conversation.title = message.slice(0, 30);
-      conversation.messages.push({ id: globalThis.crypto.randomUUID(), sender: "user", text: message, time: "방금 전", ...(localOnly && { actions: [internalChatAction] }) });
+      conversation.messages.push({ id: globalThis.crypto.randomUUID(), sender: "user", text: message, time: "방금 전", ...(reference && { reference }), ...(localOnly && { actions: [internalChatAction] }) });
       if (!isBackendConnected()) conversation.messages.push({ id: globalThis.crypto.randomUUID(), sender: "assistant", text: createAssistantReply(message), time: "방금 전" });
-      conversation.draft = "";
+      if (reference?.kind !== "edit") conversation.draft = "";
       conversation.updatedAt = new Date().toISOString();
       return save(data);
     }

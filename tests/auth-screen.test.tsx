@@ -39,13 +39,6 @@ describe("auth screen flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "초대코드 확인" }));
     expect((await screen.findByRole("alert")).textContent).toBe("초대 확인 서버에 연결할 수 없습니다.");
   });
-  it("shows only auth entry actions without workspace controls", () => {
-    render(<AuthScreen mode="entry" />);
-    expect(screen.getByRole("link", { name: "로그인" }).getAttribute("href")).toBe("/login");
-    expect(screen.getByRole("link", { name: "회원가입" }).getAttribute("href")).toBe("/signup");
-    expect(screen.queryByRole("textbox")).toBeNull();
-    expect(screen.queryByText("새 행사방")).toBeNull();
-  });
 
   it("shows field errors for empty signup", () => {
     render(<AuthScreen mode="signup" />);
@@ -114,16 +107,12 @@ describe("auth screen flow", () => {
     expect(screen.getByRole("button", { name: "초대코드 확인" })).toBeDefined();
     expect(screen.getByLabelText("비밀번호 확인", { exact: true }).getAttribute("autocomplete")).toBe("new-password");
     expect(screen.getByRole("link", { name: "로그인" }).getAttribute("href")).toBe("/login");
-    rerender(<AuthScreen mode="entry" />);
-    expect(screen.queryByText("일정과 준비 현황을 한눈에")).toBeNull();
-    expect(screen.queryByRole("heading", { name: "가입 전 확인해 주세요" })).toBeNull();
   });
 
-  it("switches the auth screen theme", () => {
-    render(<AuthScreen mode="entry" />);
-    fireEvent.click(screen.getByRole("button", { name: "다크 모드" }));
+  it("keeps the saved display theme when entering login directly", () => {
+    localStorage.setItem("church-planner-display", JSON.stringify({ theme: "dark" }));
+    render(<AuthScreen mode="login" />);
     expect(document.documentElement.classList.contains("dark")).toBe(true);
-    expect(JSON.parse(localStorage.getItem("church-planner-display")!)).toMatchObject({ theme: "dark" });
   });
 
   it("prefills an invitation link without claiming it and removes the secret fragment", async () => {

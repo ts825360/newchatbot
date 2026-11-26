@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { CalendarEvent, ChecklistItem } from "@/lib/types";
 import { createDatabase } from "@/lib/server/database";
-import { canonicalPrivateTool } from "@/lib/server/conversation-scope";
+import { canonicalPrivateTool, canonicalWorkspaceTool } from "@/lib/server/conversation-scope";
 import { handleRetreatPreparation } from "@/lib/server/retreat-preparation";
 import { handleChat } from "@/lib/server/chat";
 import { createTransportDraft, createTransportVehicle } from "@/lib/transport";
@@ -57,13 +57,13 @@ function checklist(accountId: string, conversationId: string, items: Partial<Che
   const rows = items.map((value, index) => ({
     id: `check-${index}`, title: "차량 배정", status: "done", due: "", owner: "", memo: "PRIVATE_CHECKLIST_MEMO", ...value,
   }));
-  db.prepare("INSERT INTO records(key,owner_id,room_id,kind,data_json,updated_at) VALUES(?,?,'retreat','checklist',?,?)")
-    .run(canonicalPrivateTool({ accountId, conversationId, roomId: "retreat" }, "checklist"), accountId, JSON.stringify({ version: 1, items: rows }), now.toISOString());
+  db.prepare("INSERT INTO records(key,owner_id,room_id,kind,data_json,updated_at) VALUES(?,?,'retreat','checklist',?,?) ON CONFLICT(key) DO UPDATE SET data_json=excluded.data_json")
+    .run(canonicalWorkspaceTool({ accountId, conversationId, roomId: "retreat" }, "checklist"), accountId, JSON.stringify({ version: 1, items: rows }), now.toISOString());
 }
 
 const byKey = (body: any, key: string) => body.fields.find((item: { key: string }) => item.key === key);
 
-it("uses only pinned private reference files as recommendation evidence, never as facts or Gemini input", async () => {
+it("keeps pinned references in the preparation tool and out of AI chat history and provider input", async () => {
   function reference(conversationId: string, filename: string, excerpt: string, pinned: boolean) {
     const bytes = Buffer.from(excerpt);
     db.prepare("INSERT INTO records(key,owner_id,room_id,kind,data_json,updated_at) VALUES(?,'alice','retreat','documents',?,?)")
@@ -86,13 +86,14 @@ it("uses only pinned private reference files as recommendation evidence, never a
   const reply = await handleChat(new Request("http://localhost/api/chat", { method: "POST", headers: { cookie: alice, "content-type": "application/json" },
     body: JSON.stringify({ roomId: "retreat", conversationId: "initial-retreat", userMessageId: message.id, userMessageText: message.text }) }), db);
   expect(reply.status).toBe(200);
-  expect(String(db.prepare("SELECT data_json FROM records WHERE key='conversations:alice:retreat'").get()?.data_json)).toContain("2025 요람.txt");
+  const chat = String(db.prepare("SELECT data_json FROM records WHERE key='conversations:alice:retreat'").get()?.data_json);
+  expect(chat).toContain("저장된 기록 기준");
+  expect(chat).not.toMatch(/2025 요람\.txt|참가 가능 여부를 먼저 확인했다|PRIVATE_OTHER_THREAD/);
   expect(upstream).not.toHaveBeenCalled();
 });
 
-it("reads the selected account and conversation, returns no private text and performs no writes or upstream requests", async () => {
+it("reads the selected account's room work, without private text or upstream requests", async () => {
   checklist("alice", "initial-retreat", [{ title: " 숙소 배정 ", owner: "PRIVATE_OWNER" }]);
-  checklist("alice", "second", [{ title: "차량 배정" }]);
   checklist("bob", "initial-retreat", [{ title: "식사 계획" }]);
   calendar([{ location: "가상 장소 A" }]);
   const before = db.prepare("SELECT total_changes() AS count").get()?.count;
@@ -106,6 +107,7 @@ it("reads the selected account and conversation, returns no private text and per
   expect(byKey(result, "venue")).toMatchObject({ status: "confirmed", value: "가상 장소 A" });
   expect(byKey(result, "lodging")).toMatchObject({ status: "confirmed", evidence: "checklist" });
   expect(byKey(result, "transport").status).toBe("needs_review");
+  expect(byKey(await (await endpoint("roomId=retreat&conversationId=second")).json(), "lodging")).toMatchObject({ status: "confirmed" });
   expect(byKey(result, "meals")).toBeUndefined();
   expect(byKey(await (await endpoint(undefined, bob)).json(), "meals")).toBeUndefined();
   expect(raw).not.toMatch(/PRIVATE_/);
@@ -129,34 +131,34 @@ it("does not promote planned room dates, preparation meetings, draft calendar en
   expect(result.next.map(({ id }: { id: string }) => id)).toEqual(["confirm-date", "draft-survey"]);
 });
 
-it("uses the room date and only the current conversation's primary saved location", async () => {
-  for (const [accountId, conversationId, location] of [["alice", "initial-retreat", "대표 장소"], ["alice", "second", "SECOND_PRIVATE"], ["bob", "initial-retreat", "BOB_PRIVATE"]]) {
+it("uses the room date and the current account's primary saved location", async () => {
+  for (const [accountId, conversationId, location] of [["alice", "initial-retreat", "대표 장소"], ["bob", "initial-retreat", "BOB_PRIVATE"]]) {
     db.prepare("INSERT INTO records(key,owner_id,room_id,kind,data_json,updated_at) VALUES(?,?,'retreat','location',?,?)")
-      .run(canonicalPrivateTool({ accountId, conversationId, roomId: "retreat" }, "location"), accountId, JSON.stringify({ location, places: [location, "예비 장소"] }), now.toISOString());
+      .run(canonicalWorkspaceTool({ accountId, conversationId, roomId: "retreat" }, "location"), accountId, JSON.stringify({ location, places: [location, "예비 장소"] }), now.toISOString());
   }
-  const result = await (await endpoint()).json();
+  const result = await (await endpoint("roomId=retreat&conversationId=second")).json();
   expect(byKey(result, "date")).toMatchObject({ status: "confirmed", value: "2027-08-15", evidence: "room" });
   expect(byKey(result, "venue")).toMatchObject({ status: "confirmed", value: "대표 장소", evidence: "location" });
   expect(byKey(result, "meals")).toBeUndefined();
   expect(byKey(result, "water-activity")).toBeUndefined();
-  expect(JSON.stringify(result)).not.toMatch(/SECOND_PRIVATE|BOB_PRIVATE|예비 장소/);
+  expect(JSON.stringify(result)).not.toMatch(/BOB_PRIVATE|예비 장소/);
 });
 
-it("only counts the current conversation's real approved vehicle allocation", async () => {
+it("only counts the account's real approved vehicle allocation, regardless of conversation", async () => {
   const input = createTransportDraft();
   input.people = [{ id: "participant", name: "PRIVATE_PARTICIPANT", department: "운영", familyId: "", companionGroup: "", outboundTripId: "main", returnTripId: null }];
   input.vehicles = [{ ...createTransportVehicle("vehicle"), totalSeats: 5, capacity: 4, externalDriverConfirmed: true, tripIds: ["main"] }];
   const result = { status: "optimal", revision: input.revision, assignments: [{ personId: "participant", vehicleId: "vehicle", tripId: "main" }], reservations: [], unassignedCount: 0, unreservedCount: 0, usedVehicleIds: ["vehicle"], cost: 0, message: "완료" };
   const store = (conversationId: string, approved: boolean, demo = false) => db.prepare(
     "INSERT INTO records(key,owner_id,room_id,kind,data_json,updated_at) VALUES(?,'alice','retreat','transport',?,?) ON CONFLICT(key) DO UPDATE SET data_json=excluded.data_json",
-  ).run(canonicalPrivateTool({ accountId: "alice", roomId: "retreat", conversationId }, "transport"), JSON.stringify({ input, result, approved, demo }), now.toISOString());
+  ).run(canonicalWorkspaceTool({ accountId: "alice", roomId: "retreat", conversationId }, "transport"), JSON.stringify({ input, result, approved, demo }), now.toISOString());
   store("second", true);
   store("initial-retreat", false);
   expect(byKey(await (await endpoint()).json(), "transport").status).toBe("needs_review");
   store("initial-retreat", true, true);
   expect(byKey(await (await endpoint()).json(), "transport").status).toBe("needs_review");
   store("initial-retreat", true);
-  const output = await (await endpoint()).json();
+  const output = await (await endpoint("roomId=retreat&conversationId=second")).json();
   expect(byKey(output, "transport")).toMatchObject({ status: "confirmed", evidence: "transport" });
   expect(JSON.stringify(output)).not.toContain("PRIVATE_PARTICIPANT");
 });
@@ -193,10 +195,10 @@ it("blocks an old notice completion if its calendar prerequisites disappeared", 
 
 it("does not infer water activity from a topic alone or confirm a responsibility from a completion marker", async () => {
   checklist("alice", "initial-retreat", [{ title: "물놀이 계획" }]);
-  checklist("alice", "second", [{ title: "물놀이 진행 확정" }, { title: "물놀이 안전 담당", owner: "미지정" }]);
   const first = await (await endpoint()).json();
   expect(byKey(first, "water-activity").status).toBe("needs_review");
   expect(byKey(first, "water-safety")).toBeUndefined();
+  checklist("alice", "second", [{ title: "물놀이 진행 확정" }, { title: "물놀이 안전 담당", owner: "미지정" }]);
   const second = await (await endpoint("roomId=retreat&conversationId=second")).json();
   expect(byKey(second, "water-activity").value).toBe(true);
   expect(byKey(second, "water-safety").status).toBe("needs_review");

@@ -1,0 +1,52 @@
+.chat-work-card {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--panel));
+  color: hsl(var(--foreground));
+  overflow-wrap: anywhere;
+}
+.chat-work-card h3, .chat-work-card h4, .chat-work-card p { margin: 0; }
+.chat-work-heading, .chat-work-calendar { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.chat-work-heading > svg { flex: 0 0 auto; color: hsl(var(--primary)); }
+.chat-work-heading h3, .chat-work-calendar h3 { flex: 1; min-width: 0; font-size: 17px; line-height: 1.4; font-weight: 700; }
+.chat-work-status { flex: 0 0 auto; margin-left: auto; background: hsl(var(--surface-input)); color: hsl(var(--muted-foreground)); padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+.chat-work-status[data-status="accepted"] { color: hsl(var(--primary)); background: hsl(var(--selection)); }
+.chat-work-calendar { align-items: flex-start; column-gap: 14px; }
+.chat-work-calendar-main { align-self: center; flex: 1; min-width: 0; }
+.chat-work-calendar-main p, .chat-work-muted { color: hsl(var(--muted-foreground)); font-size: 13px; line-height: 1.55; }
+.chat-work-date { display: grid; place-content: center; min-width: 62px; min-height: 86px; border-radius: 8px; text-align: center; color: hsl(var(--primary)); background: hsl(var(--selection)); font-size: 12px; }
+.chat-work-date strong { font-size: 28px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.chat-work-card footer, .chat-work-group, .chat-work-edit, .chat-work-timetable { display: grid; min-width: 0; gap: 9px; padding-top: 12px; border-top: 1px solid hsl(var(--border)); }
+.chat-work-group h4 { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; font-weight: 700; }
+.chat-work-group h4 span { color: hsl(var(--foreground)); }
+.chat-work-group ul, .chat-work-timetable ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.chat-work-group li, .chat-work-timetable li { display: flex; min-width: 0; align-items: center; gap: 9px; min-height: 30px; font-size: 14px; }
+.chat-work-group li > svg { flex: 0 0 auto; }
+.chat-work-group li > span, .chat-work-timetable li > span { min-width: 0; }
+.chat-work-choice { display: flex; min-width: 0; align-items: center; gap: 9px; cursor: pointer; }
+.chat-work-choice input { inline-size: 16px; block-size: 16px; flex: 0 0 16px; accent-color: hsl(var(--primary)); }
+.chat-work-done, .chat-work-group li > svg { color: #157849; }
+.dark .chat-work-done, .dark .chat-work-group li > svg { color: #6dd5a1; }
+.chat-work-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.work-checklist .chat-work-actions > button { flex: 1 1 auto; }
+.chat-work-edit { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.chat-work-edit > :first-child { grid-column: 1 / -1; }
+.chat-work-edit input { min-width: 0; }
+.chat-work-timetable details + details { border-top: 1px solid hsl(var(--border)); padding-top: 8px; }
+.chat-work-timetable summary { cursor: pointer; font-size: 13px; font-weight: 700; }
+.chat-work-timetable summary span { margin-left: 8px; color: hsl(var(--muted-foreground)); font-weight: 500; }
+.chat-work-timetable time { flex: 0 0 auto; font-size: 12px; font-variant-numeric: tabular-nums; color: hsl(var(--primary)); }
+.chat-work-answer { display: grid; width: min(100%, 760px); gap: 12px; }
+.chat-work-answer .workspace-message-text { max-width: none; }
+.chat-work-answer .workspace-plan-rows { margin-block: 0; }
+@media (max-width: 520px) {
+  .chat-work-card { padding: 12px; }
+  .chat-work-calendar { flex-wrap: wrap; gap: 8px; }
+  .chat-work-calendar-main { flex: 1 1 110px; }
+  .chat-work-calendar .chat-work-status { margin-left: 0; }
+}

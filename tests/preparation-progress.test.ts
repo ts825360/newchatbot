@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDatabase } from "@/lib/server/database";
-import { handlePreparationProgress } from "@/lib/server/preparation-progress";
+import { handlePreparationProgress, readPreparationProgress } from "@/lib/server/preparation-progress";
 
 const provider = vi.fn<typeof fetch>();
 const date = "2027-04-15";
@@ -16,8 +16,12 @@ const write = (key: string, kind: string, owner: string | null, items: object[])
   "INSERT INTO records(key,room_id,owner_id,kind,data_json,updated_at) VALUES(?,'room',?,?,?,?) ON CONFLICT(key) DO UPDATE SET data_json=excluded.data_json,revision=revision+1",
 ).run(key, owner, kind, JSON.stringify({ version: 1, items }), date);
 const task = (id: string, title: string, status = "done") => ({ id, title, owner: "PRIVATE_OWNER", due: "", memo: "PRIVATE_MEMO", status });
-const checklist = (...items: object[]) => write("private-v1:alice:room:initial-room:checklist", "checklist", "alice", items);
+const checklist = (...items: object[]) => write("room-work-v1:alice:room:checklist", "checklist", "alice", items);
 const result = async (value = body) => (await handlePreparationProgress(request(value), db)).json();
+const saved = (conversationId = body.conversationId, accountId = "alice", credential = token) =>
+  readPreparationProgress(new Request(`http://localhost/api/preparation-progress?roomId=room&conversationId=${conversationId}`, {
+    headers: { cookie: `church_session=${credential}`, "x-preparation-account": accountId },
+  }), db);
 const model = (verdict: string) => Response.json({ status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify({ verdict }) }] }] });
 
 beforeEach(() => {
@@ -53,7 +57,7 @@ it("does not call the model for missing signoff or unresolved work", async () =>
 });
 
 it("does not report near-completion just because work items are checked when risks remain", async () => {
-  write("private-v1:alice:room:initial-room:risks", "risks", "alice", [{ id: "r", title: "격리된 위험", detail: "detail", action: "action", resolved: false }]);
+  write("room-work-v1:alice:room:risks", "risks", "alice", [{ id: "r", title: "격리된 위험", detail: "detail", action: "action", resolved: false }]);
   expect(await result()).toMatchObject({ state: "remaining", percent: null });
   expect(provider).not.toHaveBeenCalled();
 });
@@ -74,4 +78,37 @@ it("discards a model result when the evidence changes during evaluation", async 
     return model("ready");
   });
   expect((await handlePreparationProgress(request(), db)).status).toBe(409);
+});
+
+it("restores a server-validated score without calling the model again", async () => {
+  expect(await (await saved()).json()).toEqual({ report: null, stale: false });
+  const review = await result();
+  expect(review.percent).toBe(100);
+  expect(await (await saved()).json()).toEqual({ report: review, stale: false });
+  expect(provider).toHaveBeenCalledTimes(1);
+});
+
+it("hides stale completion and restores a fresh partial score even without a provider", async () => {
+  await result();
+  checklist(task("1", "PRIVATE_TASK"), task("2", "최종 준비 검토"), task("3", "New work", "inProgress"));
+  expect(await (await saved()).json()).toEqual({ report: null, stale: true });
+  const review = await result();
+  expect(review).toMatchObject({ state: "remaining", percent: 50 });
+  expect(await (await saved()).json()).toEqual({ report: review, stale: false });
+  expect(provider).toHaveBeenCalledTimes(1);
+});
+
+it("shares the current review across owned conversations only", async () => {
+  db.prepare("INSERT INTO records(key,room_id,owner_id,kind,data_json,updated_at) VALUES('conversations:alice:room','room','alice','conversations',?,?)")
+    .run(JSON.stringify({ conversations: [{ id: body.conversationId }, { id: "second" }] }), date);
+  const bobToken = "y".repeat(43);
+  db.prepare("INSERT INTO users(id,name,username,grade,role,permissions_json,salt,password_hash,created_at) SELECT 'bob','Bob','bob',grade,role,permissions_json,salt,password_hash,created_at FROM users WHERE id='alice'").run();
+  db.prepare("INSERT INTO sessions(token_hash,user_id,session_version,expires_at,created_at) SELECT ?,'bob',session_version,expires_at,created_at FROM sessions WHERE user_id='alice'")
+    .run(createHash("sha256").update(bobToken).digest("hex"));
+  const report = await result();
+  expect(await (await saved("second")).json()).toEqual({ report, stale: false });
+  expect(await (await saved(body.conversationId, "bob", bobToken)).json()).toEqual({ report: null, stale: false });
+  expect((await saved("second", "bob", bobToken)).status).toBe(404);
+  expect((await saved(body.conversationId, "alice", bobToken)).status).toBe(409);
+  expect(provider).toHaveBeenCalledTimes(1);
 });

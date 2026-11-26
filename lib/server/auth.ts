@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { CreatedInvitation, InvitationDraft, InvitationView, MemberView, OwnerOverview } from "../invitation-types";
 import type { Permission, UserProfile } from "../types";
+import { openAIChatConsentVersion } from "../assistant-privacy";
+import { saveChatConsent } from "./chat-consent";
 import { bumpRevision, getDatabase, transaction } from "./database";
 import { ApiError, assertSameOrigin, errorResponse, json, readJson } from "./http";
 import { hashPassword, verifyPassword } from "./password";
@@ -253,6 +255,7 @@ async function signup(body: Record<string, unknown>, db: DatabaseSync): Promise<
   takeRateLimit(db, "invite:public", 10);
   const name = text(body.name, "name (1-20 characters)", 20);
   const username = text(body.username, "username", 24).toLowerCase();
+  if (body.openAIConsent !== undefined && body.openAIConsent !== openAIChatConsentVersion) throw new ApiError(400, "외부 AI 이용 동의 내용을 다시 확인해 주세요.");
   if (!/^[a-z0-9_-]{4,24}$/.test(username) || username === "admin" || DEVELOPMENT_IDS.has(username)) throw new ApiError(400, "This username cannot be used for signup.");
   if (typeof body.password !== "string" || body.password.length < 8 || body.password.length > 72 || body.password !== body.confirmation) throw new ApiError(400, "Use an 8-72 character password with matching confirmation.");
   if (!available(inviteFor(db, body.inviteCode))) throw new ApiError(400, INVALID_INVITE);
@@ -266,6 +269,7 @@ async function signup(body: Record<string, unknown>, db: DatabaseSync): Promise<
     if (Number(consumed.changes) !== 1) throw new ApiError(400, INVALID_INVITE);
     db.prepare("INSERT INTO users(id,name,username,grade,role,permissions_json,salt,password_hash,access_expires_at,invite_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
       .run(id, name, username, invite.grade, invite.role, JSON.stringify(parsePermissions(invite.permissions_json, invite.grade)), hash.salt, hash.passwordHash, invite.access_expires_at, invite.id, at);
+    if (body.openAIConsent === openAIChatConsentVersion) saveChatConsent(db, id, true, at);
     audit(db, id, "Account created", id); bumpRevision(db);
     return json({ name, username, grade: invite.grade, expiresAt: invite.access_expires_at });
   });

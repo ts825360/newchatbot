@@ -5,3 +5,8 @@ export type PreparationProgress = {
   percent: number | null;
   notes: string[];
 };
+
+export type SavedPreparationProgress = {
+  report: PreparationProgress | null;
+  stale: boolean;
+};

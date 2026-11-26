@@ -21,6 +21,7 @@ describe("explicit chat calendar fields", () => {
     "2026-11-18 또는 내일", "2026-11-18 또는 2026-02-30",
     "2026-11-18/2026-11-19", "2026년 11월 18일 또는 2027-1-2",
     "2026-11-18 아니 내년", "2026년 11월 18일 또는 2026-11-180",
+    "2026-11-18은 제외하고 회의", "2026년 11월 18일은 빼고 새 날짜를 정해줘",
   ])("requires manual date input for %s", text => {
     const fields = extractChatCalendarFields(text);
     expect(fields.date).toBe("");
@@ -34,6 +35,7 @@ describe("explicit chat calendar fields", () => {
     ["3시", ""], ["3:30", ""], ["오후 13시", ""], ["25:00", ""],
     ["09:70", ""], ["15:30 또는 16:30", ""], ["오전 9시 또는 오후 3시", ""],
     ["오후 3시 반", ""], ["15:30 UTC", ""], ["15:30 KST", ""],
+    ["15:30은 제외", ""],
   ])("only prefills an unambiguous time: %s", (time, expected) => {
     expect(extractChatCalendarFields(`2026-11-18 ${time} 회의`).time).toBe(expected);
   });

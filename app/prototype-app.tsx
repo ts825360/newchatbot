@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { EventWorkspace } from "@/components/event-workspace";
+import { externalAISettingsHref } from "@/lib/assistant-privacy";
 import type { WorkspaceOverviewData } from "@/components/workspace-overview";
 import { AUTH_CHANGED_EVENT, createBrowserAuth } from "@/lib/prototype-auth";
 import { backendFetch, flushBackendWrites, isBackendConnected, refreshBackendData } from "@/lib/backend-client";
@@ -18,6 +19,7 @@ import { useRoomMaterials, validateChecklistItem } from "@/lib/room-materials";
 import { Button, Field, inputClass } from "@/components/ui";
 import { CalendarEventEditor } from "@/components/calendar-event-editor";
 import { ProposalPanel } from "@/components/proposal-panel";
+import { ChatWorkCard } from "@/components/chat-work-card";
 import { usePreparationEvents, validateCalendarEvent, type ProposalApplyResult, type ProposalDraft } from "@/lib/preparation-store";
 import { useRoomRisks } from "@/lib/risk-store";
 import { applyReviewedProposal } from "@/lib/proposal-application";
@@ -270,9 +272,12 @@ export function PrototypeApp() {
     );
   };
 
+  const canApproveProposal = (kind: ProposalDraft["kind"]) => kind === "calendar"
+    ? state.profile.permissions.includes("createEvent") && state.profile.permissions.includes("editEvent")
+    : state.profile.permissions.includes("editChecklist");
   const applyProposal = (scope: ConversationScope, draft: ProposalDraft): ProposalApplyResult | Promise<ProposalApplyResult> => {
     if (!activeRoom || scopeId(scope) !== privateIdentity) return false;
-    if (!state.profile.permissions.includes(draft.kind === "calendar" ? "createEvent" : "editChecklist")) return { ok: false, error: "이 제안을 반영할 권한이 없습니다." };
+    if (!canApproveProposal(draft.kind)) return { ok: false, error: "이 제안을 반영할 권한이 없습니다." };
     const result = applyReviewedProposal(localStorage, activeRoom, state.profile.nickname, draft, { events: state.events[activeRoom.id] ?? [] }, scope);
     if (!isBackendConnected() || !(typeof result === "boolean" ? result : result.ok)) return result;
     return flushBackendWrites().then(() => result).catch(cause => ({ ok: false, error: cause instanceof Error ? cause.message : "서버에 저장하지 못했습니다." }));
@@ -300,7 +305,7 @@ export function PrototypeApp() {
   };
 
   const resolveRisk = (riskId: string) => { if (canEditChecklist) commitWrite(() => persistRiskResolution(riskId), () => {}); };
-  const leaveWorkspace = async (href: "/rooms" | "/settings?from=workspace") => {
+  const leaveWorkspace = async (href: "/rooms" | "/settings?from=workspace" | typeof externalAISettingsHref) => {
     try {
       if (isBackendConnected()) await flushBackendWrites();
       if (href === "/rooms") router.replace(href);
@@ -345,7 +350,7 @@ export function PrototypeApp() {
     );
   }
 
-  const renderTools = (mode: "calendar" | "prepare", scope?: ConversationScope) => {
+  const renderTools = (mode: "calendar" | "prepare", scope?: ConversationScope, onOpenTimetable?: () => void) => {
     if (mode === "prepare" && (!scope || scopeId(scope) !== privateIdentity)) return null;
     const error = mode === "calendar" ? calendarError : materialsError || riskError;
     return (
@@ -354,6 +359,7 @@ export function PrototypeApp() {
     <SharedPanel
       mode={mode}
       scope={mode === "prepare" ? scope : undefined}
+      onOpenTimetable={onOpenTimetable}
       room={activeRoom}
       events={activeEvents}
       checklist={mode === "prepare" ? activeChecklist : []}
@@ -387,22 +393,20 @@ export function PrototypeApp() {
   ); };
 
   const canPreviewCalendar = state.profile.permissions.includes("viewCalendar");
-  const canPreviewChecklist = state.profile.permissions.includes("chat") && state.profile.permissions.includes("viewChecklist");
-  const overview = (scope: ConversationScope | null, loadFailed: boolean, hasConversation: boolean): WorkspaceOverviewData => {
-    const currentChecklist = scope && scopeId(scope) === privateIdentity && checklistLoaded;
-    return {
-      calendar: !canPreviewCalendar ? undefined : calendarError ? { state: "error" } : calendarLoaded ? { state: "ready", items: activeEvents } : { state: "loading" },
-      checklist: !canPreviewChecklist ? undefined : !hasConversation ? { state: "noConversation" } : loadFailed || (currentChecklist && materialsError)
-        ? { state: "error" } : currentChecklist ? { state: "ready", items: activeChecklist } : { state: "loading" },
-      onEvent: openExistingEvent,
-    };
-  };
+  const canOpenOverview = canPreviewCalendar || (state.profile.permissions.includes("chat") && state.profile.permissions.includes("viewChecklist"));
+  const overview = (): WorkspaceOverviewData => ({
+    calendar: !canPreviewCalendar ? undefined : calendarError ? { state: "error" } : calendarLoaded ? { state: "ready", items: activeEvents } : { state: "loading" },
+    onEvent: openExistingEvent,
+  });
 
   return (
     <main className="workspace-page h-dvh overflow-hidden bg-background text-foreground" aria-busy={saving}>
-      <EventWorkspace key={`${state.profile.accountId}:${activeRoom.id}`} room={activeRoom} profile={state.profile} seedMessages={activeMessages} notice={workspaceNotice || calendarNotice.text} noticeError={!workspaceNotice && calendarNotice.failed} darkMode={darkMode} onToggleTheme={toggleTheme} onSignOut={signOut} onBackToRooms={backToRooms} onOpenSettings={() => leaveWorkspace("/settings?from=workspace")} onAddExtractedEvent={addDocumentEventCandidate} onAddExtractedChecklist={addDocumentChecklistCandidate} onAddChatEvent={openChatEvent} canAddChatEvent={canAddChatEvent} onAddChatChecklist={openChatChecklist} onScopeChange={setSelectedScope}
-        overview={canPreviewCalendar || canPreviewChecklist ? overview : undefined}
-        renderTools={renderTools} renderProposals={(scope, messages) => <ProposalPanel room={activeRoom} scope={scope} messages={messages} onApply={(draft) => applyProposal(scope, draft)} />} />
+      <EventWorkspace key={`${state.profile.accountId}:${activeRoom.id}`} room={activeRoom} profile={state.profile} seedMessages={activeMessages} notice={workspaceNotice || calendarNotice.text} noticeError={!workspaceNotice && calendarNotice.failed} darkMode={darkMode} onToggleTheme={toggleTheme} onSignOut={signOut} onBackToRooms={backToRooms} onOpenSettings={() => leaveWorkspace("/settings?from=workspace")} onOpenPrivacySettings={() => leaveWorkspace(externalAISettingsHref)} onAddExtractedEvent={addDocumentEventCandidate} onAddExtractedChecklist={addDocumentChecklistCandidate} onAddChatEvent={openChatEvent} canAddChatEvent={canAddChatEvent} onAddChatChecklist={openChatChecklist} onScopeChange={setSelectedScope}
+        overview={canOpenOverview ? overview : undefined}
+        renderTools={renderTools} renderProposals={(scope, messages) => <ProposalPanel room={activeRoom} scope={scope} messages={messages} onApply={(draft) => applyProposal(scope, draft)}
+          canApprove={canApproveProposal} remember={state.profile.permissions.includes("editChecklist")} />}
+        renderWorkProposal={(scope, message) => <ChatWorkCard key={`${scopeId(scope)}:${message.id}`} scope={scope} message={message} onApply={draft => applyProposal(scope, draft)}
+          canApprove={!message.workProposal || message.workProposal.kind === "survey" || canApproveProposal(message.workProposal.kind)} remember={state.profile.permissions.includes("editChecklist")} />} />
 
       {workspaceError && <RoomDialog title="저장 확인" onClose={() => setWorkspaceError("")}><div className="room-dialog-body"><p role="alert" className="documents-error">{workspaceError}</p></div><footer className="room-dialog-footer"><Button type="button" variant="outline" onClick={() => setWorkspaceError("")}>닫기</Button></footer></RoomDialog>}
 

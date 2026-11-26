@@ -6,7 +6,7 @@ import type { CalendarEvent, ChecklistItem } from "../types";
 import type { ConversationScope } from "../conversation-scope";
 import { readConversationPlaces } from "../conversation-places";
 import { requirePermission, requireUser, type Actor } from "./auth";
-import { canonicalPrivateTool, requireOwnedConversation } from "./conversation-scope";
+import { canonicalWorkspaceTool, inheritWorkspaceRecords, requireOwnedConversation } from "./conversation-scope";
 import { getDatabase } from "./database";
 import { ApiError, assertSameOrigin, errorResponse, json } from "./http";
 import { id, object, validateRecord } from "./record-schema";
@@ -120,7 +120,7 @@ export function handleRetreatPreparation(request: Request, database?: DatabaseSy
   } catch (error) { return errorResponse(error); }
 }
 
-export function loadRetreatReview(db: DatabaseSync, actor: Actor, scope: ConversationScope, meeting: MeetingAvailability = "available", now = new Date()): RetreatReview {
+export function loadRetreatReview(db: DatabaseSync, actor: Actor, scope: ConversationScope, meeting: MeetingAvailability = "available", now = new Date(), includeReferences = true): RetreatReview {
     if (actor.id !== scope.accountId) throw new ApiError(404, "이 대화를 확인할 수 없습니다.");
     for (const permission of retreatReviewPermissions) requirePermission(actor, permission);
     const { roomId, conversationId } = scope;
@@ -130,11 +130,12 @@ export function loadRetreatReview(db: DatabaseSync, actor: Actor, scope: Convers
     if (!object(room) || room.category !== "retreat" || typeof room.name !== "string") {
       throw new ApiError(404, "준비 점검은 수련회 행사방에서만 사용할 수 있습니다.");
     }
+    inheritWorkspaceRecords(db, scope);
     const eventRow = db.prepare("SELECT data_json FROM records WHERE key=? AND room_id=? AND owner_id IS NULL AND kind='events'")
       .get(`preparation:${roomId}:events`, roomId) as Saved;
     const privateRecord = (kind: "checklist" | "location" | "transport"): Saved =>
       db.prepare("SELECT data_json FROM records WHERE key=? AND room_id=? AND owner_id=? AND kind=?")
-        .get(canonicalPrivateTool(scope, kind), roomId, actor.id, kind) as Saved;
+        .get(canonicalWorkspaceTool(scope, kind), roomId, actor.id, kind) as Saved;
     const locationRecord = privateRecord("location");
     let location = "";
     if (locationRecord) {
@@ -154,17 +155,17 @@ export function loadRetreatReview(db: DatabaseSync, actor: Actor, scope: Convers
       { date: room.date, name: room.name }, readItems<CalendarEvent>(eventRow, "events"),
       readItems<ChecklistItem>(privateRecord("checklist"), "checklist"), location, approvedTransport, meeting, now,
     );
-    return { roomId, conversationId, ...review, references: readRetreatReferences(db, actor, scope, review.next) };
+    return { roomId, conversationId, ...review, references: includeReferences ? readRetreatReferences(db, actor, scope, review.next) : [] };
 }
 
-export function summarizeRetreatReview(review: RetreatReview): string {
+export function summarizeRetreatReview(review: RetreatReview, includeValues = true): string {
   const singleLine = (text: string) => text.replace(/[\x00-\x1F\x7F\u2028\u2029]/g, " ").trim();
   const fields = review.fields.map(field => {
     const state = field.status === "confirmed" ? "확정" : field.status === "deferred" ? "보류" : field.status === "not_applicable" ? "해당 없음" : "미정";
-    const value = typeof field.value === "string" && field.status === "confirmed" ? ` (${singleLine(field.value)})` : "";
+    const value = includeValues && typeof field.value === "string" && field.status === "confirmed" ? ` (${singleLine(field.value)})` : "";
     return `- ${field.label}: ${state}${value}`;
   });
-  const references = review.references?.map(ref => `- ${singleLine(ref.sourceTitle)}: ${singleLine(ref.excerpt)}`) ?? [];
+  const references = includeValues ? review.references?.map(ref => `- ${singleLine(ref.sourceTitle)}: ${singleLine(ref.excerpt)}`) ?? [] : [];
   return [`${review.year}년 준비 점검 · 저장된 기록 기준`, ...fields,
     ...(references.length ? ["", "참고 자료 (올해 확정 정보 아님)", ...references] : []),
     "", ...(review.next.length ? review.next.map(task => `[준비 제안] ${task.label}`) : ["지금 제안할 준비 항목이 없습니다."]),

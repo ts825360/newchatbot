@@ -1,6 +1,6 @@
 services:
   app:
-    image: ${CHURCH_IMAGE:-nowchatbot:2026-11-25-lodging-planner}
+    image: ${CHURCH_IMAGE:-nowchatbot:v0.2.0-rc.14}
     pull_policy: never
     init: true
     restart: unless-stopped

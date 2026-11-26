@@ -2,15 +2,16 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ConversationScope } from "../conversation-scope";
 import { comparisonPoints, createTransportComparisonFacts, isTransportComparison, type TransportComparison } from "../transport-comparison";
 import { requirePermission, requireUser } from "./auth";
-import { canonicalPrivateTool, requireOwnedConversation } from "./conversation-scope";
+import { canonicalWorkspaceTool, inheritWorkspaceRecords, requireOwnedConversation } from "./conversation-scope";
 import { getDatabase } from "./database";
 import { ApiError, errorResponse, json, readJson } from "./http";
 import { id, object, text } from "./record-schema";
 
 function readPair(db: DatabaseSync, scope: ConversationScope): Required<TransportComparison> {
   requireOwnedConversation(db, scope);
+  inheritWorkspaceRecords(db, scope);
   const row = db.prepare("SELECT data_json FROM records WHERE key=? AND owner_id=? AND room_id=? AND kind='transport'")
-    .get(canonicalPrivateTool(scope, "transport"), scope.accountId, scope.roomId);
+    .get(canonicalWorkspaceTool(scope, "transport"), scope.accountId, scope.roomId);
   const value: unknown = row && JSON.parse(String(row.data_json));
   const pair: unknown = object(value) ? value.comparison : null;
   if (!isTransportComparison(pair) || !pair.a || !pair.b) throw new ApiError(409, "비교안 두 개를 먼저 저장해 주세요.");

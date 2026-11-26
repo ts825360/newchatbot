@@ -9,7 +9,7 @@ import { profileFor, requirePermission, type Actor } from "./auth";
 import { ApiError } from "./http";
 import { id, object, text, validateRecord } from "./record-schema";
 import { conversationHistoryKey, privateToolKey, privateToolKinds, type ConversationScope, type PrivateToolKind } from "../conversation-scope";
-import { canonicalConversationHistory, canonicalPrivateTool, conversationIds, requireOwnedConversation } from "./conversation-scope";
+import { canonicalConversationHistory, canonicalPrivateTool, canonicalWorkspaceTool, conversationIds, inheritWorkspaceRecords, requireOwnedConversation } from "./conversation-scope";
 
 type Location = { canonical: string; kind: string; ownerId: string | null; roomId: string | null; scope?: ConversationScope };
 const catalogKey = (actor: Actor) => `church-planner-room-catalog-v1:${actor.id}`;
@@ -36,7 +36,7 @@ export function locateRecord(actor: Actor, key: string): Location {
     const roomId = decode(privateKey[2]), conversationId = decode(privateKey[3]), kind = privateKey[4] as PrivateToolKind;
     if (id(roomId) && id(conversationId)) {
       const scope = { accountId: actor.id, roomId, conversationId };
-      return { canonical: canonicalPrivateTool(scope, kind), kind, ownerId: actor.id, roomId, scope };
+      return { canonical: canonicalWorkspaceTool(scope, kind), kind, ownerId: actor.id, roomId, scope };
     }
   }
   throw new ApiError(403, "자료에 접근할 권한이 없습니다.");
@@ -68,6 +68,7 @@ export function readSnapshot(actor: Actor, roomId?: string, db = getDatabase(), 
       if (conversationId) {
         const scope = { accountId: actor.id, roomId, conversationId };
         requireOwnedConversation(db, scope);
+        inheritWorkspaceRecords(db, scope);
         keys.push(...privateToolKinds.map((kind) => privateToolKey(scope, kind)));
       }
     }
@@ -113,7 +114,7 @@ function saveCatalog(actor: Actor, value: unknown, db: DatabaseSync) {
 }
 
 function permissionFor(kind: string): Permission | null {
-  return ({ documents: "uploadDocument", checklist: "editChecklist", events: "editEvent", decisions: "editChecklist", risks: "editChecklist", transport: "editChecklist", conversations: "chat", location: "chat" } as Record<string, Permission>)[kind] ?? null;
+  return ({ documents: "uploadDocument", checklist: "editChecklist", events: "editEvent", decisions: "editChecklist", risks: "editChecklist", transport: "editChecklist", conversations: "chat", location: "chat", timetable: "editChecklist" } as Record<string, Permission>)[kind] ?? null;
 }
 function sameFile(row: any, file: any) { return row && row.name === file.name && Number(row.size) === file.size && row.mime === file.type; }
 function saveRecord(actor: Actor, location: Location, value: any, db: DatabaseSync) {
@@ -148,7 +149,7 @@ function saveRecord(actor: Actor, location: Location, value: any, db: DatabaseSy
     for (const conversationId of conversationIds(db, actor.id, location.roomId!)) {
       if (remaining.has(conversationId)) continue;
       const scope = { accountId: actor.id, roomId: location.roomId!, conversationId };
-      for (const kind of privateToolKinds) db.prepare("DELETE FROM records WHERE key=? AND owner_id=?").run(canonicalPrivateTool(scope, kind), actor.id);
+      db.prepare("DELETE FROM records WHERE key=? AND owner_id=?").run(canonicalPrivateTool(scope, "documents"), actor.id);
       db.prepare("DELETE FROM conversation_files WHERE owner_id=? AND room_id=? AND conversation_id=?").run(actor.id, scope.roomId, conversationId);
     }
   }
@@ -165,7 +166,17 @@ export function writeBatch(actor: Actor, writes: ServerWrite[], roomId?: string,
   });
   if (new Set(payload.map((w) => w.location.canonical)).size !== payload.length) throw new ApiError(400, "같은 자료를 가리키는 중복 요청입니다.");
   return transaction(db, () => {
+    const inheritedRooms = new Set<string>();
     for (const w of payload) {
+      const { scope, kind } = w.location;
+      if (scope && kind !== "documents") {
+        requirePermission(actor, "chat");
+        requireOwnedConversation(db, scope);
+        if (!inheritedRooms.has(scope.roomId)) {
+          inheritWorkspaceRecords(db, scope);
+          inheritedRooms.add(scope.roomId);
+        }
+      }
       const version = w.location.kind === "catalog" ? readCatalog(actor, db).version : String(db.prepare("SELECT revision FROM records WHERE key=?").get(w.location.canonical)?.revision ?? 0);
       if (version !== w.version) throw new ApiError(409, "다른 기기에서 자료가 변경되었습니다. 내 변경을 보관하고 최신 자료를 확인해 주세요.");
     }
