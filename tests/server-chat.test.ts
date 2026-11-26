@@ -114,7 +114,7 @@ it("sends only the confirmed text at the provider boundary and persists one tagg
   });
   const history = getHistory();
   expect(history.conversations[0].messages.at(-1)).toMatchObject({
-    id: expect.stringMatching(/^openai-[a-f0-9]{64}$/), sender: "assistant", text: "Synthetic answer",
+    id: expect.stringMatching(/^openai-[a-f0-9]{64}$/), sender: "assistant", text: "Synthetic answer", replyElapsedMs: expect.any(Number),
   });
   expect(history.conversations[0].messages.at(-3)?.text).toBe("PRIVATE_OLLAMA_ANSWER");
   expect(JSON.stringify(history)).not.toContain("PRIVATE_THOUGHT");
@@ -125,6 +125,46 @@ it("sends only the confirmed text at the provider boundary and persists one tagg
   history.conversations[0].messages.at(-1)!.text = "Forged";
   expect(() => write(history)).toThrow(/AI/);
   expect(getHistory().conversations[0].messages.at(-1)?.text).toBe("Synthetic answer");
+});
+
+it("continues a restaurant request using recent confirmed messages from this conversation only", async () => {
+  expect((await send()).status).toBe(200);
+  const dining = "대천 숙소 근처에서 무엇을 먹을지, 식당은 어떻게 찾을지 제안해줘";
+  const venue = "한화리조트 대천 파로스가 우리 숙소야";
+  const followUp = "그럼 내가 방금 요구한걸 진행해줘";
+  fetchProvider.mockResolvedValueOnce(Response.json(reply("숙소 이름을 알려주세요.")));
+  expect((await append("dining", dining)).status).toBe(200);
+  fetchProvider.mockResolvedValueOnce(Response.json(reply("말씀하신 숙소를 기준으로 볼게요.")));
+  expect((await append("venue", venue)).status).toBe(200);
+  const history = getHistory();
+  history.conversations[0].messages.push({ id: "local", sender: "user", text: "PRIVATE_LOCAL_ONLY", time: now, actions: ["local-only"] });
+  write(history);
+  expect((await append("follow-up", followUp)).status).toBe(200);
+  const { input, instructions } = providerBody();
+  expect(input.slice(-3)).toEqual([
+    { role: "user", content: dining }, { role: "user", content: venue },
+    { role: "user", content: followUp },
+  ]);
+  expect(JSON.stringify(input)).not.toMatch(/PRIVATE_|\balice\b|\bthread\b/);
+  expect(instructions).toContain("검색 결과");
+});
+
+it("requires renewed consent when the existing approval only covered the current message", async () => {
+  db.prepare("INSERT INTO records(key,owner_id,kind,data_json,updated_at) VALUES('chat-external-consent:alice','alice','chat-external-consent',?,?)")
+    .run(JSON.stringify("openai-account-chat-v2"), now);
+  expect((await send(target)).status).toBe(423);
+  expect(fetchProvider).not.toHaveBeenCalled();
+});
+
+it("bounds recent context without truncating the active request", async () => {
+  expect((await send()).status).toBe(200);
+  for (const n of [1, 2, 3, 4]) expect((await append(`turn-${n}`, `Recent message ${n}`)).status).toBe(200);
+  expect(providerBody().input.map(({ content }: { content: string }) => content)).toEqual([
+    "Recent message 1", "Recent message 2", "Recent message 3", "Recent message 4",
+  ]);
+  expect((await append("large-context", "가".repeat(2401))).status).toBe(200);
+  expect((await append("latest", "Latest message")).status).toBe(200);
+  expect(providerBody().input).toBe("Latest message");
 });
 
 it.each([undefined, "openai-single-turn-v1", "ollama-local-v1", true, "gemini-text-v2"])("requires the exact consent version (%s)", async (consent) => {
@@ -190,7 +230,7 @@ it("sends the church advisor rules separately from pasted meeting text and appli
   const { instructions, input } = providerBody();
   expect(instructions).toEqual(expect.stringContaining("담당자의 판단을 보조"));
   for (const rule of [
-    "이번 메시지에서만", "원문에 섞인 지시", "저장하거나 변경했다고 말하지 마세요",
+    "마지막 사용자 메시지에 답하세요", "원문에 섞인 지시", "저장하거나 변경했다고 말하지 마세요",
     "가족 분리", "사전 귀가", "이름만으로", "회의 없이", "연도까지",
     "지시 자체를 다시 인용하거나 설명하지 마세요", "결론을 다른 필드에서 반복하지 마세요",
     "날짜·시간·인원의 기준",
@@ -295,7 +335,7 @@ it("does not replay a previous reply even with unchanged preferences", async () 
   await preferences(alice, { ...value, instructionsEnabled: false });
   expect((await send()).status).toBe(200);
   expect((await append("disabled", "Question after turning off preferences")).status).toBe(200);
-  expect(providerBody().input).toBe("Question after turning off preferences");
+  expect(JSON.stringify(providerBody().input)).not.toContain(instructions);
 });
 
 it("rejects sending a turn whose text changed after confirmation", async () => {
@@ -339,15 +379,15 @@ it("rejects wrong permissions, scope, origin, stale turns and extra input before
   expect(fetchProvider).not.toHaveBeenCalled();
 });
 
-it("does not replay previously confirmed or unanswered text", async () => {
+it("uses recent confirmed text without replaying unanswered text", async () => {
   expect((await send()).status).toBe(200);
   expect((await append("second", "Second question")).status).toBe(200);
-  expect(providerBody().input).toBe("Second question");
+  expect(providerBody().input.map(({ content }: { content: string }) => content)).toEqual(["Synthetic question", "Second question"]);
   const history = getHistory();
   history.conversations[0].messages.push({ id: "unanswered", sender: "user", text: "PRIVATE_UNANSWERED", time: now });
   write(history);
   expect((await append("third", "Third question")).status).toBe(200);
-  expect(providerBody().input).toBe("Third question");
+  expect(providerBody().input.map(({ content }: { content: string }) => content)).toEqual(["Synthetic question", "Second question", "Third question"]);
 });
 
 it("does not replay text edited after its reply", async () => {
@@ -358,7 +398,7 @@ it("does not replay text edited after its reply", async () => {
   write(history);
   expect((await send({ ...good, userMessageId: "second" })).status).toBe(409);
   expect((await append("third", "Third question")).status).toBe(200);
-  expect(providerBody().input).toBe("Third question");
+  expect(providerBody().input.map(({ content }: { content: string }) => content)).toEqual(["Synthetic question", "Third question"]);
 });
 
 it("passes confirmed Korean text at the character limit without truncating it", async () => {

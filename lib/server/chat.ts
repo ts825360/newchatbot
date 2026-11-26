@@ -12,7 +12,7 @@ import type { ConversationHistory } from "../conversation-store";
 import type { ConversationScope } from "../conversation-scope";
 import type { ChatMessage } from "../types";
 import { requirePermission, requireUser } from "./auth";
-import { generateOpenAIText } from "./chat-openai";
+import { generateOpenAIText, type OpenAIChatTurn } from "./chat-openai";
 import { chatAdvisorPrompt, chatOutputInstruction } from "./chat-advisor-prompt";
 import { assistantStyleInstruction, formatAssistantReply, loadAssistantPreferences } from "./assistant-preferences";
 import { canonicalConversationHistory, requireOwnedConversation } from "./conversation-scope";
@@ -48,6 +48,23 @@ function replyIdFor(scope: ConversationScope, turn: ChatMessage, internal: boole
   return prefix + createHash("sha256").update(JSON.stringify([scope.accountId, scope.roomId, scope.conversationId, turn.id, turn.text])).digest("hex");
 }
 
+function chatInput(scope: ConversationScope, messages: readonly ChatMessage[], current: string): string | OpenAIChatTurn[] {
+  const context: OpenAIChatTurn[] = [];
+  const start = Math.max(0, messages.length - 13);
+  let remaining = 2400;
+  for (let i = messages.length - 3; i >= start && context.length < 3; i--) {
+    const question = messages[i], reply = messages[i + 1];
+    // A matching server-owned reply proves this exact question previously reached OpenAI.
+    if (question.sender !== "user" || reply.sender !== "assistant" || reply.id !== replyIdFor(scope, question, false, false)
+      || question.actions?.includes(internalChatAction) || hasObviousPrivateData(question.text)) continue;
+    const size = question.text.length;
+    if (size > remaining) break;
+    remaining -= size;
+    context.unshift({ role: "user", content: question.text });
+  }
+  return context.length ? [...context, { role: "user", content: current }] : current;
+}
+
 function findTurn(db: DatabaseSync, scope: ConversationScope, userMessageId: string, userMessageText: string, internal: boolean, retreatVenueReview: boolean) {
   requireOwnedConversation(db, scope);
   const key = canonicalConversationHistory(scope.accountId, scope.roomId);
@@ -73,6 +90,7 @@ function findTurn(db: DatabaseSync, scope: ConversationScope, userMessageId: str
 }
 
 export async function handleChat(request: Request, database?: DatabaseSync): Promise<Response> {
+  const startedAt = performance.now();
   try {
     const db = database ?? getDatabase();
     const actor = requireUser(request, db);
@@ -124,7 +142,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
       } else if (localReview) {
         reply = loadPreparationStatus(db, actor, scope);
       } else {
-        const raw = await generateOpenAIText(data.userMessageText, request.signal,
+        const raw = await generateOpenAIText(chatInput(scope, original.conversation.messages, data.userMessageText), request.signal,
           [chatAdvisorPrompt, chatOutputInstruction, assistantStyleInstruction(preferences)].join("\n\n"), advisorReplyFormat);
         const answer = parseAdvisorReply(raw);
         if (!answer) throw new ApiError(502, "답변 형식을 확인하지 못했습니다. 다시 요청해 주세요.");
@@ -143,7 +161,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         const latest = currentTurn();
         if (latest.complete) return;
         assertSameHistory(latest);
-        latest.conversation.messages.push({ id: latest.replyId, sender: "assistant", ...reply, time: "방금 전" });
+        latest.conversation.messages.push({ id: latest.replyId, sender: "assistant", ...reply, time: "방금 전", replyElapsedMs: Math.round(performance.now() - startedAt) });
         const updatedAt = new Date().toISOString();
         latest.conversation.updatedAt = updatedAt;
         validateRecord("conversations", latest.history);
