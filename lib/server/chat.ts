@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { isEventVenueRouteQuestion, venueRouteFor } from "../chat-venue-route";
+import { isEventVenueRouteQuestion, venueTravelAnchor } from "../chat-venue-route";
 import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
 import { eventPublicVenueUsedAction, hasObviousPrivateData, internalChatAction, openAIChatConsentVersion, openAIReplyContextConsentVersion, openAIPrivacyWarning, requestsPersonalDisclosure } from "../assistant-privacy";
@@ -16,6 +16,7 @@ import type { ChatMessage } from "../types";
 import { requirePermission, requireUser } from "./auth";
 import { generateOpenAIText, type OpenAIChatTurn } from "./chat-openai";
 import { eventVenueTool, readPublicEventVenue } from "./chat-venue-tool";
+import { answerVenueTravel, venueTravelFollowUp } from "./chat-travel";
 import { diningVisit, nearbySearchKind, participantBand, recommendDining } from "./chat-dining";
 import { classifyContinuation, contextOrdinal, requestOnlyConditions, type EventWindow } from "../chat-continuity";
 import { resolveWorkConditions, type WorkCondition } from "../chat-work-state";
@@ -146,7 +147,7 @@ function nearbyOrigin(message: string, previous?: NearbyTask): Pick<NearbyTask, 
   return previous ? { origin: previous.origin, ...(previous.venueName && { venueName: previous.venueName }) } : { origin: "saved" };
 }
 
-function findTurn(db: DatabaseSync, scope: ConversationScope, userMessageId: string, userMessageText: string, internal: boolean, retreatVenueReview: boolean) {
+function findTurn(db: DatabaseSync, scope: ConversationScope, userMessageId: string, userMessageText: string, localReview: boolean, retreatVenueReview: boolean) {
   requireOwnedConversation(db, scope);
   const key = canonicalConversationHistory(scope.accountId, scope.roomId);
   const row = db.prepare("SELECT data_json,revision FROM records WHERE key=? AND owner_id=? AND room_id=? AND kind='conversations'")
@@ -159,6 +160,10 @@ function findTurn(db: DatabaseSync, scope: ConversationScope, userMessageId: str
   const index = messages.findIndex(({ id }) => id === userMessageId);
   if (index < 0 || messages[index].sender !== "user" || messages[index].text !== userMessageText) throw changed();
   if (messages[index].actions?.includes(internalChatAction)) throw new ApiError(422, "내부 저장 메시지는 외부로 전송하지 않습니다.");
+  const anchor = !localReview && venueTravelAnchor(messages.slice(0, index), messages[index].reference);
+  const travelContinuation = anchor && anchor.answer.id === replyIdFor(scope, anchor.question, true, false)
+    ? venueTravelFollowUp(anchor.question.text, userMessageText) : undefined;
+  const internal = localReview || Boolean(travelContinuation);
   const previousNearby = internal ? undefined : priorNearby(scope, messages, index);
   const nearbyKind = internal ? null : nearbySearchKind(messages[index].text) ?? previousNearby?.nearbyTask?.kind ?? null;
   const replyId = replyIdFor(scope, messages[index], internal, retreatVenueReview, !!nearbyKind);
@@ -169,7 +174,7 @@ function findTurn(db: DatabaseSync, scope: ConversationScope, userMessageId: str
     if (!text(messages[index].text, 8000)) throw new ApiError(400, "메시지는 8,000자 이내로 입력해 주세요.");
     if (messages.length >= 1000) throw full();
   }
-  return { key, row, history, conversation, message: messages[index], replyId, complete, previousNearby, nearbyKind };
+  return { key, row, history, conversation, message: messages[index], replyId, complete, previousNearby, nearbyKind, travelContinuation };
 }
 
 export async function handleChat(request: Request, database?: DatabaseSync): Promise<Response> {
@@ -189,9 +194,6 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
     const action = classifyContinuation(data.userMessageText);
     const venueRouteQuestion = !nearbySearchKind(data.userMessageText) && isEventVenueRouteQuestion(data.userMessageText);
     const localReview = venueRouteQuestion || action === "cancel" || isPreparationChat(data.userMessageText) || isPreparationStatusChat(data.userMessageText) || retreatVenueReview;
-    if (!localReview && (!hasChatConsent(db, actor.id) || data.consent !== undefined && data.consent !== openAIChatConsentVersion)) {
-      throw new ApiError(423, "환경설정의 보안 및 개인정보에서 외부 AI 이용을 허용해 주세요.");
-    }
     if (requestsPersonalDisclosure(data.userMessageText) || (!localReview || venueRouteQuestion) && hasObviousPrivateData(data.userMessageText)) throw new ApiError(422, openAIPrivacyWarning);
     const scope = { accountId: actor.id, roomId: data.roomId, conversationId: data.conversationId };
     const currentTurn = () => {
@@ -203,6 +205,10 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
       return findTurn(db, scope, data.userMessageId, data.userMessageText, localReview, retreatVenueReview);
     };
     const original = currentTurn();
+    const useLocalReply = localReview || Boolean(original.travelContinuation);
+    if (!useLocalReply && (!hasChatConsent(db, actor.id) || data.consent !== undefined && data.consent !== openAIChatConsentVersion)) {
+      throw new ApiError(423, "환경설정의 보안 및 개인정보에서 외부 AI 이용을 허용해 주세요.");
+    }
     let { nearbyKind } = original;
     const { previousNearby } = original;
     const assertSameHistory = (turn: typeof original) => {
@@ -230,16 +236,19 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
       let reply: Pick<ChatMessage, "text" | "advisor" | "actions" | "dining" | "nearbyTask" | "venueRoute">;
       if (action === "cancel") {
         reply = { text: "이 대화에서 이어가던 요청을 중단했어요. 행사방에 저장된 기록은 변경하지 않았습니다.", actions: ["context-cancelled"] };
-      } else if (venueRouteQuestion) {
+      } else if (venueRouteQuestion || original.travelContinuation) {
         const venue = readPublicEventVenue(db, scope);
+        let usedSearch = false;
         assertSourcesStillCurrent = () => {
           if (!isDeepStrictEqual(venue, readPublicEventVenue(db, scope))) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
+          if (usedSearch && !hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
         };
-        reply = venue ? {
-          text: `이 행사방의 대표 숙소는 ${venue.name}입니다.\n주소: ${venue.address}\n이 앱은 경로를 실시간으로 계산하지 않습니다. 실제 소요 시간은 아래 지도에서 이동 수단을 선택해 확인해 주세요.`,
-          venueRoute: venueRouteFor(venue.name, data.userMessageText),
-          actions: [eventPublicVenueUsedAction],
-        } : { text: "이 행사방에서 확인된 공개 대표 숙소가 없어요. 장소 목록에서 대표 숙소를 먼저 확인해 주세요." };
+        if (venue) {
+          const result = await answerVenueTravel(venue, data.userMessageText,
+            hasChatConsent(db, actor.id) && (data.consent === undefined || data.consent === openAIChatConsentVersion), request.signal, original.travelContinuation);
+          usedSearch = result.usedSearch;
+          reply = { text: result.text, venueRoute: result.venueRoute, actions: [eventPublicVenueUsedAction] };
+        } else reply = { text: "이 행사방에서 확인된 공개 대표 숙소가 없어요. 장소 목록에서 대표 숙소를 먼저 확인해 주세요." };
       } else if (retreatVenueReview) {
         loadRetreatVenueReview(db, actor, scope);
         reply = { text: "수련회 결과 보고서의 이용 이력과 비교 후보입니다.", actions: [venueHistoryReplyAction] };
@@ -396,7 +405,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         const latest = currentTurn();
         if (latest.complete) return;
         assertSameHistory(latest);
-        if (!localReview && !hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
+        if (!useLocalReply && !hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
         assertSourcesStillCurrent();
         const replyId = original.nearbyKind && !nearbyKind ? replyIdFor(scope, latest.message, false, false) : latest.replyId;
         latest.conversation.messages.push({ id: replyId, sender: "assistant", ...reply, time: "방금 전", replyElapsedMs: Math.round(performance.now() - startedAt) });

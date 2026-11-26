@@ -387,6 +387,135 @@ async function diningQuestion(question: string) {
   return send({ ...good, userMessageText: question });
 }
 
+const routeSource = "https://transit.example.org/route-guide";
+const journeyLeg = (id: string, origin: string, destination: string, mode: string, minMinutes: number, maxMinutes: number, sourceUrl = routeSource) =>
+  ({ id, origin, destination, mode, minMinutes, maxMinutes, sourceUrl });
+const journeyOutput = (legs: object[], urls = [routeSource]) => ({ status: "completed", output: [
+  { type: "web_search_call", status: "completed", action: { type: "search", sources: urls.map(url => ({ type: "url", url })) } },
+  { ...candidate, content: [{ type: "output_text", text: JSON.stringify({ legs }) }] },
+] });
+const lodgingName = "한화리조트 대천 파로스";
+
+it("looks up public station-to-lodging drive estimates without sending the conversation", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(journeyOutput([journeyLeg("drive", "대전역", lodgingName, "driving", 95, 125)])));
+  expect((await diningQuestion("우리 숙소 위치가 어디야? 만약 대전역에서 출발한다면 얼마나 걸려?")).status).toBe(200);
+  expect(fetchProvider).toHaveBeenCalledTimes(1);
+  expect(providerBody()).toMatchObject({ store: false, tools: [{ type: "web_search" }] });
+  expect(JSON.parse(providerBody().input)).toMatchObject({ legs: [{ id: "drive", origin: "대전역", destination: lodgingName, mode: "driving" }] });
+  expect(JSON.stringify(providerBody())).not.toMatch(/PRIVATE_|Synthetic question|\balice\b|\bthread\b/);
+  const response = getHistory().conversations[0].messages.at(-1);
+  expect(response?.text).toMatch(/1시간 35분~2시간 5분/);
+  expect(response?.text).toContain("실시간 아님");
+  expect(response?.venueRoute?.sources).toEqual([routeSource]);
+});
+
+const trainJourney = "가상참가자가 17시에 준비를 마치고 기차를 타고 대전역에서 내려서 중구청역에서 자차를 타고 우리 숙소로 와. 출발 기차시간은 18시40분이야. 도착 예정시간이 언제야?";
+const transferEstimate = journeyLeg("transfer", "대전역", "중구청역", "transit", 10, 15);
+const driveEstimate = journeyLeg("drive", "중구청역", lodgingName, "driving", 100, 110);
+
+it("looks up both connections and computes time after rail arrival without guessing the train", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(journeyOutput([transferEstimate, driveEstimate])));
+  expect((await diningQuestion(trainJourney)).status).toBe(200);
+  const input = JSON.parse(providerBody().input);
+  expect(input.legs).toMatchObject([
+    { id: "transfer", origin: "대전역", destination: "중구청역", mode: "transit" },
+    { id: "drive", origin: "중구청역", destination: lodgingName, mode: "driving" },
+  ]);
+  expect(providerBody().input).not.toMatch(/가상참가자|18:40|18시40|17시|PRIVATE_/);
+  const response = getHistory().conversations[0].messages.at(-1);
+  expect(response?.text).toContain("대전역 → 중구청역");
+  expect(response?.text).toContain("중구청역 → 숙소");
+  expect(response?.text).toContain("1시간 55분~2시간 20분");
+  expect(response?.text).toContain("18:40");
+  expect(response?.text).toContain("기차 출발역과 이용 날짜");
+  expect(response?.text).not.toContain("가상참가자");
+  expect(response?.venueRoute).toMatchObject({ origin: "중구청역", mode: "driving" });
+});
+
+it("computes the ETA server-side and identifies a range that crosses midnight", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(journeyOutput([transferEstimate, driveEstimate])));
+  expect((await diningQuestion(`${trainJourney} 기차는 대전역에 22:00에 도착해.`)).status).toBe(200);
+  const response = getHistory().conversations[0].messages.at(-1);
+  expect(response?.text).toContain("23:55~다음 날 00:20");
+  expect(providerBody().input).not.toContain("22:00");
+});
+
+it("accepts an arrival-clock follow-up in the same conversation without resending the original itinerary", async () => {
+  fetchProvider.mockImplementation(async () => Response.json(journeyOutput([transferEstimate, driveEstimate])));
+  expect((await diningQuestion(trainJourney)).status).toBe(200);
+  expect((await append("rail-arrival", "대전역에 22:00 도착해.")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.text).toContain("23:55~다음 날 00:20");
+  expect(providerBody().input).not.toMatch(/22:00|가상참가자/);
+
+  fetchProvider.mockResolvedValueOnce(Response.json(reply("어느 여정인지 알려 주세요.")));
+  const history = getHistory();
+  history.conversations[1].messages = [{ id: "separate-rail", sender: "user", text: "대전역에 22:00 도착해.", time: now }];
+  write(history);
+  expect((await send({ ...good, conversationId: "other", userMessageId: "separate-rail", userMessageText: "대전역에 22:00 도착해." })).status).toBe(200);
+  expect(providerBody().tools).not.toEqual([{ type: "web_search" }]);
+  expect(getHistory().conversations[1].messages.at(-1)?.text).toBe("어느 여정인지 알려 주세요.");
+});
+
+it("uses a quoted itinerary while keeping a named arrival follow-up out of external model context", async () => {
+  fetchProvider.mockImplementation(async () => Response.json(journeyOutput([transferEstimate, driveEstimate])));
+  expect((await diningQuestion(trainJourney)).status).toBe(200);
+  const answer = getHistory().conversations[0].messages.at(-1)!;
+  expect((await append("quoted-arrival", "가상 참가자 자매가 대전역에 22:00에 도착해.", { kind: "reply", messageId: answer.id })).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.text).toContain("23:55~다음 날 00:20");
+  expect(providerBody().input).not.toMatch(/22:00|가상 참가자/);
+});
+
+it("honors a walking transfer stated after an earlier mention of the same station", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(journeyOutput([{ ...transferEstimate, mode: "walking" }, driveEstimate])));
+  const walkingJourney = trainJourney.replace("중구청역에서 자차를", "중구청역까지 걸어서 이동한 뒤 중구청역에서 자차를");
+  expect((await diningQuestion(walkingJourney)).status).toBe(200);
+  expect(JSON.parse(providerBody().input).legs[0]).toMatchObject({ id: "transfer", mode: "walking" });
+  expect(getHistory().conversations[0].messages.at(-1)?.text).toContain("중구청역 (도보): 약");
+});
+
+it("leaves conflicting rail arrival times unresolved", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(journeyOutput([transferEstimate, driveEstimate])));
+  expect((await diningQuestion(`${trainJourney} 기차는 대전역에 21:00 또는 22:00 도착해.`)).status).toBe(200);
+  const response = getHistory().conversations[0].messages.at(-1);
+  expect(response?.text).toContain("기차 도착 시각 미확인");
+  expect(response?.text).not.toContain("숙소 도착 예상:");
+});
+
+it("leaves total uncomputed for missing sources or mismatched legs", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(journeyOutput([
+    { ...transferEstimate, sourceUrl: "https://not-in-results.example.org/route" },
+    { ...driveEstimate, origin: "대전역" },
+  ])));
+  expect((await diningQuestion(`${trainJourney} 기차는 대전역에 22:00 도착해.`)).status).toBe(200);
+  const response = getHistory().conversations[0].messages.at(-1);
+  expect(response?.text).toContain("숙소 도착 시각은 아직 계산할 수 없어요");
+  expect(response?.text).not.toMatch(/23:55|00:20|1시간 40분/);
+  expect(response?.venueRoute?.sources).toBeUndefined();
+});
+
+it("does not send an unverified station-shaped name to web search", async () => {
+  expect((await diningQuestion("김가상역에서 우리 숙소까지 자차로 얼마나 걸려?")).status).toBe(200);
+  expect(fetchProvider).not.toHaveBeenCalled();
+  expect(getHistory().conversations[0].messages.at(-1)?.venueRoute?.origin).toBeUndefined();
+});
+
+it("keeps the route and map link if the search provider is down", async () => {
+  fetchProvider.mockResolvedValueOnce(new Response(null, { status: 503 }));
+  expect((await diningQuestion(trainJourney)).status).toBe(200);
+  const answer = getHistory().conversations[0].messages.at(-1);
+  expect(answer?.text).toContain("숙소 도착 시각은 아직 계산할 수 없어요");
+  expect(answer?.venueRoute).toEqual({ venueName: lodgingName, origin: "중구청역", mode: "driving" });
+});
+
+it("does not persist estimates when the search consent is revoked mid-request", async () => {
+  fetchProvider.mockImplementationOnce(async () => {
+    saveChatConsent(db, "alice", false);
+    return Response.json(journeyOutput([transferEstimate, driveEstimate]));
+  });
+  expect((await diningQuestion(trainJourney)).status).toBe(423);
+  expect(getHistory().conversations[0].messages.at(-1)?.text).toBe(trainJourney);
+});
+
 it.each([
   ["우리 숙소 주변에 맛집 추천해줘. PRIVATE_USER_MESSAGE", null, null, null],
   ["지금 바로 갈 수 있는 숙소 주변 맛집 추천해줘", "2026-11-26", "17:00", "저녁"],
