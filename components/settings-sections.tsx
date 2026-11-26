@@ -6,7 +6,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { backendFetch, flushBackendWrites } from "@/lib/backend-client";
 import { refreshServerAuth } from "@/lib/client-auth";
 import { googleSettingsHref } from "@/lib/google-settings";
-import { externalAIConsentDetails, externalAIConsentTitle, openAIChatConsentVersion } from "@/lib/assistant-privacy";
+import { externalAIConsentDetails, externalAIConsentTitle, openAIChatConsentVersion, openAIReplyContextConsentVersion, replyContextConsentDetails, replyContextConsentPath, replyContextConsentTitle } from "@/lib/assistant-privacy";
 import type { UserProfile } from "@/lib/types";
 import { defaultDisplay, readDisplaySettings, saveDisplaySettings, type DisplaySettings } from "@/lib/use-theme";
 import { RoomDialog } from "./room-dialog";
@@ -188,6 +188,7 @@ export function PasswordPreferences({ accountId }: { accountId?: string }) {
 
 export function ExternalAIPreferences({ accountId }: { accountId: string }) {
   const [approved, setApproved] = useState<boolean | null>(null);
+  const [memoryApproved, setMemoryApproved] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -201,14 +202,29 @@ export function ExternalAIPreferences({ accountId }: { accountId: string }) {
     return () => controller.abort();
   }, [accountId, reload]);
 
-  const update = async (value: boolean) => {
-    if (busy || approved === null) return;
+  useEffect(() => {
+    if (approved !== true) return;
+    const controller = new AbortController();
+    setMemoryApproved(null);
+    void backendFetch(replyContextConsentPath, { signal: controller.signal }).then(data => {
+      if (!controller.signal.aborted) setMemoryApproved(data.approved === true);
+    }).catch(cause => { if (!controller.signal.aborted) setError(failureMessage(cause, "이전 답변 설정을 불러오지 못했습니다.")); });
+    return () => controller.abort();
+  }, [accountId, approved, reload]);
+
+  const update = async (value: boolean, memory = false) => {
+    if (busy || approved === null || memory && (!approved || memoryApproved === null)) return;
     setBusy(true); setError(""); setNotice("");
     try {
-      const result = await backendFetch("/api/chat", { method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId, approved: value, version: openAIChatConsentVersion }) });
-      setApproved(result.approved === true);
-      setNotice(result.approved === true ? "외부 AI 이용을 허용했습니다." : "외부 AI 이용을 해제했습니다.");
+      const result = await backendFetch(memory ? replyContextConsentPath : "/api/chat", { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId, approved: value, version: memory ? openAIReplyContextConsentVersion : openAIChatConsentVersion }) });
+      if (memory) {
+        setMemoryApproved(result.approved === true);
+        setNotice(result.approved === true ? "이전 AI 답변 사용을 허용했습니다." : "이전 AI 답변 사용을 해제했습니다.");
+      } else {
+        setApproved(result.approved === true);
+        setNotice(result.approved === true ? "외부 AI 이용을 허용했습니다." : "외부 AI 이용을 해제했습니다.");
+      }
     } catch (cause) { setError(failureMessage(cause, "동의 설정을 저장하지 못했습니다.")); }
     finally { setBusy(false); }
   };
@@ -219,6 +235,10 @@ export function ExternalAIPreferences({ accountId }: { accountId: string }) {
       {approved === null ? error && <button type="button" className="lobby-secondary" onClick={() => setReload(reload + 1)}>다시 불러오기</button> :
         <label className="settings-ai-toggle"><input type="checkbox" checked={approved} onChange={event => void update(event.target.checked)} disabled={busy} aria-label={externalAIConsentTitle} />{approved ? "허용됨" : "미동의"}</label>}
     </Row>
+    {approved === true && <Row title={replyContextConsentTitle} description={replyContextConsentDetails}>
+      {memoryApproved === null ? error && <button type="button" className="lobby-secondary" onClick={() => setReload(reload + 1)}>이전 답변 설정 다시 불러오기</button> :
+        <label className="settings-ai-toggle"><input type="checkbox" checked={memoryApproved} onChange={event => void update(event.target.checked, true)} disabled={busy} aria-label={replyContextConsentTitle} />{memoryApproved ? "허용됨" : "미동의"}</label>}
+    </Row>}
     <p className="settings-row-hint">해제하면 이후 외부 AI 요청을 차단합니다. 이미 보낸 내용이나 저장된 대화는 삭제되지 않습니다.</p>
     {error && <p className="settings-error" role="alert">{error}</p>}
     {notice && <p className="settings-save-status" role="status">{notice}</p>}

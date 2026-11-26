@@ -60,6 +60,22 @@ describe("settings access", () => {
     expect(await screen.findByText("외부 AI 이용을 해제했습니다.")).toBeDefined();
     expect(control.checked).toBe(false);
   });
+
+  it("leaves previous AI replies disabled until a separate opt-in is saved", async () => {
+    const contextPath = "/api/chat?purpose=reply-context";
+    backendFetch.mockImplementation(async (path, init) => {
+      if (path === "/api/chat") return { approved: true };
+      if (path === contextPath) return { approved: init?.method === "PUT" };
+      return connectionStatuses;
+    });
+    window.history.replaceState(null, "", "/settings?section=security#external-ai");
+    render(<SettingsScreen />);
+    const toggle = await screen.findByRole<HTMLInputElement>("checkbox", { name: "이전 AI 답변을 후속 질문에 활용" });
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    expect(await screen.findByText("이전 AI 답변 사용을 허용했습니다.")).toBeDefined();
+    expect(backendFetch).toHaveBeenCalledWith(contextPath, expect.objectContaining({ method: "PUT", body: expect.stringContaining("openai-chat-reply-context-v1") }));
+  });
   it("opens the account with six vertical sections and keeps password change in security", async () => {
     render(<SettingsScreen />);
     const nav = within(screen.getByRole("navigation", { name: "주 메뉴" }));

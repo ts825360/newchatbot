@@ -89,6 +89,7 @@ export type ChatMessage = {
   actions?: string[];
   advisor?: import("./chat-advisor").AdvisorPresentation;
   dining?: import("./chat-dining").DiningRecommendations;
+  nearbyTask?: import("./chat-dining").NearbyTask;
 };
 
 export type CalendarEvent = {

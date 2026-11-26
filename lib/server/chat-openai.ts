@@ -24,7 +24,7 @@ async function readReply(response: Response): Promise<unknown> {
   catch { throw invalidReply(); }
 }
 
-export type OpenAIChatTurn = { role: "user"; content: string };
+export type OpenAIChatTurn = { role: "user" | "assistant"; content: string };
 type ReadTool = { definition: { type: "function"; name: string; strict: true; description: string; parameters: Record<string, unknown> }; run: () => string };
 
 async function withOpenAI<T>(signal: AbortSignal, timeoutMs: number, run: (respond: (body: Record<string, unknown>) => Promise<unknown[]>, model: string) => Promise<T>) {

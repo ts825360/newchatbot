@@ -1,4 +1,8 @@
 export const openAIChatConsentVersion = "openai-account-chat-v6";
+export const openAIReplyContextConsentVersion = "openai-chat-reply-context-v1";
+export const replyContextConsentPath = "/api/chat?purpose=reply-context";
+export const replyContextConsentTitle = "이전 AI 답변을 후속 질문에 활용";
+export const replyContextConsentDetails = "같은 개인 대화에서 OpenAI가 이미 생성한 답변의 일부만 후속 요청에 다시 사용할 수 있습니다. 내부 자료와 다른 대화는 전송하지 않습니다.";
 export const externalAIConsentTitle = "외부 AI 이용 및 전송 동의";
 export const externalAIConsentDetails = "OpenAI로 질문과 이 대화에서 이전에 전송한 메시지 최대 3개, 또는 지정한 답장의 일부가 전송될 수 있습니다. 주변 장소 검색에는 공개 장소명·주소와 방문 조건만 보내며 대화 원문, 첨부자료, 참가자 명단은 검색에 보내지 않습니다.";
 export const externalAISettingsHref = "/settings?section=security&from=workspace#external-ai";
