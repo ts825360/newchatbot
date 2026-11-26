@@ -14,6 +14,7 @@ import type { ChatMessage } from "../types";
 import { requirePermission, requireUser } from "./auth";
 import { generateOpenAIText, type OpenAIChatTurn } from "./chat-openai";
 import { eventVenueTool, readPublicEventVenue } from "./chat-venue-tool";
+import { diningVisit, isDiningSearch, recommendDining } from "./chat-dining";
 import { chatAdvisorPrompt, chatOutputInstruction } from "./chat-advisor-prompt";
 import { assistantStyleInstruction, formatAssistantReply, loadAssistantPreferences } from "./assistant-preferences";
 import { canonicalConversationHistory, requireOwnedConversation } from "./conversation-scope";
@@ -44,8 +45,8 @@ export function handleChatConsent(request: Request, database = getDatabase()): R
   } catch (cause) { return errorResponse(cause); }
 }
 
-function replyIdFor(scope: ConversationScope, turn: ChatMessage, internal: boolean, retreatVenueReview: boolean) {
-  const prefix = retreatVenueReview ? "venue-history-" : internal ? "prep-" : "openai-";
+function replyIdFor(scope: ConversationScope, turn: ChatMessage, internal: boolean, retreatVenueReview: boolean, dining = false) {
+  const prefix = retreatVenueReview ? "venue-history-" : internal ? "prep-" : dining ? "dining-" : "openai-";
   const reference = turn.reference ? [turn.reference.kind, turn.reference.messageId] : [];
   return prefix + createHash("sha256").update(JSON.stringify([scope.accountId, scope.roomId, scope.conversationId, turn.id, turn.text, ...reference])).digest("hex");
 }
@@ -94,9 +95,9 @@ function findTurn(db: DatabaseSync, scope: ConversationScope, userMessageId: str
   const index = messages.findIndex(({ id }) => id === userMessageId);
   if (index < 0 || messages[index].sender !== "user" || messages[index].text !== userMessageText) throw changed();
   if (messages[index].actions?.includes(internalChatAction)) throw new ApiError(422, "내부 저장 메시지는 외부로 전송하지 않습니다.");
-  const replyId = replyIdFor(scope, messages[index], internal, retreatVenueReview);
+  const replyId = replyIdFor(scope, messages[index], internal, retreatVenueReview, !internal && isDiningSearch(messages[index].text));
   const existing = messages[index + 1];
-  const complete = existing?.sender === "assistant" && existing.id === replyId;
+  const complete = existing?.sender === "assistant" && (existing.id === replyId || !internal && existing.id === replyIdFor(scope, messages[index], false, false));
   if (!complete) {
     if (index !== messages.length - 1 || messages.some(({ id }) => id === replyId)) throw changed();
     if (!text(messages[index].text, 8000)) throw new ApiError(400, "메시지는 8,000자 이내로 입력해 주세요.");
@@ -149,7 +150,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
     try {
       const preferences = loadAssistantPreferences(db, actor.id);
       const format = (value: string) => value.trim() ? formatAssistantReply(value.trim(), preferences.emoji) : "";
-      let reply: Pick<ChatMessage, "text" | "advisor" | "actions">;
+      let reply: Pick<ChatMessage, "text" | "advisor" | "actions" | "dining">;
       if (retreatVenueReview) {
         loadRetreatVenueReview(db, actor, scope);
         reply = { text: "수련회 결과 보고서의 이용 이력과 비교 후보입니다.", actions: [venueHistoryReplyAction] };
@@ -157,6 +158,18 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         reply = { text: formatAssistantReply(summarizeRetreatReview(loadRetreatReview(db, actor, scope)), preferences.emoji) };
       } else if (localReview) {
         reply = loadPreparationStatus(db, actor, scope);
+      } else if (isDiningSearch(data.userMessageText)) {
+        const venue = readPublicEventVenue(db, scope);
+        const now = new Date();
+        const visit = diningVisit(data.userMessageText, now);
+        if (!venue) reply = { text: "이 행사방에서 검색에 사용할 공개 대표 장소를 확인하지 못했어요. 장소에서 대표 숙소를 확인해 주세요." };
+        else if (!visit) reply = { text: "어느 날짜와 시간에 방문할까요? 예를 들어 ‘내일 아침’이나 ‘토요일 오후 6시’라고 알려주세요." };
+        else {
+          reply = await recommendDining(venue, visit, now, request.signal);
+          assertSameHistory(currentTurn());
+          if (!hasConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
+          if (JSON.stringify(venue) !== JSON.stringify(readPublicEventVenue(db, scope))) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
+        }
       } else {
         const publicVenue = readPublicEventVenue(db, scope);
         let venueUsed: string | undefined;

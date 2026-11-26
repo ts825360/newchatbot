@@ -27,23 +27,17 @@ async function readReply(response: Response): Promise<unknown> {
 export type OpenAIChatTurn = { role: "user"; content: string };
 type ReadTool = { definition: { type: "function"; name: string; strict: true; description: string; parameters: Record<string, unknown> }; run: () => string };
 
-export async function generateOpenAIText(input: string | OpenAIChatTurn[], signal: AbortSignal, instructions = "", format?: Record<string, unknown>, tool?: ReadTool): Promise<string> {
+async function withOpenAI<T>(signal: AbortSignal, timeoutMs: number, run: (respond: (body: Record<string, unknown>) => Promise<unknown[]>, model: string) => Promise<T>) {
   const key = process.env.OPENAI_API_KEY?.trim();
   const model = process.env.OPENAI_MODEL?.trim() || "gpt-6-luna";
   if (process.env.AI_PROVIDER !== "openai" || !key || (model !== "gpt-6-luna" && model !== "gpt-6.2-sol")) throw unavailable();
-  const timeout = AbortSignal.timeout(45_000);
-  async function respond(context: string | readonly unknown[], continuation = false) {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  async function respond(body: Record<string, unknown>) {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST", redirect: "error", credentials: "omit", cache: "no-store",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       signal: AbortSignal.any([signal, timeout]),
-      body: JSON.stringify({
-        model, ...(instructions && { instructions }), input: context, store: false,
-        reasoning: { effort: model === "gpt-6-luna" ? "none" : "low" }, max_output_tokens: 1200,
-        ...(format && { text: { format } }),
-        ...(tool && { tools: [tool.definition], tool_choice: continuation ? "none" : "auto", parallel_tool_calls: false,
-          ...(model === "gpt-6.2-sol" && { include: ["reasoning.encrypted_content"] }) }),
-      }),
+      body: JSON.stringify({ ...body, model, store: false }),
     });
     if (!response.ok) {
       if (response.status === 429) {
@@ -65,7 +59,32 @@ export async function generateOpenAIText(input: string | OpenAIChatTurn[], signa
     if (!object(reply) || reply.status !== "completed" || !Array.isArray(reply.output)) throw invalidReply();
     return reply.output as unknown[];
   }
-  try {
+  try { return await run(respond, model); }
+  catch (error) {
+    if (signal.aborted) throw new ApiError(408, "답변 요청이 취소되었습니다.");
+    if (timeout.aborted) throw new ApiError(504, "OpenAI 답변 시간이 초과되었습니다. 다시 시도해 주세요.");
+    if (error instanceof ApiError) throw error;
+    throw unavailable();
+  }
+}
+
+export function searchOpenAIWeb(input: string, signal: AbortSignal, instructions: string, format: Record<string, unknown>) {
+  return withOpenAI(signal, 30_000, respond => respond({
+    input, instructions, reasoning: { effort: "low" }, max_output_tokens: 2400,
+    text: { format }, tools: [{ type: "web_search", search_context_size: "low", external_web_access: true,
+      user_location: { type: "approximate", country: "KR", timezone: "Asia/Seoul" } }],
+    tool_choice: "required", max_tool_calls: 2, include: ["web_search_call.action.sources"],
+  }));
+}
+
+export async function generateOpenAIText(input: string | OpenAIChatTurn[], signal: AbortSignal, instructions = "", format?: Record<string, unknown>, tool?: ReadTool): Promise<string> {
+  return withOpenAI(signal, 45_000, async (request, model) => {
+    const respond = (context: string | readonly unknown[], continuation = false) => request({
+      ...(instructions && { instructions }), input: context, reasoning: { effort: model === "gpt-6-luna" ? "none" : "low" }, max_output_tokens: 1200,
+      ...(format && { text: { format } }),
+      ...(tool && { tools: [tool.definition], tool_choice: continuation ? "none" : "auto", parallel_tool_calls: false,
+        ...(model === "gpt-6.2-sol" && { include: ["reasoning.encrypted_content"] }) }),
+    });
     let items = await respond(input);
     const calls = items.filter(item => object(item) && item.type === "function_call");
     if (calls.length) {
@@ -90,10 +109,5 @@ export async function generateOpenAIText(input: string | OpenAIChatTurn[], signa
     const result = output.join("\n").trim();
     if (!text(result, 16_000)) throw invalidReply();
     return result;
-  } catch (error) {
-    if (signal.aborted) throw new ApiError(408, "답변 요청이 취소되었습니다.");
-    if (timeout.aborted) throw new ApiError(504, "OpenAI 답변 시간이 초과되었습니다. 다시 시도해 주세요.");
-    if (error instanceof ApiError) throw error;
-    throw unavailable();
-  }
+  });
 }

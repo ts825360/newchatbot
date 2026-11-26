@@ -2,9 +2,10 @@
 import { isBackendConnected } from "@/lib/backend-client";
 import { internalChatAction } from "@/lib/assistant-privacy";
 
-import { CalendarDays, CalendarPlus, ChevronDown, ClipboardCheck, Copy, Ellipsis, ListPlus, LoaderCircle, LockKeyhole, Paperclip, Pencil, RefreshCw, Reply, Send, UserRound, UsersRound, X } from "lucide-react";
+import { CalendarDays, CalendarPlus, ChevronDown, ClipboardCheck, Copy, Ellipsis, ExternalLink, ListPlus, LoaderCircle, LockKeyhole, MapPin, Paperclip, Pencil, RefreshCw, Reply, Send, UserRound, UsersRound, Utensils, X } from "lucide-react";
 import { chatProposalCandidates, type ChatRosterSource } from "@/lib/chat-tool-candidates";
 import { isAdvisorPresentation } from "@/lib/chat-advisor";
+import { diningMapUrl, isDiningRecommendations } from "@/lib/chat-dining";
 import { venueHistoryReplyAction } from "@/lib/retreat-venue-history";
 import { eventPublicVenueUsedAction } from "@/lib/assistant-privacy";
 import type { ConversationScope } from "@/lib/conversation-scope";
@@ -188,6 +189,25 @@ function Composer({ conversation, reference, onClearReference, onEditReference, 
 }
 
 function MessageBody({ message, review }: { message: ChatMessage; review: ReactNode }) {
+  if (message.sender === "assistant" && isDiningRecommendations(message.dining)) {
+    const { venue, checkedAt, restaurants } = message.dining;
+    const checked = new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(checkedAt));
+    return <section className="workspace-plan workspace-dining" aria-label="주변 식당 추천">
+      <div className="workspace-plan-heading"><span className="workspace-plan-icon"><Utensils size={17} aria-hidden="true" /></span><h3>주변 식당 추천</h3><span className="workspace-plan-state">웹 검색</span></div>
+      <p className="workspace-message-text">{message.text}</p>
+      <ol className="workspace-dining-list">{restaurants.map((restaurant, index) => <li key={restaurant.name}>
+        <h4><span>{index + 1}순위</span>{restaurant.name}</h4>
+        <p>{restaurant.reason}</p>
+        <p className="workspace-dining-facts"><strong>영업</strong> {restaurant.hours}</p>
+        <p className="workspace-dining-facts"><strong>평점</strong>{restaurant.rating ? <> {restaurant.rating.value}/5 · {restaurant.rating.count ? `리뷰 ${restaurant.rating.count.toLocaleString("ko-KR")}개` : "리뷰 수 미확인"} <a href={restaurant.rating.source.url} target="_blank" rel="noopener noreferrer">평점 출처</a></> : " 확인되지 않음"}</p>
+        <div className="workspace-dining-links">
+          <a href={diningMapUrl(restaurant.name, venue)} target="_blank" rel="noopener noreferrer"><MapPin size={14} aria-hidden="true" /> 지도에서 찾기</a>
+          {restaurant.sources.map((source, index) => <a key={source.url} href={source.url} title={source.label} target="_blank" rel="noopener noreferrer"><ExternalLink size={13} aria-hidden="true" />{index === 0 ? "영업 출처" : `추가 출처 ${index}`}</a>)}
+        </div>
+      </li>)}</ol>
+      <p className="workspace-dining-checked">검색 {checked} (한국 시각) · 영업시간이 바뀔 수 있으니 출발 전 확인하세요.</p>
+    </section>;
+  }
   const plan = message.advisor;
   if (message.sender !== "assistant" || !isAdvisorPresentation(plan) || plan.kind !== "plan") {
     return <><p className="workspace-message-text">{message.text}</p>{review}</>;

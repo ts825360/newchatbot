@@ -22,6 +22,12 @@ const candidate = { type: "message", role: "assistant", content: [{ type: "outpu
 const answer = { status: "completed", output: [{ type: "reasoning", summary: [{ text: "PRIVATE_THOUGHT" }] }, candidate] };
 const rawReply = (text: string) => ({ ...answer, output: [{ ...candidate, content: [{ type: "output_text", text }] }] });
 const reply = (text: string) => rawReply(chatAnswer(text));
+const diningUrl = "https://restaurant.example.org/bor-1";
+const diningResult = (rows: object[], searched = true) => ({ status: "completed", output: [
+  ...(searched ? [{ type: "web_search_call", status: "completed", action: { type: "search", sources: [{ type: "url", url: diningUrl }] } }] : []),
+  { ...candidate, content: [{ type: "output_text", text: JSON.stringify({ restaurants: rows }), annotations: [] }] },
+] });
+const diningCandidate = { name: "가상 대천 해물집", reason: "보령식 해물 요리와 단체 좌석을 안내합니다.", hours: "07:00~21:00, 21:00 라스트오더", hoursUrl: diningUrl, opensAt: "07:00", closesAt: "21:00", rating: null, reviewCount: null, ratingUrl: "", sourceUrls: [diningUrl] };
 const target = { roomId: "room", conversationId: "thread", userMessageId: "question", userMessageText: "Synthetic question" };
 const good = { ...target, consent: openAIChatConsentVersion };
 const now = "2026-11-18T00:00:00.000Z";
@@ -250,7 +256,7 @@ it.each([
 
 it("looks up the same room's public venue from a new chat without forwarding other records", async () => {
   const name = "한화리조트 대천 파로스";
-  const question = "우리 숙소 주변에 맛집 추천해줘";
+  const question = "우리 숙소 주소를 알려줘";
   const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
   writeBatch(requireUser(request(), db), [{ key: privateToolKey(scope, "location"), version: "0", value: JSON.stringify({
     location: name, places: [name], details: [{ name, address: "PRIVATE_ADDRESS", notes: "PRIVATE_NOTES" }],
@@ -271,6 +277,69 @@ it("looks up the same room's public venue from a new chat without forwarding oth
   expect(JSON.stringify(payloads)).not.toMatch(/PRIVATE_|\balice\b|\bthread\b|previous_response_id/);
   const saved = getHistory().conversations[1].messages.at(-1);
   expect(saved?.actions).toContain("event-public-venue-used");
+});
+
+async function diningQuestion(question: string) {
+  const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
+  const name = "한화리조트 대천 파로스";
+  writeBatch(requireUser(request(), db), [{ key: privateToolKey(scope, "location"), version: "0", value: JSON.stringify({ location: name,
+    places: [name], details: [{ name, address: "PRIVATE_ADDRESS", notes: "PRIVATE_NOTES" }] }) }], "room", db);
+  const history = getHistory();
+  history.conversations[0].messages.at(-1)!.text = question;
+  write(history);
+  return send({ ...good, userMessageText: question });
+}
+
+it.each([
+  ["우리 숙소 주변에 맛집 추천해줘. PRIVATE_USER_MESSAGE", "2026-11-26", "18:00", "저녁"],
+  ["내일 아침 숙소 근처에 갈 식당 추천해줘", "2026-11-27", "08:00", "아침"],
+])("searches for the visit time and saves sourced results without sending the user message: %s", async (question, date, visitTime, meal) => {
+  vi.setSystemTime(new Date("2026-11-26T08:00:00Z"));
+  try {
+    fetchProvider.mockResolvedValueOnce(Response.json(diningResult([diningCandidate])));
+    expect((await diningQuestion(question)).status).toBe(200);
+    expect(fetchProvider).toHaveBeenCalledTimes(1);
+    const payload = providerBody();
+    expect(payload).toMatchObject({ tools: [expect.objectContaining({ type: "web_search" })], max_tool_calls: 2, store: false });
+    expect(JSON.parse(payload.input)).toMatchObject({ date, visitTime, meal, venue: expect.objectContaining({ name: "한화리조트 대천 파로스" }) });
+    expect(JSON.stringify(payload)).not.toMatch(/PRIVATE_|\balice\b|\bthread\b/);
+    const reply = getHistory().conversations[0].messages.at(-1);
+    expect(reply?.text).toContain(meal);
+    expect(reply?.dining?.restaurants).toMatchObject([{ name: diningCandidate.name, rating: null, sources: [{ url: diningUrl }] }]);
+  } finally { vi.useRealTimers(); }
+});
+
+it.each([
+  [false, diningCandidate, /검색을 완료하지 못/],
+  [true, { ...diningCandidate, hoursUrl: "https://invented.example.com", sourceUrls: ["https://invented.example.com"] }, /영업한다는 근거를 확인한/],
+])("does not publish invented recommendations (actual search: %s)", async (searched, row, message) => {
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult([row], searched)));
+  expect((await diningQuestion("우리 숙소 주변에 맛집 추천해줘")).status).toBe(200);
+  const reply = getHistory().conversations[0].messages.at(-1);
+  expect(reply?.text).toMatch(message);
+  expect(reply?.dining).toBeUndefined();
+  expect(JSON.stringify(reply)).not.toContain("invented.example.com");
+});
+
+it("keeps the dining question out of later ordinary OpenAI context", async () => {
+  const question = "우리 숙소 주변에 맛집 추천해줘. NOT_SENT_WORDING";
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult([diningCandidate])));
+  expect((await diningQuestion(question)).status).toBe(200);
+  expect((await append("next", "다른 질문입니다")).status).toBe(200);
+  expect(JSON.stringify(fetchProvider.mock.calls)).not.toContain("NOT_SENT_WORDING");
+});
+
+it("keeps sourced ratings but filters restaurants closing before the planned visit", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult([
+    { ...diningCandidate, name: "가상 일찍 닫는 집", closesAt: "17:00" },
+    { ...diningCandidate, rating: 4.5, reviewCount: 83, ratingUrl: diningUrl },
+    { ...diningCandidate, name: "가상 평점 출처 없는 집", rating: 5, reviewCount: 200, ratingUrl: "https://invented.example.com" },
+  ])));
+  expect((await diningQuestion("내일 오후 6시에 숙소 근처 식당 추천해줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.dining?.restaurants).toMatchObject([
+    { name: diningCandidate.name, rating: { value: 4.5, count: 83 } },
+    { name: "가상 평점 출처 없는 집", rating: null },
+  ]);
 });
 
 it.each([
