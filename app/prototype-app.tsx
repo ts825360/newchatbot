@@ -345,7 +345,7 @@ export function PrototypeApp() {
     );
   }
 
-  const renderTools = (mode: "calendar" | "prepare", scope?: ConversationScope) => {
+  const renderTools = (mode: "calendar" | "prepare", scope?: ConversationScope, onOpenTimetable?: () => void) => {
     if (mode === "prepare" && (!scope || scopeId(scope) !== privateIdentity)) return null;
     const error = mode === "calendar" ? calendarError : materialsError || riskError;
     return (
@@ -354,6 +354,7 @@ export function PrototypeApp() {
     <SharedPanel
       mode={mode}
       scope={mode === "prepare" ? scope : undefined}
+      onOpenTimetable={onOpenTimetable}
       room={activeRoom}
       events={activeEvents}
       checklist={mode === "prepare" ? activeChecklist : []}
@@ -387,21 +388,16 @@ export function PrototypeApp() {
   ); };
 
   const canPreviewCalendar = state.profile.permissions.includes("viewCalendar");
-  const canPreviewChecklist = state.profile.permissions.includes("chat") && state.profile.permissions.includes("viewChecklist");
-  const overview = (scope: ConversationScope | null, loadFailed: boolean, hasConversation: boolean): WorkspaceOverviewData => {
-    const currentChecklist = scope && scopeId(scope) === privateIdentity && checklistLoaded;
-    return {
-      calendar: !canPreviewCalendar ? undefined : calendarError ? { state: "error" } : calendarLoaded ? { state: "ready", items: activeEvents } : { state: "loading" },
-      checklist: !canPreviewChecklist ? undefined : !hasConversation ? { state: "noConversation" } : loadFailed || (currentChecklist && materialsError)
-        ? { state: "error" } : currentChecklist ? { state: "ready", items: activeChecklist } : { state: "loading" },
-      onEvent: openExistingEvent,
-    };
-  };
+  const canOpenOverview = canPreviewCalendar || (state.profile.permissions.includes("chat") && state.profile.permissions.includes("viewChecklist"));
+  const overview = (): WorkspaceOverviewData => ({
+    calendar: !canPreviewCalendar ? undefined : calendarError ? { state: "error" } : calendarLoaded ? { state: "ready", items: activeEvents } : { state: "loading" },
+    onEvent: openExistingEvent,
+  });
 
   return (
     <main className="workspace-page h-dvh overflow-hidden bg-background text-foreground" aria-busy={saving}>
       <EventWorkspace key={`${state.profile.accountId}:${activeRoom.id}`} room={activeRoom} profile={state.profile} seedMessages={activeMessages} notice={workspaceNotice || calendarNotice.text} noticeError={!workspaceNotice && calendarNotice.failed} darkMode={darkMode} onToggleTheme={toggleTheme} onSignOut={signOut} onBackToRooms={backToRooms} onOpenSettings={() => leaveWorkspace("/settings?from=workspace")} onAddExtractedEvent={addDocumentEventCandidate} onAddExtractedChecklist={addDocumentChecklistCandidate} onAddChatEvent={openChatEvent} canAddChatEvent={canAddChatEvent} onAddChatChecklist={openChatChecklist} onScopeChange={setSelectedScope}
-        overview={canPreviewCalendar || canPreviewChecklist ? overview : undefined}
+        overview={canOpenOverview ? overview : undefined}
         renderTools={renderTools} renderProposals={(scope, messages) => <ProposalPanel room={activeRoom} scope={scope} messages={messages} onApply={(draft) => applyProposal(scope, draft)} />} />
 
       {workspaceError && <RoomDialog title="저장 확인" onClose={() => setWorkspaceError("")}><div className="room-dialog-body"><p role="alert" className="documents-error">{workspaceError}</p></div><footer className="room-dialog-footer"><Button type="button" variant="outline" onClick={() => setWorkspaceError("")}>닫기</Button></footer></RoomDialog>}

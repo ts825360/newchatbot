@@ -1,12 +1,14 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventWorkspace } from "../components/event-workspace";
+import { PreparationProgressReview, PreparationProgressShortcut } from "../components/preparation-progress-review";
 import { createInitialState } from "../lib/prototype-state";
 import { configureBackendUser, enableBackendConnection, refreshBackendData, resetBackendClient } from "../lib/backend-client";
 import { conversationHistoryKey } from "../lib/conversation-scope";
 import type { ConversationHistory } from "../lib/conversation-store";
 import type { ChatMessage } from "../lib/types";
 import { chatProposalCandidates } from "../lib/chat-tool-candidates";
+import { openAIChatConsentVersion } from "../lib/assistant-privacy";
 
 beforeAll(() => {
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
@@ -141,6 +143,7 @@ describe("workspace 3-1", () => {
     const review = vi.fn(() => Response.json({ state: "remaining", percent: 33, notes: ["미완료 항목 2개"] }));
     vi.stubGlobal("fetch", vi.fn(async (path: string, init: RequestInit) => {
       if (path === "/api/preparation-progress") return review();
+      if (path.startsWith("/api/preparation-progress?")) return Response.json({ report: null, stale: false });
       if (path === "/api/data" && init.method === "POST") {
         const [write] = JSON.parse(init.body as string).writes;
         Object.assign(record, { value: write.value, version: "2" });
@@ -155,10 +158,14 @@ describe("workspace 3-1", () => {
     const chat = within(screen.getByRole("region", { name: "개인 대화" }));
     fireEvent.click(await chat.findByRole("button", { name: "준비 진행도 · 미검토" }));
     const summary = within(screen.getByRole("complementary", { name: "행사 요약" }));
-    fireEvent.click(summary.getByRole("button", { name: "모델로 검토" }));
+    expect(summary.getByRole("progressbar", { name: "준비 진행도" }).getAttribute("value")).toBe("0");
+    expect(summary.getByText("0%")).toBeDefined();
+    expect(summary.getByText("아직 점검하지 않았어요.")).toBeDefined();
+    fireEvent.click(summary.getByRole("button", { name: "중간점검" }));
     expect(review).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "확인하고 검토" }));
+    fireEvent.click(screen.getByRole("button", { name: "확인하고 점검" }));
     expect(await chat.findByRole("button", { name: "준비 진행도 · 33%" })).toBeDefined();
+    expect(summary.getByRole("progressbar", { name: "준비 진행도" }).getAttribute("value")).toBe("33");
     openGroupedTool("참가·이동", "차량 배정 열기");
     fireEvent.click(screen.getByRole("button", { name: "대화" }));
     expect(chat.getByRole("button", { name: "준비 진행도 · 33%" })).toBeDefined();
@@ -166,6 +173,17 @@ describe("workspace 3-1", () => {
     expect(chat.queryByRole("button", { name: "준비 진행도 · 33%" })).toBeNull();
     expect(await chat.findByRole("button", { name: "준비 진행도 · 미검토" })).toBeDefined();
     expect(review).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["pending", "remaining"] as const)("displays an empty graph and preserves the reasons when %s has no calculated score", state => {
+    const view = { busy: false, loading: false, saving: false, error: "", stale: false, report: { state, percent: null, notes: ["확정된 일정이 필요합니다."] } };
+    render(<><PreparationProgressShortcut {...view} onOpen={vi.fn()} /><PreparationProgressReview {...view} review={vi.fn()} /></>);
+    expect(screen.getByRole("button", { name: "준비 진행도 · 0%" })).toBeDefined();
+    expect(screen.getByRole("progressbar", { name: "준비 진행도" }).getAttribute("value")).toBe("0");
+    expect(screen.queryByText("판단 보류")).toBeNull();
+    const details = screen.getByText("판단 근거").closest("details");
+    expect(details?.open).toBe(false);
+    expect(details?.textContent).toContain("확정된 일정이 필요합니다.");
   });
 
   it("does not repeat the empty conversation title and preserves a draft across grouped tools", () => {
@@ -221,12 +239,13 @@ describe("workspace 3-1", () => {
     expect(props.onAddExtractedEvent).not.toHaveBeenCalled();
   });
 
-  it("confirms every send and retry, saving the approved text before requesting a reply", async () => {
+  it("confirms the first send, remembers consent across reloads, and still blocks detected private messages", async () => {
     const profile = props.profile;
     const { id: roomId } = props.room;
     const key = conversationHistoryKey(profile.accountId, roomId);
     let stored: string | null = null;
     let revision = 0;
+    let approved = false;
     let release!: (response: Response) => void;
     const firstReply = new Promise<Response>((resolve) => { release = resolve; });
     const calls: { roomId: string; conversationId: string; userMessageId: string; userMessageText: string; consent: string }[] = [];
@@ -240,6 +259,11 @@ describe("workspace 3-1", () => {
         revision++;
         return snapshot(true);
       }
+      if (path === "/api/chat" && init.method === "DELETE") {
+        approved = false;
+        return Response.json({ approved });
+      }
+      if (path === "/api/chat" && init.method !== "POST") return Response.json({ approved });
       if (path === "/api/chat") {
         const call = JSON.parse(init.body as string) as typeof calls[number];
         calls.push(call);
@@ -247,7 +271,7 @@ describe("workspace 3-1", () => {
         const conversation = history.conversations.find(item => item.id === call.conversationId)!;
         expect(conversation.messages).toEqual([{ id: call.userMessageId, sender: "user", text: "Synthetic question", time: "방금 전" }]);
         expect(conversation.draft).toBe("");
-        if (calls.length === 1) return firstReply;
+        if (calls.length === 1) { approved = call.consent === openAIChatConsentVersion; return firstReply; }
         conversation.messages.push({ id: "openai-test", sender: "assistant", text: "Synthetic model reply", time: "방금 전" });
         stored = JSON.stringify(history);
         revision++;
@@ -272,7 +296,7 @@ describe("workspace 3-1", () => {
     fireEvent.change(preview, { target: { value: "Synthetic question" } });
     fireEvent.click(screen.getByRole("button", { name: "동의하고 보내기" }));
     await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0].consent).toBe("openai-single-turn-v1");
+    expect(calls[0].consent).toBe(openAIChatConsentVersion);
     expect(calls[0].userMessageText).toBe("Synthetic question");
     expect(screen.getByText("답변 작성 중…")).toBeDefined();
     expect((screen.getByRole("button", { name: "전송" }) as HTMLButtonElement).disabled).toBe(true);
@@ -280,24 +304,31 @@ describe("workspace 3-1", () => {
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "OpenAI를 사용할 수 없습니다.");
     view.unmount();
     render(<EventWorkspace {...props} renderProposals={() => null} />);
+    await screen.findByRole("button", { name: "OpenAI 전송 동의 관리" });
     fireEvent.click(screen.getByRole("button", { name: "답변 다시 요청" }));
-    expect(calls).toHaveLength(1);
-    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "외부로 보낼 메시지" }).readOnly).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "동의하고 보내기" }));
+    expect(screen.queryByRole("dialog", { name: "OpenAI에 메시지 보내기" })).toBeNull();
     expect(await screen.findByText("Synthetic model reply")).toBeDefined();
-    expect(calls).toEqual([calls[0], calls[0]]);
+    const { consent: _, ...retried } = calls[0];
+    expect(calls).toEqual([calls[0], retried]);
     expect(screen.queryByText("샘플 응답")).toBeNull();
     expect(screen.queryByText("샘플 제안 검토")).toBeNull();
     expect(screen.queryByRole("button", { name: "답변 다시 요청" })).toBeNull();
     fireEvent.change(screen.getByRole("textbox", { name: "메시지" }), { target: { value: "가상 담당자 010-0000-0000" } });
     fireEvent.click(screen.getByRole("button", { name: "전송" }));
     expect(screen.getByRole("dialog", { name: "OpenAI에 메시지 보내기" })).toBeDefined();
-    expect(screen.getByRole<HTMLButtonElement>("button", { name: "동의하고 보내기" }).disabled).toBe(true);
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "보내기" }).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "내부에만 저장" }));
     expect(screen.getByText("내부 기록")).toBeDefined();
     await waitFor(() => expect(stored).toContain("local-only"));
     expect(calls).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "답변 다시 요청" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "OpenAI 전송 동의 관리" }));
+    fireEvent.click(screen.getByRole("button", { name: "전송 동의 철회" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "OpenAI 전송 동의 관리" })).toBeNull());
+    fireEvent.change(screen.getByRole("textbox", { name: "메시지" }), { target: { value: "After revocation" } });
+    fireEvent.click(screen.getByRole("button", { name: "전송" }));
+    expect(screen.getByRole("dialog", { name: "OpenAI에 메시지 보내기" })).toBeDefined();
+    expect(calls).toHaveLength(2);
   });
 
   it("opens only lodging tools and switches to the participant table without overlap", () => {

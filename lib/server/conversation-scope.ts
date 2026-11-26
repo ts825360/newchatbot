@@ -5,6 +5,7 @@ import { id } from "./record-schema";
 
 export const canonicalConversationHistory = (accountId: string, roomId: string) => `conversations:${accountId}:${roomId}`;
 export const canonicalPrivateTool = (scope: ConversationScope, kind: PrivateToolKind) => `private-v1:${scopeId(scope)}:${kind}`;
+export const preparationProgressKey = (scope: ConversationScope) => `preparation-progress:${scopeId(scope)}`;
 
 export function conversationIds(db: DatabaseSync, accountId: string, roomId: string): string[] {
   const row = db.prepare("SELECT data_json FROM records WHERE key=? AND owner_id=? AND room_id=?").get(canonicalConversationHistory(accountId, roomId), accountId, roomId);

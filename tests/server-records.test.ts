@@ -50,6 +50,7 @@ describe("authoritative shared/private records", () => {
       checklist: { version: 1, items: [{ id: "item", title: "PRIVATE_ITEM", owner: "", due: "", memo: "", status: "needsReview" }] },
       risks: { version: 1, items: [{ id: "r", title: "PRIVATE_RISK", detail: "detail", action: "action", resolved: false }] },
       decisions: { version: 1, items: [{ id: "d", status: "excluded", reason: "PRIVATE_DECISION" }] },
+      timetable: { version: 1, days: 2, startDate: "", entries: [{ id: "t", title: "PRIVATE_TIMETABLE", day: 1, start: 540, end: 720, kind: "program" }] },
     };
     const calendarKey = "church-preparation-v1:room-1:events";
     const event = { id: "e", title: "SHARED_EVENT", date: "2026-11-19", time: "", location: "", memo: "", status: "confirmed", author: "Manager", lastEditor: "Manager", changeLog: "" };
@@ -64,10 +65,15 @@ describe("authoritative shared/private records", () => {
     expect(JSON.stringify(other)).not.toContain("PRIVATE_MESSAGE");
     expect(JSON.stringify(readSnapshot(actor, room.id, db))).not.toContain("PRIVATE_LOCATION");
     expect(other.records.find((record) => record.key === calendarKey)?.value).toContain("SHARED_EVENT");
+    expect(own.records.find((record) => record.key === calendarKey)?.value).not.toContain("PRIVATE_TIMETABLE");
+    expect(JSON.stringify(readSnapshot(actor, room.id, db))).not.toContain("PRIVATE_TIMETABLE");
     expect(second.records.find((record) => record.key === calendarKey)?.value).toContain("SHARED_EVENT");
     expect(getFile(peer, scope, "doc", db)).toBeUndefined();
     expect(getFile(actor, { ...scope, conversationId: "second" }, "doc", db)).toBeUndefined();
     expect(() => writeBatch(peer, [{ ...writes[0], version: "1" }], room.id, db)).toThrow();
+    const timetable = writes.find((record) => record.key.endsWith(":timetable"))!;
+    expect(() => writeBatch(peer, [{ ...timetable, version: "1" }], room.id, db)).toThrow();
+    expect(() => writeBatch({ ...actor, permissions: actor.permissions.filter(p => p !== "editChecklist") }, [{ ...timetable, version: "1" }], room.id, db)).toThrow(/권한/);
     expect(() => readSnapshot(peer, room.id, db, "second")).toThrow();
     writeBatch(actor, [{ key: historyKey, version: "1", value: JSON.stringify({ conversations: conversations.slice(1), activeId: "second" }) }], room.id, db);
     expect(() => readSnapshot(actor, room.id, db, conv)).toThrow();

@@ -1,7 +1,7 @@
 "use client";
 
-import { ArrowLeft, CalendarDays, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Sun, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowLeft, CalendarClock, CalendarDays, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Sun, X } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { hasObviousPrivateData, internalChatAction, openAIChatConsentVersion, openAIPrivacyWarning } from "@/lib/assistant-privacy";
 import { createConversationStore, type ConversationHistory } from "@/lib/conversation-store";
 import type { ChatMessage, EventRoom, UserProfile } from "@/lib/types";
@@ -20,13 +20,14 @@ import { BlankGoogleFormLink } from "./google-forms-sharing";
 import { useToolsResize } from "./workspace-tools-resize";
 import { RoomDialog } from "./room-dialog";
 import { retreatReviewPermissions } from "@/lib/retreat-preparation";
-import { isPreparationChat, preparationChatQuery, type ChatRosterSource } from "@/lib/chat-tool-candidates";
+import { isPreparationChat, isPreparationStatusChat, preparationChatQuery, type ChatRosterSource } from "@/lib/chat-tool-candidates";
 import { RetreatPreparationPanel } from "./retreat-preparation-panel";
 import { isVenueHistoryChat } from "@/lib/retreat-venue-history";
 import { RetreatVenueHistory } from "./retreat-venue-history";
 import { roomStage, roomStages, roomTiming } from "@/lib/room-timing";
 import { WorkspaceOverview, type WorkspaceOverviewData } from "./workspace-overview";
 import { WorkspaceShell } from "./workspace-shell";
+import { WorkspaceTimetable } from "./workspace-timetable";
 import { PreparationProgressReview, PreparationProgressShortcut, usePreparationProgressReview } from "./preparation-progress-review";
 import { WorkspaceToolNavigation, workspaceTools, workspaceToolTrigger, type WorkspaceTool as Tool } from "./workspace-tool-navigation";
 
@@ -34,6 +35,7 @@ const isTransportTool = (tool: Tool) => tool === "transport" || tool === "lodgin
 const narrowWorkspace = 760;
 const overviewDesktop = 1100;
 type ChatConfirmation = { identity: string; text: string } & ({ kind: "send" } | { kind: "retry"; messageId: string });
+const scheduleViews = [{ id: "calendar", label: "공동 캘린더", icon: CalendarDays }, { id: "timetable", label: "타임테이블", icon: CalendarClock }] as const;
 
 export function EventWorkspace({ room, profile, seedMessages, notice, noticeError, darkMode, onToggleTheme, onSignOut, onBackToRooms, onOpenSettings, onAddExtractedEvent, onAddExtractedChecklist, onAddChatEvent, canAddChatEvent, onAddChatChecklist, onScopeChange, renderTools, renderProposals, overview }: {
   room: EventRoom; profile: UserProfile; seedMessages: ChatMessage[]; notice: string; noticeError?: boolean;
@@ -44,13 +46,15 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   canAddChatEvent?: (conversationId: string, message: ChatMessage) => boolean;
   onAddChatChecklist?: (scope: ConversationScope, message: ChatMessage) => void;
   onScopeChange?: (scope: ConversationScope | null) => void;
-  renderTools: (mode: "calendar" | "prepare", scope?: ConversationScope) => ReactNode;
+  renderTools: (mode: "calendar" | "prepare", scope?: ConversationScope, onOpenTimetable?: () => void) => ReactNode;
   renderProposals?: (scope: ConversationScope, messages: readonly ChatMessage[]) => ReactNode;
-  overview?: (scope: ConversationScope | null, loadFailed: boolean, hasConversation: boolean) => WorkspaceOverviewData;
+  overview?: () => WorkspaceOverviewData;
 }) {
   const [history, setHistory] = useState<ConversationHistory | null>(null);
   const [historyOpen, setHistoryOpen] = useState(true);
   const [tools, setTools] = useState<{ open: boolean; mode: Tool }>({ open: false, mode: "calendar" });
+  const [scheduleView, setScheduleView] = useState<"calendar" | "timetable">("calendar");
+  const scheduleId = useId();
   const toolNav = useRef<HTMLElement>(null);
   const overviewTrigger = useRef<HTMLButtonElement>(null);
   const historyTrigger = useRef<HTMLButtonElement>(null);
@@ -67,6 +71,10 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   const [chatBusy, setChatBusy] = useState(false);
   const chatRequest = useRef<AbortController | null>(null);
   const [confirmation, setConfirmation] = useState<ChatConfirmation | null>(null);
+  const [approvedAccount, setApprovedAccount] = useState<string | null>(null);
+  const [manageConsent, setManageConsent] = useState(false);
+  const [revokingConsent, setRevokingConsent] = useState(false);
+  const [consentError, setConsentError] = useState("");
   const [transportOpened, setTransportOpened] = useState(false);
   const [roster, setRoster] = useState<{ identity: string; source: ChatRosterSource } | null>(null);
   const [transportUnsaved, setTransportUnsaved] = useState(false);
@@ -74,10 +82,11 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   const [toolsError, setToolsError] = useState<{ key: string; message: string } | null>(null);
   const [retryTools, setRetryTools] = useState(0);
   const transportMode = isTransportTool(tools.mode);
-  const fullWidthTool = tools.open && transportMode;
+  const timetableView = tools.mode === "calendar" && scheduleView === "timetable";
+  const fullWidthTool = tools.open && (transportMode || timetableView);
   const showOverview = Boolean(overview) && !tools.open && (overviewOpen ?? viewport.wide);
   const historyVisible = historyOpen && !fullWidthTool && !(viewport.narrow && (showOverview || tools.open));
-  const resize = useToolsResize(!viewport.narrow && (showOverview || tools.open && !transportMode), historyVisible);
+  const resize = useToolsResize(!viewport.narrow && (showOverview || tools.open && !fullWidthTool), historyVisible);
   useLayoutEffect(() => {
     if (!historyVisible || !focusHistory.current) return;
     focusHistory.current = false;
@@ -101,7 +110,8 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   const isRetreat = server && "category" in room && room.category === "retreat";
   const canReviewRetreat = isRetreat &&
     retreatReviewPermissions.every(permission => profile.permissions.includes(permission));
-  const isLocalQuestion = (text: string) => isPreparationChat(text) || isRetreat && isVenueHistoryChat(text);
+  const isLocalQuestion = (text: string) => isPreparationChat(text) || isPreparationStatusChat(text) || isRetreat && isVenueHistoryChat(text);
+  const consentApproved = approvedAccount === accountId;
   const scope = useMemo<ConversationScope | null>(() => canChat && active ? { accountId, roomId: room.id, conversationId: active.id } : null, [canChat, accountId, room.id, active?.id]);
   const identity = scope ? scopeId(scope) : "";
   const ready = scope && (!server || loadedScope === identity);
@@ -110,6 +120,14 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   const progress = usePreparationProgressReview(progressScope);
   const store = useMemo(() => typeof window === "undefined" || !canChat ? null : createConversationStore(sessionStorage, accountId, room.id, seedMessages), [canChat, accountId, room.id, seedMessages]);
   useEffect(() => () => { chatRequest.current?.abort(); }, []);
+  useEffect(() => {
+    if (!server || !canChat) return;
+    const controller = new AbortController();
+    void backendFetch("/api/chat", { signal: controller.signal }).then(status => {
+      if (!controller.signal.aborted && getBackendProfile()?.accountId === accountId) setApprovedAccount(status.approved === true ? accountId : null);
+    }).catch(() => { /* Fall back to asking before sending. */ });
+    return () => controller.abort();
+  }, [server, canChat, accountId]);
   useEffect(() => {
     const resize = () => {
       const wide = window.innerWidth >= overviewDesktop, narrow = window.innerWidth <= narrowWorkspace;
@@ -169,7 +187,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     try { setHistory(store.setDraft(active.id, draft)); setUnsavedDraft(false); setError(""); }
     catch (cause) { setHistory({ ...history, conversations: history.conversations.map((item) => item.id === active.id ? { ...item, draft } : item) }); setUnsavedDraft(true); setError(message(cause)); }
   };
-  const requestReply = async (conversationId: string, userMessageId: string, userMessageText: string) => {
+  const requestReply = async (conversationId: string, userMessageId: string, userMessageText: string, approve = false) => {
     const controller = new AbortController();
     const stillCurrent = () => !controller.signal.aborted && getBackendProfile()?.accountId === accountId;
     chatRequest.current = controller;
@@ -179,20 +197,31 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
       if (!stillCurrent()) return;
       await backendFetch("/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
-        body: JSON.stringify({ roomId: room.id, conversationId, userMessageId, userMessageText, ...(!isLocalQuestion(userMessageText) && { consent: openAIChatConsentVersion }) }),
+        body: JSON.stringify({ roomId: room.id, conversationId, userMessageId, userMessageText, ...(approve && !isLocalQuestion(userMessageText) && { consent: openAIChatConsentVersion }) }),
       });
       if (stillCurrent()) await refreshBackendData(room.id, null);
     } catch (cause) {
+      if (stillCurrent() && cause instanceof BackendError && cause.status === 423 && !isLocalQuestion(userMessageText)) {
+        setApprovedAccount(null);
+        setConfirmation({ identity, kind: "retry", messageId: userMessageId, text: userMessageText });
+        return;
+      }
       if (stillCurrent() && cause instanceof BackendError && [404, 409].includes(cause.status) && !getBackendState().pending) {
         try { await refreshBackendData(room.id, null); } catch { /* Keep the original failure visible. */ }
       }
       if (stillCurrent()) setError(message(cause));
     } finally {
+      if (approve && stillCurrent()) {
+        try {
+          const status = await backendFetch("/api/chat", { signal: controller.signal });
+          if (stillCurrent()) setApprovedAccount(status.approved === true ? accountId : null);
+        } catch { /* The next turn can still use the approval dialog. */ }
+      }
       chatRequest.current = null;
       if (!controller.signal.aborted) setChatBusy(false);
     }
   };
-  const sendChat = (text: string, localOnly = false) => {
+  const sendChat = (text: string, localOnly = false, approve = false) => {
     if (!active || !store || chatRequest.current) return;
     let userMessageId: string | undefined;
     const failure = mutate(() => {
@@ -201,19 +230,20 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
       if (last?.sender === "user") userMessageId = last.id;
       return next;
     });
-    if (!failure && server && userMessageId && !localOnly) void requestReply(active.id, userMessageId, text.trim());
+    if (!failure && server && userMessageId && !localOnly) void requestReply(active.id, userMessageId, text.trim(), approve);
   };
   const unanswered = active?.messages.at(-1);
-  const retry = (messageId: string, text: string) => {
+  const retry = (messageId: string, text: string, approve = false) => {
     if (!active || !store || chatRequest.current || (unsavedDraft && mutate(() => store.load()))) return;
-    void requestReply(active.id, messageId, text);
+    void requestReply(active.id, messageId, text, approve);
   };
+  const needsConfirmation = (text: string) => !isLocalQuestion(text) && (!consentApproved || hasObviousPrivateData(text));
   const submitChat = (text: string) => {
-    if (server && identity && !isLocalQuestion(text)) setConfirmation({ identity, kind: "send", text });
+    if (server && identity && needsConfirmation(text)) setConfirmation({ identity, kind: "send", text });
     else if (!server || identity) sendChat(text);
   };
   const retryReply = server && active && store && unanswered?.sender === "user" && !unanswered.actions?.includes(internalChatAction) ? () => {
-    if (!isLocalQuestion(unanswered.text)) setConfirmation({ identity, kind: "retry", messageId: unanswered.id, text: unanswered.text });
+    if (needsConfirmation(unanswered.text)) setConfirmation({ identity, kind: "retry", messageId: unanswered.id, text: unanswered.text });
     else retry(unanswered.id, unanswered.text);
   } : undefined;
   const privateText = !!confirmation && hasObviousPrivateData(confirmation.text);
@@ -221,17 +251,35 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     if (!server || !identity || confirmation?.identity !== identity || !active || chatRequest.current ||
         !confirmation.text.trim() || (!localOnly && privateText)) return;
     setConfirmation(null);
-    if (confirmation.kind === "send") sendChat(confirmation.text, localOnly);
-    else if (!localOnly && unanswered?.id === confirmation.messageId && unanswered.text === confirmation.text && !unanswered.actions?.includes(internalChatAction)) retry(confirmation.messageId, confirmation.text);
+    if (confirmation.kind === "send") sendChat(confirmation.text, localOnly, !localOnly && !consentApproved);
+    else if (!localOnly && unanswered?.id === confirmation.messageId && unanswered.text === confirmation.text && !unanswered.actions?.includes(internalChatAction)) retry(confirmation.messageId, confirmation.text, !consentApproved);
+  };
+  const revokeChatConsent = async () => {
+    if (revokingConsent) return;
+    setRevokingConsent(true);
+    setConsentError("");
+    try {
+      await backendFetch("/api/chat", { method: "DELETE" });
+      if (getBackendProfile()?.accountId !== accountId) return;
+      setApprovedAccount(null);
+      setManageConsent(false);
+    } catch (cause) { setConsentError(message(cause)); }
+    finally { setRevokingConsent(false); }
   };
   const openTool = (mode: Tool, replyId?: string) => {
     if (isTransportTool(mode)) setTransportOpened(true);
+    if (mode === "calendar") setScheduleView("calendar");
     if (mode === "proposals") setProposalReply(replyId ? { identity, id: replyId } : null);
     if (window.innerWidth <= narrowWorkspace || document.activeElement?.closest(".workspace-center")) {
       if (tools.open && tools.mode === mode) inspectorHeading.current?.focus();
       else focusInspector.current = true;
     }
     setTools({ mode, open: true });
+  };
+  const openTimetable = () => {
+    focusInspector.current = true;
+    openTool("calendar");
+    setScheduleView("timetable");
   };
   const toggleTool = (mode: Tool) => {
     if (tools.open && tools.mode === mode) setTools({ mode, open: false });
@@ -283,7 +331,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     historyTrigger.current?.focus();
     setHistoryOpen(false);
   };
-  const summary = showOverview ? overview?.(readyScope, !!toolsError && toolsError.key === identity, !!scope) : undefined;
+  const summary = showOverview ? overview?.() : undefined;
   const timing = roomTiming({ date: room.date ?? null, endDate: room.endDate });
   const roomStatus = roomStages.find(entry => entry.id === roomStage(timing.key))!;
   const messages = active?.messages ?? [];
@@ -314,6 +362,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     return <button key={mode} type="button" className="workspace-start-button" onClick={() => openTool(mode)}><Icon size={17} aria-hidden="true" />{name} 보기</button>;
   })}<BlankGoogleFormLink className="workspace-start-button" /></div>;
   const chat = <>{(error || notice) && <div className={`workspace-notice ${error || noticeError ? "is-error" : ""}`} role={error || noticeError ? "alert" : "status"}>{error || notice}</div>}{canChat ? <ChatPanel conversation={active} visible={chatVisible} shortcuts={shortcuts} onDraftChange={changeDraft} onSendMessage={submitChat} busy={chatBusy} onRetryReply={retryReply} onNewConversation={() => create()} onOpenDocuments={() => openTool("documents")} onReviewProposals={renderProposals ? replyId => openTool("proposals", replyId) : undefined}
+        onManageConsent={server && consentApproved ? () => { setConsentError(""); setManageConsent(true); } : undefined}
         progress={progressScope && <PreparationProgressShortcut {...progress} onOpen={openProgress} />}
         retreatVenueScope={isRetreat ? readyScope ?? undefined : undefined}
         canAddCalendarEvent={message => !!active && (profile.permissions.includes("createEvent") || profile.permissions.includes("editEvent")) && (canAddChatEvent?.(active.id, message) ?? true)}
@@ -326,19 +375,44 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
         {resize.handle}
         <header className="workspace-tools-heading workspace-theme">
           {overview && tools.open && <button type="button" className="workspace-icon-button workspace-summary-back" aria-label="행사 요약으로 돌아가기" title="행사 요약으로 돌아가기" onClick={returnToSummary}><ArrowLeft size={17} aria-hidden="true" /></button>}
-          <h2 ref={inspectorHeading} tabIndex={-1}>{summary ? "행사 요약" : toolName}</h2>
+          <h2 ref={inspectorHeading} tabIndex={-1}>{summary ? "행사 요약" : tools.mode === "calendar" && canChat ? "일정" : toolName}</h2>
           {tools.open && tools.mode === "proposals" && replyIndex >= 0 && <button type="button" className="workspace-start-button workspace-proposals-all" onClick={() => setProposalReply(null)}>전체 제안</button>}
           <button type="button" className="workspace-icon-button workspace-inspector-close" aria-label={summary ? "요약 패널 닫기" : "부가기능 닫기"} title={summary ? "요약 패널 닫기" : "부가기능 닫기"} onClick={summary ? () => { setOverviewOpen(false); overviewTrigger.current?.focus(); } : closeTool}><X size={18} /></button>
         </header>
-        {summary && <WorkspaceOverview {...summary} event={{ name: room.name, period: timing.key !== "undated" ? room.dateLabel : "", status: roomStatus.label }} scope={readyScope} onCalendar={() => openFromSummary("calendar")} onChecklist={() => openFromSummary("prepare")} renderProgress={progressScope ? checklist => <PreparationProgressReview key={identity} {...progress}>{checklist}</PreparationProgressReview> : undefined} />}
+        {summary && <WorkspaceOverview {...summary} event={{ name: room.name, period: timing.key !== "undated" ? room.dateLabel : "", status: roomStatus.label }} scope={readyScope} onCalendar={() => openFromSummary("calendar")} progress={progressScope ? <PreparationProgressReview key={identity} {...progress} /> : undefined} />}
         <div className="workspace-inspector-content" hidden={!tools.open}>
-        <div className="workspace-shared-content flex min-h-0 flex-col" hidden={tools.mode !== "calendar"}>{tools.open && tools.mode === "calendar" && server && profile.permissions.includes("viewCalendar") && <GoogleCalendarConnection />}<div className="min-h-0 flex-1">{renderTools("calendar")}</div></div>
+        <div className="workspace-shared-content flex min-h-0 flex-col" hidden={tools.mode !== "calendar"}>
+          {canChat && <div className="workspace-schedule-tabs" role="tablist" aria-label="일정 보기">
+            {scheduleViews.map(({ id, label, icon: Icon }) => <button type="button" key={id} id={`${scheduleId}-${id}-tab`} role="tab"
+              aria-selected={scheduleView === id} aria-controls={`${scheduleId}-${id}-panel`} tabIndex={scheduleView === id ? 0 : -1}
+              onClick={() => setScheduleView(id)} onKeyDown={event => {
+                const next = event.key === "Home" ? "calendar" : event.key === "End" ? "timetable"
+                  : event.key === "ArrowRight" || event.key === "ArrowLeft" ? (id === "calendar" ? "timetable" : "calendar") : null;
+                if (!next) return;
+                event.preventDefault();
+                setScheduleView(next);
+                document.getElementById(`${scheduleId}-${next}-tab`)?.focus();
+              }}><Icon size={16} aria-hidden="true" />{label}</button>)}
+          </div>}
+          <div className="workspace-shared-content flex min-h-0 flex-col" id={`${scheduleId}-calendar-panel`}
+            role={canChat ? "tabpanel" : undefined} aria-labelledby={canChat ? `${scheduleId}-calendar-tab` : undefined} hidden={timetableView}>
+            {tools.open && tools.mode === "calendar" && !timetableView && server && profile.permissions.includes("viewCalendar") && <GoogleCalendarConnection />}
+            <div className="min-h-0 flex-1">{renderTools("calendar")}</div>
+          </div>
+          {canChat && <div className="workspace-timetable-panel" id={`${scheduleId}-timetable-panel`} role="tabpanel"
+            aria-labelledby={`${scheduleId}-timetable-tab`} hidden={!timetableView} tabIndex={0}>
+            {tools.open && timetableView && (readyScope ? <WorkspaceTimetable key={identity} scope={readyScope} canEdit={canEditPrivateTools} />
+              : <div className="p-4 text-sm text-muted-foreground">{!scope ? "대화를 선택해 주세요."
+                : toolsError?.key === identity ? <><p role="alert">{toolsError.message}</p><button type="button" onClick={() => setRetryTools(value => value + 1)}>다시 불러오기</button></>
+                : <p role="status">이 대화의 자료를 불러오는 중…</p>}</div>)}
+          </div>}
+        </div>
         {tools.open && tools.mode !== "calendar" && !readyScope && <div className="p-4 text-sm text-muted-foreground">
           {!scope ? "대화를 선택해 주세요." : toolsError?.key === identity ? <><p role="alert">{toolsError.message}</p><button type="button" onClick={() => setRetryTools((value) => value + 1)}>다시 불러오기</button></> : <p role="status">이 대화의 자료를 불러오는 중...</p>}
         </div>}
         {canReviewRetreat && retreatReviewOpen && readyScope && <RetreatPreparationPanel scope={readyScope}
           onSummarize={() => submitChat(preparationChatQuery)} summaryDisabled={chatBusy || !!active?.draft.trim()} />}
-        {readyScope && <PrivateConversationTools key={identity} scope={readyScope} formTargetLabel={`${room.name} / ${active?.title ?? "대화"}`} tools={tools} transportOpened={transportOpened} isRetreat={isRetreat} renderPrepare={() => renderTools("prepare", readyScope)}
+        {readyScope && <PrivateConversationTools key={identity} scope={readyScope} formTargetLabel={`${room.name} / ${active?.title ?? "대화"}`} tools={tools} transportOpened={transportOpened} isRetreat={isRetreat} renderPrepare={() => renderTools("prepare", readyScope, openTimetable)}
           renderProposals={renderProposals && (current => renderProposals(current, proposalMessages))} onReviewProposals={() => openTool("proposals")}
           roster={canEditPrivateTools && roster?.identity === identity ? roster.source : undefined} onCloseRoster={applied => {
             if (applied && roster?.identity === identity && roster.source.fromDraft && roster.source.text === active?.draft) changeDraft("");
@@ -350,7 +424,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
       </aside>;
 
   return <WorkspaceShell layoutRef={resize.layout} historyRef={resize.history} historyVisible={historyVisible} chatVisible={chatVisible} style={resize.style}
-    columns={`${historyVisible ? "has-history" : ""} ${tools.open ? "has-tools" : ""} ${summary ? "has-overview" : ""} ${fullWidthTool ? "is-transport" : ""} ${viewport.narrow && historyVisible ? "is-history-view" : ""} ${resize.dragging ? "is-resizing-tools" : ""}`}
+    columns={`${historyVisible ? "has-history" : ""} ${tools.open ? "has-tools" : ""} ${summary ? "has-overview" : ""} ${fullWidthTool ? (transportMode ? "is-transport" : "is-timetable") : ""} ${viewport.narrow && historyVisible ? "is-history-view" : ""} ${resize.dragging ? "is-resizing-tools" : ""}`}
     onBackToRooms={() => navigate(onBackToRooms)} onOpenSettings={!viewport.narrow && onOpenSettings ? () => navigate(onOpenSettings) : undefined} header={header} navigation={navigation} chat={chat} inspector={inspector}
     history={<ConversationSidebar conversations={canChat ? history?.conversations ?? [] : []} activeId={active?.id ?? null} disabled={!history || !store || chatBusy}
       onCreate={() => create(leaveMobileHistory)} onSelect={id => {
@@ -360,7 +434,8 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
       onRename={(id, title) => store ? mutate(() => store.rename(id, title)) : "저장소를 사용할 수 없습니다."} onDelete={(id) => store ? mutate(() => store.delete(id), active?.id === id) : "저장소를 사용할 수 없습니다."} />}>
     {confirmation?.identity === identity && <RoomDialog className="workspace-theme" title="OpenAI에 메시지 보내기" onClose={() => setConfirmation(null)}>
       <div className="room-dialog-body">
-        <p>아래 메시지만 답변 생성에 사용됩니다. 이전 대화, 첨부자료, 개인 지침은 보내지 않습니다.</p>
+        <p>{consentApproved ? "이 메시지는 전송 전에 확인이 필요합니다." : "동의하면 앞으로 일반 질문을 보낼 때마다 확인창을 띄우지 않습니다. 전송 동의는 언제든 철회할 수 있습니다."}</p>
+        <p>답변에는 보낸 메시지만 사용합니다. 이전 대화, 저장된 행사 자료, 첨부자료, 개인 지침은 자동으로 보내지 않습니다.</p>
         <label className="grid gap-2 text-sm">외부로 보낼 메시지
           <textarea className="w-full rounded-md border border-border bg-background p-3" rows={5} maxLength={8000}
             value={confirmation.text} readOnly={confirmation.kind === "retry"} onChange={(event) => setConfirmation({ ...confirmation, text: event.target.value })} />
@@ -371,8 +446,22 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
         <button type="button" className="lobby-secondary" autoFocus onClick={() => setConfirmation(null)}>취소</button>
         {confirmation.kind === "send" && <button type="button" className="lobby-secondary" disabled={!confirmation.text.trim()} onClick={() => confirmChat(true)}>내부에만 저장</button>}
         <button type="button" className="lobby-primary" disabled={!confirmation.text.trim() || privateText} onClick={() => confirmChat()}>
-          {isLocalQuestion(confirmation.text.trim()) ? "내부에서 확인" : "동의하고 보내기"}
+          {isLocalQuestion(confirmation.text.trim()) ? "내부에서 확인" : consentApproved ? "보내기" : "동의하고 보내기"}
         </button>
+      </footer>
+    </RoomDialog>}
+    {manageConsent && consentApproved && <RoomDialog className="workspace-theme" title="OpenAI 전송 동의 관리" onClose={() => { if (!revokingConsent) setManageConsent(false); }}>
+      <div className="room-dialog-body">
+        <p>동의를 철회하면 다음 외부 전송 전에 다시 확인합니다. 이전에 보낸 메시지와 저장된 대화는 삭제하지 않습니다.</p>
+        {consentError && <p role="alert" className="text-destructive">{consentError}</p>}
+      </div>
+      <footer className="room-dialog-footer">
+        <button type="button" className="lobby-secondary" autoFocus disabled={revokingConsent} onClick={() => setManageConsent(false)}>취소</button>
+        {!!active?.draft.trim() && <button type="button" className="lobby-secondary" disabled={revokingConsent} onClick={() => {
+          setManageConsent(false);
+          sendChat(active.draft, true);
+        }}>초안 내부에만 저장</button>}
+        <button type="button" className="lobby-primary" disabled={revokingConsent} onClick={() => void revokeChatConsent()}>전송 동의 철회</button>
       </footer>
     </RoomDialog>}
   </WorkspaceShell>;

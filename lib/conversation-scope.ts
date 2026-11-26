@@ -1,6 +1,6 @@
 export type ConversationScope = { accountId: string; roomId: string; conversationId: string };
 
-export const privateToolKinds = ["checklist", "risks", "transport", "location", "documents", "decisions"] as const;
+export const privateToolKinds = ["checklist", "risks", "transport", "location", "documents", "decisions", "timetable"] as const;
 export type PrivateToolKind = typeof privateToolKinds[number];
 
 const tuple = (...parts: string[]) => parts.map(encodeURIComponent).join(":");

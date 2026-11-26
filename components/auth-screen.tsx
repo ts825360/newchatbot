@@ -2,20 +2,19 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Check, Eye, EyeOff, KeyRound, LoaderCircle, LockKeyhole, LogIn, Moon, Sun, UserRound, UserRoundPlus, type LucideIcon } from "lucide-react";
+import { ArrowRight, Check, Eye, EyeOff, KeyRound, LoaderCircle, LockKeyhole, UserRound, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createBrowserAuth, validateSignup, type AdminGrade, type SignupErrors, type SignupInput } from "@/lib/prototype-auth";
 import { isBackendConnected } from "@/lib/backend-client";
 import { usePrototypeTheme } from "@/lib/use-theme";
-import { BrandLogo } from "./brand-logo";
 import { AuthReference } from "./login-reference";
 
-type AuthMode = "entry" | "signup" | "login";
+type AuthMode = "signup" | "login";
 const emptySignup: SignupInput = { inviteCode: "", name: "", username: "", password: "", confirmation: "" };
 
 export function AuthScreen({ mode }: { mode: AuthMode }) {
   const router = useRouter();
-  const { darkMode, toggleTheme } = usePrototypeTheme();
+  usePrototypeTheme();
   const [values, setValues] = useState<SignupInput>(() => ({ ...emptySignup, username: mode === "login" && !isBackendConnected() ? "admin" : "" }));
   const [errors, setErrors] = useState<SignupErrors>({});
   const [error, setError] = useState("");
@@ -110,83 +109,54 @@ export function AuthScreen({ mode }: { mode: AuthMode }) {
 
   const login = mode === "login";
   const usernameInput = <input id="auth-username" className="auth-input" value={values.username} onChange={(event) => update("username", event.target.value)} placeholder={login ? "아이디를 입력하세요" : "아이디 입력"} autoComplete="username" autoCapitalize="none" spellCheck={false} maxLength={24} aria-invalid={!!errors.username} aria-describedby={errors.username ? "error-username" : mode === "signup" ? "hint-username" : undefined} />;
-  const panel = (
+  return <AuthReference mode={mode}>
     <section className="auth-panel" aria-labelledby="auth-title">
-          <div className="auth-heading">
-            <h1 id="auth-title">{mode === "entry" ? "행사비서" : mode === "signup" ? "회원가입" : "로그인"}</h1>
-            <p>{mode === "entry" ? "초대받은 관리자 전용 공간" : mode === "signup" ? "관리자에게 받은 초대코드로 가입해 주세요." : "가입한 계정으로 접속해 주세요."}</p>
-          </div>
+      <div className="auth-heading">
+        <h1 id="auth-title">{login ? "로그인" : "회원가입"}</h1>
+        <p>{login ? "가입한 계정으로 접속해 주세요." : "관리자에게 받은 초대코드로 가입해 주세요."}</p>
+      </div>
 
-          {mode === "entry" ? (
-            <div className="auth-entry-actions">
-              <Link href="/login" className="auth-submit"><LogIn size={17} aria-hidden="true" />로그인</Link>
-              <Link href="/signup" className="auth-secondary"><UserRoundPlus size={17} aria-hidden="true" />회원가입</Link>
-            </div>
-          ) : (
+      {notice && <div className="auth-notice" role="status"><Check size={17} aria-hidden="true" /><span>{notice}</span></div>}
+      <form className="auth-form" onSubmit={submit} noValidate aria-busy={busy}>
+        <fieldset disabled={busy} className="auth-fieldset">
+          {mode === "signup" && (
             <>
-              {notice && <div className="auth-notice" role="status"><Check size={17} aria-hidden="true" /><span>{notice}</span></div>}
-              <form className="auth-form" onSubmit={submit} noValidate aria-busy={busy}>
-                <fieldset disabled={busy} className="auth-fieldset">
-                  {mode === "signup" && (
-                    <>
-                      <AuthField name="inviteCode" label="초대코드" error={errors.inviteCode}>
-                        <div className="auth-input-row">
-                          <AuthInputFrame icon={KeyRound}>
-                            <input id="auth-inviteCode" className="auth-input auth-code-input" value={values.inviteCode} onChange={(event) => update("inviteCode", event.target.value)} placeholder="초대코드 입력" autoComplete="off" spellCheck={false} maxLength={100} aria-invalid={!!errors.inviteCode} aria-describedby={errors.inviteCode ? "error-inviteCode" : undefined} />
-                          </AuthInputFrame>
-                          <button type="button" className="auth-verify" onClick={verifyInvite} aria-label="초대코드 확인">확인</button>
-                        </div>
-                      </AuthField>
-                      {invite && <div className="auth-invite-result" role="status"><KeyRound size={16} aria-hidden="true" /><div><strong>제{invite.grade}관리자 초대</strong><span>{invite.expiresAt ? `이용 기간: ${formatExpiry(invite.expiresAt)}까지` : "정기 만료 없음"}</span></div><Check size={16} className="ml-auto" aria-hidden="true" /></div>}
-                      <AuthField name="name" label="이름" error={errors.name}>
-                        <AuthInputFrame icon={UserRound}>
-                          <input id="auth-name" className="auth-input" value={values.name} onChange={(event) => update("name", event.target.value)} placeholder="예: 차량담당_홍길동" autoComplete="nickname" maxLength={20} aria-invalid={!!errors.name} aria-describedby={errors.name ? "error-name" : undefined} />
-                        </AuthInputFrame>
-                      </AuthField>
-                    </>
-                  )}
-                  <AuthField name="username" label="아이디" error={errors.username} hint={mode === "signup" ? "영문·숫자·밑줄·하이픈 4~24자" : undefined}>
-                    <AuthInputFrame icon={UserRound}>{usernameInput}</AuthInputFrame>
-                  </AuthField>
-                  <PasswordField name="password" label="비밀번호" value={values.password} onChange={(value) => update("password", value)} error={errors.password} signup={mode === "signup"} />
-                  {mode === "signup" && <PasswordField name="confirmation" label="비밀번호 확인" value={values.confirmation} onChange={(value) => update("confirmation", value)} error={errors.confirmation} signup />}
-                </fieldset>
-                {error && <div className="auth-error-summary" role="alert" tabIndex={-1} ref={errorRef}>{error}</div>}
-                <button type="submit" className="auth-submit" disabled={busy}>
-                  {busy && <LoaderCircle size={17} className="animate-spin" aria-hidden="true" />}
-                  {busy ? "처리 중…" : mode === "signup" ? "회원가입" : "로그인"}
-                  {!busy && <ArrowRight className="login-submit-arrow" size={27} aria-hidden="true" />}
-                </button>
-              </form>
-              <div className="auth-switch">
-                <span>{mode === "signup" ? "이미 계정이 있으신가요?" : "아직 계정이 없으신가요?"}</span>
-                <Link href={mode === "signup" ? "/login" : "/signup"}>{mode === "signup" ? "로그인" : "회원가입"}</Link>
-              </div>
+              <AuthField name="inviteCode" label="초대코드" error={errors.inviteCode}>
+                <div className="auth-input-row">
+                  <AuthInputFrame icon={KeyRound}>
+                    <input id="auth-inviteCode" className="auth-input auth-code-input" value={values.inviteCode} onChange={(event) => update("inviteCode", event.target.value)} placeholder="초대코드 입력" autoComplete="off" spellCheck={false} maxLength={100} aria-invalid={!!errors.inviteCode} aria-describedby={errors.inviteCode ? "error-inviteCode" : undefined} />
+                  </AuthInputFrame>
+                  <button type="button" className="auth-verify" onClick={verifyInvite} aria-label="초대코드 확인">확인</button>
+                </div>
+              </AuthField>
+              {invite && <div className="auth-invite-result" role="status"><KeyRound size={16} aria-hidden="true" /><div><strong>제{invite.grade}관리자 초대</strong><span>{invite.expiresAt ? `이용 기간: ${formatExpiry(invite.expiresAt)}까지` : "정기 만료 없음"}</span></div><Check size={16} className="ml-auto" aria-hidden="true" /></div>}
+              <AuthField name="name" label="이름" error={errors.name}>
+                <AuthInputFrame icon={UserRound}>
+                  <input id="auth-name" className="auth-input" value={values.name} onChange={(event) => update("name", event.target.value)} placeholder="예: 차량담당_홍길동" autoComplete="nickname" maxLength={20} aria-invalid={!!errors.name} aria-describedby={errors.name ? "error-name" : undefined} />
+                </AuthInputFrame>
+              </AuthField>
             </>
           )}
-    </section>
-  );
-  const demoWarning = !isBackendConnected() && <p className="auth-demo-warning">프로토타입 · 실제 비밀번호를 사용하지 마세요.</p>;
-
-  if (mode !== "entry") return <AuthReference mode={mode}>{panel}{demoWarning}</AuthReference>;
-
-  return (
-    <main className="auth-page">
-      <header className="auth-header">
-        <BrandLogo href="/" label="행사비서 홈" />
-        <div className="auth-header-actions">
-          <span className="auth-private"><LockKeyhole size={13} aria-hidden="true" />초대 전용</span>
-          <button type="button" className="auth-icon-button" onClick={toggleTheme} aria-label={darkMode ? "라이트 모드" : "다크 모드"} title={darkMode ? "라이트 모드" : "다크 모드"}>
-            {darkMode ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
-        </div>
-      </header>
-      <div className="auth-content">
-        {panel}{demoWarning}
+          <AuthField name="username" label="아이디" error={errors.username} hint={mode === "signup" ? "영문·숫자·밑줄·하이픈 4~24자" : undefined}>
+            <AuthInputFrame icon={UserRound}>{usernameInput}</AuthInputFrame>
+          </AuthField>
+          <PasswordField name="password" label="비밀번호" value={values.password} onChange={(value) => update("password", value)} error={errors.password} signup={mode === "signup"} />
+          {mode === "signup" && <PasswordField name="confirmation" label="비밀번호 확인" value={values.confirmation} onChange={(value) => update("confirmation", value)} error={errors.confirmation} signup />}
+        </fieldset>
+        {error && <div className="auth-error-summary" role="alert" tabIndex={-1} ref={errorRef}>{error}</div>}
+        <button type="submit" className="auth-submit" disabled={busy}>
+          {busy && <LoaderCircle size={17} className="animate-spin" aria-hidden="true" />}
+          {busy ? "처리 중…" : mode === "signup" ? "회원가입" : "로그인"}
+          {!busy && <ArrowRight className="login-submit-arrow" size={27} aria-hidden="true" />}
+        </button>
+      </form>
+      <div className="auth-switch">
+        <span>{mode === "signup" ? "이미 계정이 있으신가요?" : "아직 계정이 없으신가요?"}</span>
+        <Link href={mode === "signup" ? "/login" : "/signup"}>{mode === "signup" ? "로그인" : "회원가입"}</Link>
       </div>
-      <footer className="auth-footer">교회 행사 운영 공간</footer>
-    </main>
-  );
+    </section>
+    {!isBackendConnected() && <p className="auth-demo-warning">프로토타입 · 실제 비밀번호를 사용하지 마세요.</p>}
+  </AuthReference>;
 }
 
 function AuthField({ name, label, error, hint, children }: { name: string; label: string; error?: string; hint?: string; children: ReactNode }) {

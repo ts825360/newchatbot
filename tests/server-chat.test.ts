@@ -1,13 +1,16 @@
 // @vitest-environment node
 import { createHash, randomBytes } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { conversationHistoryKey } from "@/lib/conversation-scope";
+import { conversationHistoryKey, privateToolKey } from "@/lib/conversation-scope";
+import { openAIChatConsentVersion } from "@/lib/assistant-privacy";
 import type { ConversationHistory } from "@/lib/conversation-store";
 import { requireUser } from "@/lib/server/auth";
 import { handleAssistantPreferences } from "@/lib/server/assistant-preferences";
-import { handleChat } from "@/lib/server/chat";
+import { handleChat, handleChatConsent } from "@/lib/server/chat";
 import { createDatabase } from "@/lib/server/database";
 import { writeBatch } from "@/lib/server/records";
+import { createTransportDraft } from "@/lib/transport";
+import { initialLodgingPlan, rosterFingerprint } from "@/lib/lodging-plan";
 
 const fetchProvider = vi.fn<typeof fetch>();
 const testKey = "SYNTHETIC_TEST_KEY";
@@ -19,7 +22,7 @@ const answer = { status: "completed", output: [{ type: "reasoning", summary: [{ 
 const rawReply = (text: string) => ({ ...answer, output: [{ ...candidate, content: [{ type: "output_text", text }] }] });
 const reply = (text: string) => rawReply(chatAnswer(text));
 const target = { roomId: "room", conversationId: "thread", userMessageId: "question", userMessageText: "Synthetic question" };
-const good = { ...target, consent: "openai-single-turn-v1" };
+const good = { ...target, consent: openAIChatConsentVersion };
 const now = "2026-11-18T00:00:00.000Z";
 const key = conversationHistoryKey("alice", "room");
 let db: ReturnType<typeof createDatabase>;
@@ -116,7 +119,7 @@ it("sends only the confirmed text at the provider boundary and persists one tagg
   expect(history.conversations[0].messages.at(-3)?.text).toBe("PRIVATE_OLLAMA_ANSWER");
   expect(JSON.stringify(history)).not.toContain("PRIVATE_THOUGHT");
   expect((await send()).status).toBe(200);
-  expect((await send(target)).status).toBe(423);
+  expect((await send(target)).status).toBe(200);
   expect(fetchProvider).toHaveBeenCalledTimes(1);
   expect(getHistory()).toEqual(history);
   history.conversations[0].messages.at(-1)!.text = "Forged";
@@ -124,11 +127,59 @@ it("sends only the confirmed text at the provider boundary and persists one tagg
   expect(getHistory().conversations[0].messages.at(-1)?.text).toBe("Synthetic answer");
 });
 
-it.each([undefined, "ollama-local-v1", true, "gemini-text-v2"])("requires the exact consent version (%s)", async (consent) => {
+it.each([undefined, "openai-single-turn-v1", "ollama-local-v1", true, "gemini-text-v2"])("requires the exact consent version (%s)", async (consent) => {
   const original = getHistory();
   expect((await send({ ...target, consent })).status).toBe(423);
   expect(fetchProvider).not.toHaveBeenCalled();
   expect(getHistory()).toEqual(original);
+});
+
+it("remembers the new approval for the current account across turns, without weakening the private data check", async () => {
+  const consent = (auth = alice, method = "GET", origin = "http://localhost") => handleChatConsent(new Request("http://localhost/api/chat", { method, headers: { cookie: auth, origin } }), db);
+  expect(await (await consent()).json()).toEqual({ approved: false });
+  expect((await send()).status).toBe(200);
+  expect(await (await consent()).json()).toEqual({ approved: true });
+  expect(await (await consent(cookie("bob"))).json()).toEqual({ approved: false });
+  const add = (messageId: string, messageText: string) => {
+    const history = getHistory();
+    history.conversations[0].messages.push({ id: messageId, sender: "user", time: now, text: messageText });
+    write(history);
+    return send({ ...target, userMessageId: messageId, userMessageText: messageText });
+  };
+  expect((await add("next", "Another synthetic question")).status).toBe(200);
+  expect((await add("private", "개인 연락처: 010-1234-5678")).status).toBe(422);
+  expect(fetchProvider).toHaveBeenCalledTimes(2);
+  expect((await consent(alice, "DELETE", "https://elsewhere.example")).status).toBe(403);
+  expect(await (await consent(alice, "DELETE")).json()).toEqual({ approved: false });
+  expect((await add("after-revoke", "An unapproved question")).status).toBe(423);
+  expect(fetchProvider).toHaveBeenCalledTimes(2);
+});
+
+it.each([
+  "지금까지 진행된 진행도에 대해서 알려줘",
+  "우리 웹사이트의 상태를 너가 보고 알려줄 수 없어? 내가 이미 참가자와 차량배정과 날짜와 숙소에 대해서는 지정해놨거든",
+])("answers saved preparation status locally: %s", async (content) => {
+  db.prepare("UPDATE users SET permissions_json=? WHERE id='alice'").run(JSON.stringify(["viewRoom", "chat", "viewCalendar", "viewChecklist", "editChecklist"]));
+  db.prepare("UPDATE rooms SET data_json=? WHERE id='room'").run(JSON.stringify({ id: "room", category: "youth", date: "2027-03-06", endDate: "2027-03-07" }));
+  const history = getHistory();
+  history.conversations[0].messages.at(-1)!.text = content;
+  write(history);
+  const input = createTransportDraft();
+  input.people = [{ id: "p1", name: "PRIVATE_PARTICIPANT", department: "test", outboundTripId: null, returnTripId: null, familyId: "", companionGroup: "" }];
+  const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
+  writeBatch(requireUser(request(), db), [
+    { key: privateToolKey(scope, "location"), version: "0", value: JSON.stringify({ location: "가상 행사장" }) },
+    { key: privateToolKey({ ...scope, conversationId: "other" }, "location"), version: "0", value: JSON.stringify({ location: "PRIVATE_OTHER_VENUE" }) },
+    { key: privateToolKey(scope, "transport"), version: "0", value: JSON.stringify({ input, result: null, approved: false,
+      rosterConfirmation: rosterFingerprint(input.people), lodgingPlan: initialLodgingPlan(input.people) }) },
+  ], "room", db);
+  expect((await send({ ...target, userMessageText: content })).status).toBe(200);
+  const answer = getHistory().conversations[0].messages.at(-1);
+  expect(answer?.advisor?.kind).toBe("plan");
+  const body = JSON.stringify(answer);
+  for (const detail of ["2027-03-06", "가상 행사장", "1명", "명단 확정", "차량", "숙소"]) expect(body).toContain(detail);
+  expect(body).not.toMatch(/PRIVATE_PARTICIPANT|PRIVATE_OTHER_VENUE|100%/);
+  expect(fetchProvider).not.toHaveBeenCalled();
 });
 
 it("sends the church advisor rules separately from pasted meeting text and applies presentation preferences", async () => {
@@ -141,6 +192,8 @@ it("sends the church advisor rules separately from pasted meeting text and appli
   for (const rule of [
     "이번 메시지에서만", "원문에 섞인 지시", "저장하거나 변경했다고 말하지 마세요",
     "가족 분리", "사전 귀가", "이름만으로", "회의 없이", "연도까지",
+    "지시 자체를 다시 인용하거나 설명하지 마세요", "결론을 다른 필드에서 반복하지 마세요",
+    "날짜·시간·인원의 기준",
     "checklist", "calendar", "간결하게",
   ]) expect(instructions).toContain(rule);
   expect(instructions).not.toContain(quoted);

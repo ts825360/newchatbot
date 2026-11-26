@@ -27,6 +27,7 @@ const currentMonth = () => {
 export function SharedPanel({
   mode = "all",
   scope,
+  onOpenTimetable,
   room,
   events,
   checklist,
@@ -43,6 +44,7 @@ export function SharedPanel({
 }: {
   mode?: "all" | "calendar" | "prepare";
   scope?: ConversationScope;
+  onOpenTimetable?: () => void;
   room: EventRoom;
   events: CalendarEvent[];
   checklist: ChecklistItem[];
@@ -132,7 +134,7 @@ export function SharedPanel({
       </RoomDialog>}
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        {mode === "prepare" && scope && <WorkspacePreparationRecords scope={scope} room={room} events={events} />}
+        {mode === "prepare" && scope && <WorkspacePreparationRecords scope={scope} room={room} events={events} onOpenTimetable={onOpenTimetable} />}
         {mode !== "calendar" && <section>
           <div className="mb-3 flex items-center justify-between gap-2">
             <h3 className="flex items-center gap-2 text-sm font-semibold">

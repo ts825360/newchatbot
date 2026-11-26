@@ -33,6 +33,7 @@ export const getBackendServerState = () => serverState;
 export const isBackendConnected = () => connected;
 export const getBackendProfile = () => profile;
 export const hasBackendRecord = (key: string) => records.has(key);
+export const hasPendingBackendWrites = (keys: ReadonlySet<string>) => [...keys].some(key => drafts.has(key));
 export function enableBackendConnection(value: boolean) { connected = value; publish(); }
 export function configureBackendUser(next: UserProfile | null) {
   const changed = JSON.stringify(profile) !== JSON.stringify(next);

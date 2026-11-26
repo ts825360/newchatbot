@@ -50,7 +50,7 @@ const openGroupedTool = (group: string, name: string) => {
   fireEvent.click(screen.getByRole("button", { name }));
 };
 
-it("shows upcoming room events and the active conversation's actual completed and remaining checklist", async () => {
+it("keeps upcoming events in the summary and the private checklist in preparation status", async () => {
   const { roomId, scope } = await enterRoom();
   createPreparationStore(localStorage, roomId).saveEvent({
     id: "upcoming", title: "다음 준비 회의", date: "2099-12-01", time: "10:00", status: "confirmed",
@@ -64,16 +64,15 @@ it("shows upcoming room events and the active conversation's actual completed an
   fireEvent.click(screen.getByRole("button", { name: "행사 요약 열기" }));
   const summary = within(screen.getByRole("complementary", { name: "행사 요약" }));
   expect(summary.getByText("다음 준비 회의")).toBeDefined();
-  expect(await summary.findByText("이 대화의 장소 예약")).toBeDefined();
-  expect(summary.getByText("완료된 준비 항목")).toBeDefined();
-  expect(summary.getByText("1 / 2 완료")).toBeDefined();
-  fireEvent.click(screen.getByRole("button", { name: "새 대화 만들기" }));
-  await waitFor(() => expect(summary.queryByText("이 대화의 장소 예약")).toBeNull());
+  expect(summary.queryByText("이 대화의 장소 예약")).toBeNull();
   expect(summary.queryByText("완료된 준비 항목")).toBeNull();
-  expect(summary.queryByText("1 / 2 완료")).toBeNull();
-  expect(summary.getByText("다음 준비 회의")).toBeDefined();
-  fireEvent.click(summary.getByRole("button", { name: "체크리스트 보기" }));
-  expect(screen.getByRole("complementary", { name: "부가기능" })).toBeDefined();
+  expect(summary.queryByRole("button", { name: "체크리스트 보기" })).toBeNull();
+
+  openGroupedTool("행사 준비", "준비 현황 열기");
+  const tools = within(screen.getByRole("complementary", { name: "부가기능" }));
+  expect(tools.getByRole("heading", { name: "준비 체크리스트" })).toBeDefined();
+  expect(await tools.findByText("이 대화의 장소 예약")).toBeDefined();
+  expect(tools.getByText("완료된 준비 항목")).toBeDefined();
   expect(screen.queryByRole("complementary", { name: "행사 요약" })).toBeNull();
 });
 
