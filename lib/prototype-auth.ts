@@ -4,7 +4,7 @@ import type { AdminGrade, CreatedInvitation, InvitationDraft, InvitationView, Ma
 import type { Permission, UserProfile } from "./types";
 
 export type { AdminGrade } from "./invitation-types";
-export type SignupInput = { inviteCode: string; name: string; username: string; password: string; confirmation: string };
+export type SignupInput = { inviteCode: string; name: string; username: string; password: string; confirmation: string; openAIConsent?: string };
 export type SignupErrors = Partial<Record<keyof SignupInput, string>>;
 type Store = Pick<Storage, "getItem" | "setItem">;
 type Account = { id: string; name: string; username: string; grade: AdminGrade; role?: string; inviteCode?: string; inviteId?: string; salt: string; digest: string; algorithm?: "pbkdf2"; expiresAt: string | null };

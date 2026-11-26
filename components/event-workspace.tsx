@@ -2,7 +2,7 @@
 
 import { ArrowLeft, CalendarClock, CalendarDays, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Sun, X } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { hasObviousPrivateData, internalChatAction, openAIChatConsentVersion, openAIPrivacyWarning } from "@/lib/assistant-privacy";
+import { externalAISettingsHref, hasObviousPrivateData, internalChatAction, openAIPrivacyWarning } from "@/lib/assistant-privacy";
 import { createConversationStore, type ConversationHistory } from "@/lib/conversation-store";
 import type { ChatMessage, ChatMessageReference, EventRoom, UserProfile } from "@/lib/types";
 import { ChatPanel } from "./chat-panel";
@@ -18,7 +18,6 @@ import { conversationHistoryKey, scopeId, type ConversationScope } from "@/lib/c
 import { GoogleCalendarConnection } from "./google-calendar-connection";
 import { BlankGoogleFormLink } from "./google-forms-sharing";
 import { useToolsResize } from "./workspace-tools-resize";
-import { RoomDialog } from "./room-dialog";
 import { retreatReviewPermissions } from "@/lib/retreat-preparation";
 import { isPreparationChat, isPreparationStatusChat, preparationChatQuery, type ChatRosterSource } from "@/lib/chat-tool-candidates";
 import { RetreatPreparationPanel } from "./retreat-preparation-panel";
@@ -34,13 +33,14 @@ import { WorkspaceToolNavigation, workspaceTools, workspaceToolTrigger, type Wor
 const isTransportTool = (tool: Tool) => tool === "transport" || tool === "lodging";
 const narrowWorkspace = 760;
 const overviewDesktop = 1100;
-type ChatConfirmation = { identity: string; text: string } & ({ kind: "send"; reference?: ChatMessageReference } | { kind: "retry"; messageId: string });
+type ChatPrivacyNotice = { identity: string; reason: "consent" | "private"; save?: { text: string; reference?: ChatMessageReference } };
 const scheduleViews = [{ id: "calendar", label: "공동 캘린더", icon: CalendarDays }, { id: "timetable", label: "타임테이블", icon: CalendarClock }] as const;
 
-export function EventWorkspace({ room, profile, seedMessages, notice, noticeError, darkMode, onToggleTheme, onSignOut, onBackToRooms, onOpenSettings, onAddExtractedEvent, onAddExtractedChecklist, onAddChatEvent, canAddChatEvent, onAddChatChecklist, onScopeChange, renderTools, renderProposals, overview }: {
+export function EventWorkspace({ room, profile, seedMessages, notice, noticeError, darkMode, onToggleTheme, onSignOut, onBackToRooms, onOpenSettings, onOpenPrivacySettings, onAddExtractedEvent, onAddExtractedChecklist, onAddChatEvent, canAddChatEvent, onAddChatChecklist, onScopeChange, renderTools, renderProposals, overview }: {
   room: EventRoom; profile: UserProfile; seedMessages: ChatMessage[]; notice: string; noticeError?: boolean;
   darkMode: boolean; onToggleTheme: () => void; onSignOut: () => void; onBackToRooms: () => void;
   onOpenSettings?: () => void;
+  onOpenPrivacySettings?: () => void;
   onAddExtractedEvent: () => void; onAddExtractedChecklist: () => void;
   onAddChatEvent?: (conversationId: string, message: ChatMessage) => void;
   canAddChatEvent?: (conversationId: string, message: ChatMessage) => boolean;
@@ -71,11 +71,8 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   const [replyStartedAt, setReplyStartedAt] = useState<number | null>(null);
   const chatBusy = replyStartedAt !== null;
   const chatRequest = useRef<AbortController | null>(null);
-  const [confirmation, setConfirmation] = useState<ChatConfirmation | null>(null);
-  const [approvedAccount, setApprovedAccount] = useState<string | null>(null);
-  const [manageConsent, setManageConsent] = useState(false);
-  const [revokingConsent, setRevokingConsent] = useState(false);
-  const [consentError, setConsentError] = useState("");
+  const [privacyNotice, setPrivacyNotice] = useState<ChatPrivacyNotice | null>(null);
+  const [externalAI, setExternalAI] = useState<{ account: string; approved: boolean } | null>(null);
   const [transportOpened, setTransportOpened] = useState(false);
   const [roster, setRoster] = useState<{ identity: string; source: ChatRosterSource } | null>(null);
   const [transportUnsaved, setTransportUnsaved] = useState(false);
@@ -112,7 +109,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   const canReviewRetreat = isRetreat &&
     retreatReviewPermissions.every(permission => profile.permissions.includes(permission));
   const isLocalQuestion = (text: string) => isPreparationChat(text) || isPreparationStatusChat(text) || isRetreat && isVenueHistoryChat(text);
-  const consentApproved = approvedAccount === accountId;
+  const consentApproved = externalAI?.account === accountId ? externalAI.approved : undefined;
   const scope = useMemo<ConversationScope | null>(() => canChat && active ? { accountId, roomId: room.id, conversationId: active.id } : null, [canChat, accountId, room.id, active?.id]);
   const identity = scope ? scopeId(scope) : "";
   const ready = scope && (!server || loadedScope === identity);
@@ -125,8 +122,8 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     if (!server || !canChat) return;
     const controller = new AbortController();
     void backendFetch("/api/chat", { signal: controller.signal }).then(status => {
-      if (!controller.signal.aborted && getBackendProfile()?.accountId === accountId) setApprovedAccount(status.approved === true ? accountId : null);
-    }).catch(() => { /* Fall back to asking before sending. */ });
+      if (!controller.signal.aborted && getBackendProfile()?.accountId === accountId) setExternalAI({ account: accountId, approved: status.approved === true });
+    }).catch(() => { /* The server still verifies consent when a reply is requested. */ });
     return () => controller.abort();
   }, [server, canChat, accountId]);
   useEffect(() => {
@@ -185,10 +182,11 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   const create = (onCreated?: () => void) => navigate(() => { if (store && !mutate(() => store.create())) onCreated?.(); });
   const changeDraft = (draft: string) => {
     if (!active || !history || !store || chatRequest.current) return;
+    setPrivacyNotice(null);
     try { setHistory(store.setDraft(active.id, draft)); setUnsavedDraft(false); setError(""); }
     catch (cause) { setHistory({ ...history, conversations: history.conversations.map((item) => item.id === active.id ? { ...item, draft } : item) }); setUnsavedDraft(true); setError(message(cause)); }
   };
-  const requestReply = async (conversationId: string, userMessageId: string, userMessageText: string, approve = false) => {
+  const requestReply = async (conversationId: string, userMessageId: string, userMessageText: string) => {
     const controller = new AbortController();
     const stillCurrent = () => !controller.signal.aborted && getBackendProfile()?.accountId === accountId;
     chatRequest.current = controller;
@@ -198,13 +196,13 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
       if (!stillCurrent()) return;
       await backendFetch("/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
-        body: JSON.stringify({ roomId: room.id, conversationId, userMessageId, userMessageText, ...(approve && !isLocalQuestion(userMessageText) && { consent: openAIChatConsentVersion }) }),
+        body: JSON.stringify({ roomId: room.id, conversationId, userMessageId, userMessageText }),
       });
       if (stillCurrent()) await refreshBackendData(room.id, null);
     } catch (cause) {
       if (stillCurrent() && cause instanceof BackendError && cause.status === 423 && !isLocalQuestion(userMessageText)) {
-        setApprovedAccount(null);
-        setConfirmation({ identity, kind: "retry", messageId: userMessageId, text: userMessageText });
+        setExternalAI({ account: accountId, approved: false });
+        setPrivacyNotice({ identity, reason: "consent" });
         return;
       }
       if (stillCurrent() && cause instanceof BackendError && [404, 409].includes(cause.status) && !getBackendState().pending) {
@@ -212,17 +210,11 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
       }
       if (stillCurrent()) setError(message(cause));
     } finally {
-      if (approve && stillCurrent()) {
-        try {
-          const status = await backendFetch("/api/chat", { signal: controller.signal });
-          if (stillCurrent()) setApprovedAccount(status.approved === true ? accountId : null);
-        } catch { /* The next turn can still use the approval dialog. */ }
-      }
       chatRequest.current = null;
       if (!controller.signal.aborted) setReplyStartedAt(null);
     }
   };
-  const sendChat = (text: string, localOnly = false, approve = false, reference?: ChatMessageReference) => {
+  const sendChat = (text: string, localOnly = false, reference?: ChatMessageReference) => {
     if (!active || !store || chatRequest.current) return;
     let userMessageId: string | undefined;
     const failure = mutate(() => {
@@ -231,42 +223,25 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
       if (last?.sender === "user") userMessageId = last.id;
       return next;
     });
-    if (!failure && server && userMessageId && !localOnly) void requestReply(active.id, userMessageId, text.trim(), approve);
+    if (!failure && server && userMessageId && !localOnly) void requestReply(active.id, userMessageId, text.trim());
   };
   const unanswered = active?.messages.at(-1);
-  const retry = (messageId: string, text: string, approve = false) => {
+  const retry = (messageId: string, text: string) => {
     if (!active || !store || chatRequest.current || (unsavedDraft && mutate(() => store.load()))) return;
-    void requestReply(active.id, messageId, text, approve);
+    void requestReply(active.id, messageId, text);
   };
-  const needsConfirmation = (text: string) => !isLocalQuestion(text) && (!consentApproved || hasObviousPrivateData(text));
+  const blockedBy = (text: string) => isLocalQuestion(text) ? null : hasObviousPrivateData(text) ? "private" : consentApproved === false ? "consent" : null;
   const submitChat = (text: string, reference?: ChatMessageReference) => {
-    if (server && identity && needsConfirmation(text)) setConfirmation({ identity, kind: "send", text, reference });
-    else if (!server || identity) sendChat(text, false, false, reference);
+    if (server && !identity) return;
+    const reason = server ? blockedBy(text) : null;
+    if (reason) setPrivacyNotice({ identity, reason, save: reference?.kind === "edit" ? undefined : { text, reference } });
+    else { setPrivacyNotice(null); sendChat(text, false, reference); }
   };
   const retryReply = server && active && store && unanswered?.sender === "user" && !unanswered.actions?.includes(internalChatAction) ? () => {
-    if (needsConfirmation(unanswered.text)) setConfirmation({ identity, kind: "retry", messageId: unanswered.id, text: unanswered.text });
-    else retry(unanswered.id, unanswered.text);
+    const reason = blockedBy(unanswered.text);
+    if (reason) setPrivacyNotice({ identity, reason });
+    else { setPrivacyNotice(null); retry(unanswered.id, unanswered.text); }
   } : undefined;
-  const privateText = !!confirmation && hasObviousPrivateData(confirmation.text);
-  const confirmChat = (localOnly = false) => {
-    if (!server || !identity || confirmation?.identity !== identity || !active || chatRequest.current ||
-        !confirmation.text.trim() || (!localOnly && privateText)) return;
-    setConfirmation(null);
-    if (confirmation.kind === "send") sendChat(confirmation.text, localOnly, !localOnly && !consentApproved, confirmation.reference);
-    else if (!localOnly && unanswered?.id === confirmation.messageId && unanswered.text === confirmation.text && !unanswered.actions?.includes(internalChatAction)) retry(confirmation.messageId, confirmation.text, !consentApproved);
-  };
-  const revokeChatConsent = async () => {
-    if (revokingConsent) return;
-    setRevokingConsent(true);
-    setConsentError("");
-    try {
-      await backendFetch("/api/chat", { method: "DELETE" });
-      if (getBackendProfile()?.accountId !== accountId) return;
-      setApprovedAccount(null);
-      setManageConsent(false);
-    } catch (cause) { setConsentError(message(cause)); }
-    finally { setRevokingConsent(false); }
-  };
   const openTool = (mode: Tool, replyId?: string) => {
     if (isTransportTool(mode)) setTransportOpened(true);
     if (mode === "calendar") setScheduleView("calendar");
@@ -362,8 +337,21 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     const { Icon, name } = workspaceTools[mode];
     return <button key={mode} type="button" className="workspace-start-button" onClick={() => openTool(mode)}><Icon size={17} aria-hidden="true" />{name} 보기</button>;
   })}<BlankGoogleFormLink className="workspace-start-button" /></div>;
+  const activePrivacyNotice = privacyNotice?.identity === identity ? privacyNotice : null;
   const chat = <>{(error || notice) && <div className={`workspace-notice ${error || noticeError ? "is-error" : ""}`} role={error || noticeError ? "alert" : "status"}>{error || notice}</div>}{canChat ? <ChatPanel conversation={active} visible={chatVisible} shortcuts={shortcuts} onDraftChange={changeDraft} onSendMessage={submitChat} replyStartedAt={replyStartedAt} onRetryReply={retryReply} onNewConversation={() => create()} onOpenDocuments={() => openTool("documents")} onReviewProposals={renderProposals ? replyId => openTool("proposals", replyId) : undefined}
-        onManageConsent={server && consentApproved ? () => { setConsentError(""); setManageConsent(true); } : undefined}
+        externalAIApproved={consentApproved}
+        privacyNotice={activePrivacyNotice && <div className="workspace-notice workspace-ai-notice" role="alert">
+          <span>{activePrivacyNotice.reason === "private" ? openAIPrivacyWarning : "외부 AI 이용이 꺼져 있어 전송하지 않았습니다."}</span>
+          {activePrivacyNotice.reason === "consent" && <a href={externalAISettingsHref} onClick={event => {
+            if (onOpenPrivacySettings && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+              event.preventDefault(); navigate(onOpenPrivacySettings);
+            }
+          }}>보안 및 개인정보 설정</a>}
+          {activePrivacyNotice.save && <button type="button" className="workspace-start-button" onClick={() => {
+            const entry = activePrivacyNotice.save!;
+            setPrivacyNotice(null); sendChat(entry.text, true, entry.reference);
+          }}>내부에만 저장</button>}
+        </div>}
         progress={progressScope && <PreparationProgressShortcut {...progress} onOpen={openProgress} />}
         retreatVenueScope={isRetreat ? readyScope ?? undefined : undefined}
         canAddCalendarEvent={message => !!active && (profile.permissions.includes("createEvent") || profile.permissions.includes("editEvent")) && (canAddChatEvent?.(active.id, message) ?? true)}
@@ -433,38 +421,6 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
         else navigate(() => { if (store && !mutate(() => store.select(id))) leaveMobileHistory(); });
       }}
       onRename={(id, title) => store ? mutate(() => store.rename(id, title)) : "저장소를 사용할 수 없습니다."} onDelete={(id) => store ? mutate(() => store.delete(id), active?.id === id) : "저장소를 사용할 수 없습니다."} />}>
-    {confirmation?.identity === identity && <RoomDialog className="workspace-theme" title="OpenAI에 메시지 보내기" onClose={() => setConfirmation(null)}>
-      <div className="room-dialog-body">
-        <p>{consentApproved ? "이 메시지는 전송 전에 확인이 필요합니다." : "동의하면 앞으로 일반 질문을 보낼 때마다 확인창을 띄우지 않습니다. 전송 동의는 언제든 철회할 수 있습니다."}</p>
-        <p>일반 질문에는 이번 메시지와 이 대화에서 이전에 OpenAI로 보낸 내 메시지 최대 3개, 또는 답장으로 지정한 일부를 사용할 수 있습니다. 장소가 필요한 질문에는 확인된 대표 장소의 공개 이름·주소·출처를 사용할 수 있습니다. 식당 웹 검색에는 메시지 원문 대신 공개 장소명·주소와 방문 시간대, 음식 등 검색 조건만 사용합니다. 다른 대화, 첨부자료, 개인 지침은 보내지 않습니다.</p>
-        <label className="grid gap-2 text-sm">외부로 보낼 메시지
-          <textarea className="w-full rounded-md border border-border bg-background p-3" rows={5} maxLength={8000}
-            value={confirmation.text} readOnly={confirmation.kind === "retry"} onChange={(event) => setConfirmation({ ...confirmation, text: event.target.value })} />
-        </label>
-        {privateText ? <p role="alert" className="text-destructive">{openAIPrivacyWarning}</p> : <p>이름, 명단, 회의 내용 등 외부에 공개할 수 없는 정보가 없는지 확인해 주세요.</p>}
-      </div>
-      <footer className="room-dialog-footer flex-wrap">
-        <button type="button" className="lobby-secondary" autoFocus onClick={() => setConfirmation(null)}>취소</button>
-        {confirmation.kind === "send" && confirmation.reference?.kind !== "edit" && <button type="button" className="lobby-secondary" disabled={!confirmation.text.trim()} onClick={() => confirmChat(true)}>내부에만 저장</button>}
-        <button type="button" className="lobby-primary" disabled={!confirmation.text.trim() || privateText} onClick={() => confirmChat()}>
-          {isLocalQuestion(confirmation.text.trim()) ? "내부에서 확인" : consentApproved ? "보내기" : "동의하고 보내기"}
-        </button>
-      </footer>
-    </RoomDialog>}
-    {manageConsent && consentApproved && <RoomDialog className="workspace-theme" title="OpenAI 전송 동의 관리" onClose={() => { if (!revokingConsent) setManageConsent(false); }}>
-      <div className="room-dialog-body">
-        <p>동의를 철회하면 다음 외부 전송 전에 다시 확인합니다. 이전에 보낸 메시지와 저장된 대화는 삭제하지 않습니다.</p>
-        {consentError && <p role="alert" className="text-destructive">{consentError}</p>}
-      </div>
-      <footer className="room-dialog-footer">
-        <button type="button" className="lobby-secondary" autoFocus disabled={revokingConsent} onClick={() => setManageConsent(false)}>취소</button>
-        {!!active?.draft.trim() && <button type="button" className="lobby-secondary" disabled={revokingConsent} onClick={() => {
-          setManageConsent(false);
-          sendChat(active.draft, true);
-        }}>초안 내부에만 저장</button>}
-        <button type="button" className="lobby-primary" disabled={revokingConsent} onClick={() => void revokeChatConsent()}>전송 동의 철회</button>
-      </footer>
-    </RoomDialog>}
   </WorkspaceShell>;
 }
 

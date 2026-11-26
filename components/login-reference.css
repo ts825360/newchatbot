@@ -126,6 +126,10 @@
 .auth-signup-page .auth-heading > p { font-size: 20px; line-height: 31px; }
 .auth-signup-page .auth-form { margin-top: 23px; gap: 24px; }
 .auth-signup-page .auth-fieldset { gap: 13px; }
+.auth-signup-page .auth-consent { padding: 10px 12px; border: 1px solid hsl(var(--border)); border-radius: 8px; }
+.auth-signup-page .auth-consent label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 650; cursor: pointer; }
+.auth-signup-page .auth-consent input { width: 16px; height: 16px; flex: none; accent-color: hsl(var(--primary)); }
+.auth-signup-page .auth-consent p { margin: 6px 0 0; color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.5; }
 .auth-signup-page .auth-field { gap: 6px; }
 .auth-signup-page .auth-field label { font-size: 17px; line-height: 23px; }
 .auth-signup-page .auth-input-row { grid-template-columns: minmax(0, 1fr) 82px; }

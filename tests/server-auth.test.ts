@@ -10,6 +10,7 @@ import { createDatabase, getDatabase } from "@/lib/server/database";
 import { authGet, authPost, ensureDevelopmentAccounts, profileFor, requirePermission, requireUser } from "@/lib/server/auth";
 import { hashPassword, verifyPassword } from "@/lib/server/password";
 import { GET, POST } from "@/app/api/auth/[action]/route";
+import { openAIChatConsentVersion } from "@/lib/assistant-privacy";
 
 vi.mock("@/lib/server/database", async importOriginal => {
   const actual = await importOriginal<typeof import("@/lib/server/database")>();
@@ -57,6 +58,17 @@ beforeEach(() => {
   vi.mocked(getDatabase).mockImplementation(() => { throw new Error("Tests must supply a private database."); });
 });
 afterEach(() => { db.close(); vi.unstubAllEnvs(); vi.useRealTimers(); });
+
+it("records the optional external chat consent at signup for only the consenting account", async () => {
+  const manager = await seed();
+  for (const [username, optIn] of [["opted-in", true], ["opted-out", false]] as const) {
+    const issued = await invitation(manager.cookie);
+    const result = await post("signup", { ...input(issued.code, username), ...(optIn && { openAIConsent: openAIChatConsentVersion }) });
+    expect(result.response.status).toBe(200);
+    const row = db.prepare("SELECT records.data_json FROM users JOIN records ON records.owner_id=users.id WHERE users.username=? AND records.kind='chat-external-consent'").get(username);
+    expect(row?.data_json).toBe(optIn ? JSON.stringify(openAIChatConsentVersion) : undefined);
+  }
+});
 
 describe("server password storage", () => {
   it("uses random salt, PBKDF2 SHA256 at >=600k and constant-time verification", async () => {

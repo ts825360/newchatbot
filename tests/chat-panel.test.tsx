@@ -35,6 +35,9 @@ it("renders ranked restaurants with keyboard-focusable map and source links", ()
   expect(result.getByRole("link", { name: "영업 출처" }).getAttribute("href")).toBe(url);
   const map = new URL(result.getByRole("link", { name: "지도에서 찾기" }).getAttribute("href")!);
   expect(map.searchParams.get("query")).toContain("가상 식당");
+  const route = new URL(result.getByRole("link", { name: "숙소에서 길찾기" }).getAttribute("href")!);
+  expect(route.searchParams.get("origin")).toBe("가상 숙소");
+  expect(route.searchParams.get("destination")).toContain("가상 식당");
 });
 
 it("shows current request elapsed time and resets it between replies", () => {

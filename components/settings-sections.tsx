@@ -6,6 +6,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { backendFetch, flushBackendWrites } from "@/lib/backend-client";
 import { refreshServerAuth } from "@/lib/client-auth";
 import { googleSettingsHref } from "@/lib/google-settings";
+import { externalAIConsentDetails, externalAIConsentTitle, openAIChatConsentVersion } from "@/lib/assistant-privacy";
 import type { UserProfile } from "@/lib/types";
 import { defaultDisplay, readDisplaySettings, saveDisplaySettings, type DisplaySettings } from "@/lib/use-theme";
 import { RoomDialog } from "./room-dialog";
@@ -182,6 +183,45 @@ export function PasswordPreferences({ accountId }: { accountId?: string }) {
         <footer className="room-dialog-footer"><button className="lobby-secondary" type="button" onClick={close} disabled={busy}>취소</button><button className="lobby-primary" type="submit" disabled={busy}><Check size={15} aria-hidden="true" />{busy ? "변경 중…" : "비밀번호 변경"}</button></footer>
       </form>
     </RoomDialog>}
+  </section>;
+}
+
+export function ExternalAIPreferences({ accountId }: { accountId: string }) {
+  const [approved, setApproved] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setError("");
+    void backendFetch("/api/chat", { signal: controller.signal }).then(data => {
+      if (!controller.signal.aborted) setApproved(data.approved === true);
+    }).catch(cause => { if (!controller.signal.aborted) setError(failureMessage(cause, "동의 상태를 불러오지 못했습니다.")); });
+    return () => controller.abort();
+  }, [accountId, reload]);
+
+  const update = async (value: boolean) => {
+    if (busy || approved === null) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const result = await backendFetch("/api/chat", { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId, approved: value, version: openAIChatConsentVersion }) });
+      setApproved(result.approved === true);
+      setNotice(result.approved === true ? "외부 AI 이용을 허용했습니다." : "외부 AI 이용을 해제했습니다.");
+    } catch (cause) { setError(failureMessage(cause, "동의 설정을 저장하지 못했습니다.")); }
+    finally { setBusy(false); }
+  };
+
+  return <section id="external-ai" className="settings-security-block" aria-label="외부 AI 개인정보">
+    <h3><LockKeyhole size={25} aria-hidden="true" />외부 AI 개인정보</h3>
+    <Row title={externalAIConsentTitle} description={externalAIConsentDetails}>
+      {approved === null ? error && <button type="button" className="lobby-secondary" onClick={() => setReload(reload + 1)}>다시 불러오기</button> :
+        <label className="settings-ai-toggle"><input type="checkbox" checked={approved} onChange={event => void update(event.target.checked)} disabled={busy} aria-label={externalAIConsentTitle} />{approved ? "허용됨" : "미동의"}</label>}
+    </Row>
+    <p className="settings-row-hint">해제하면 이후 외부 AI 요청을 차단합니다. 이미 보낸 내용이나 저장된 대화는 삭제되지 않습니다.</p>
+    {error && <p className="settings-error" role="alert">{error}</p>}
+    {notice && <p className="settings-save-status" role="status">{notice}</p>}
   </section>;
 }
 

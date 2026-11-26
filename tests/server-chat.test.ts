@@ -7,6 +7,7 @@ import type { ConversationHistory } from "@/lib/conversation-store";
 import { requireUser } from "@/lib/server/auth";
 import { handleAssistantPreferences } from "@/lib/server/assistant-preferences";
 import { handleChat, handleChatConsent } from "@/lib/server/chat";
+import { saveChatConsent } from "@/lib/server/chat-consent";
 import { createDatabase } from "@/lib/server/database";
 import { writeBatch } from "@/lib/server/records";
 import { createTransportDraft } from "@/lib/transport";
@@ -72,6 +73,7 @@ beforeEach(() => {
   db = createDatabase(":memory:");
   db.prepare("INSERT INTO rooms(id,data_json) VALUES('room','{\"id\":\"room\"}'),('other-room','{\"id\":\"other-room\"}')").run();
   alice = cookie("alice");
+  saveChatConsent(db, "alice", true);
   const first = { id: "thread", title: "PRIVATE_TITLE", draft: "PRIVATE_DRAFT", createdAt: now, updatedAt: now };
   const history: ConversationHistory = { activeId: first.id, conversations: [
     { ...first, messages: [
@@ -157,8 +159,7 @@ it("continues a restaurant request using recent confirmed messages from this con
 });
 
 it.each(["openai-account-chat-v2", "openai-account-chat-v3"])("requires renewed consent for explicit external quotes: %s", async previousConsent => {
-  db.prepare("INSERT INTO records(key,owner_id,kind,data_json,updated_at) VALUES('chat-external-consent:alice','alice','chat-external-consent',?,?)")
-    .run(JSON.stringify(previousConsent), now);
+  db.prepare("UPDATE records SET data_json=? WHERE key='chat-external-consent:alice'").run(JSON.stringify(previousConsent));
   expect((await send(target)).status).toBe(423);
   expect(fetchProvider).not.toHaveBeenCalled();
 });
@@ -201,15 +202,31 @@ it("rejects writing a reference to a message in another thread", () => {
 });
 
 it.each([undefined, "openai-single-turn-v1", "ollama-local-v1", true, "gemini-text-v2"])("requires the exact consent version (%s)", async (consent) => {
+  saveChatConsent(db, "alice", false);
   const original = getHistory();
   expect((await send({ ...target, consent })).status).toBe(423);
   expect(fetchProvider).not.toHaveBeenCalled();
   expect(getHistory()).toEqual(original);
 });
 
+it("does not grant external consent from a chat submission", async () => {
+  saveChatConsent(db, "alice", false);
+  const original = getHistory();
+  expect((await send({ ...target, consent: openAIChatConsentVersion })).status).toBe(423);
+  expect(fetchProvider).not.toHaveBeenCalled();
+  expect(getHistory()).toEqual(original);
+});
+
 it("remembers the new approval for the current account across turns, without weakening the private data check", async () => {
-  const consent = (auth = alice, method = "GET", origin = "http://localhost") => handleChatConsent(new Request("http://localhost/api/chat", { method, headers: { cookie: auth, origin } }), db);
+  saveChatConsent(db, "alice", false);
+  const consent = (auth = alice, method = "GET", origin = "http://localhost", body?: object) => handleChatConsent(new Request("http://localhost/api/chat", {
+    method, headers: { cookie: auth, origin, "content-type": "application/json" }, body: body && JSON.stringify(body),
+  }), db);
+  const allow = { accountId: "alice", approved: true, version: openAIChatConsentVersion };
   expect(await (await consent()).json()).toEqual({ approved: false });
+  expect((await consent(alice, "PUT", "http://localhost", { ...allow, accountId: "bob" })).status).toBe(409);
+  expect((await consent(alice, "PUT", "https://elsewhere.example", allow)).status).toBe(403);
+  expect(await (await consent(alice, "PUT", "http://localhost", allow)).json()).toEqual({ approved: true });
   expect((await send()).status).toBe(200);
   expect(await (await consent()).json()).toEqual({ approved: true });
   expect(await (await consent(cookie("bob"))).json()).toEqual({ approved: false });
@@ -340,6 +357,27 @@ it("keeps sourced ratings but filters restaurants closing before the planned vis
     { name: diningCandidate.name, rating: { value: 4.5, count: 83 } },
     { name: "가상 평점 출처 없는 집", rating: null },
   ]);
+});
+
+it("searches for nearby attractions and keeps sourced access details separate from invented route facts", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult([{ ...diningCandidate, name: "가상 전망대",
+    address: "보령시 가상길 1", addressUrl: diningUrl, closures: "화요일 휴무", feature: "전망 데크", featureUrl: diningUrl,
+    routeMode: "walking", distanceKm: 0.8, durationMinutes: 12, routeUrl: "https://invented.example.com/route" }] )));
+  expect((await diningQuestion("내일 오후 2시 숙소 주변에 광광할 곳 추천해줘. PRIVATE_TEXT")).status).toBe(200);
+  expect(JSON.parse(providerBody().input)).toMatchObject({ kind: "attraction", visitTime: "14:00" });
+  expect(JSON.stringify(providerBody())).not.toContain("PRIVATE_TEXT");
+  const recommendation = getHistory().conversations[0].messages.at(-1)?.dining;
+  expect(recommendation?.kind).toBe("attraction");
+  expect(recommendation?.restaurants[0]).toMatchObject({ address: "보령시 가상길 1", closures: "화요일 휴무", feature: { text: "전망 데크" }, route: null });
+});
+
+it("shows a sourced distance, travel duration and menu for the requested mode", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult([{ ...diningCandidate, feature: "바지락칼국수", featureUrl: diningUrl,
+    routeMode: "walking", distanceKm: 0.8, durationMinutes: 12, routeUrl: diningUrl }])));
+  expect((await diningQuestion("내일 오후 6시에 숙소 주변 도보로 갈 식당 추천해줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.dining?.restaurants[0]).toMatchObject({
+    feature: { text: "바지락칼국수", source: { url: diningUrl } }, route: { mode: "walking", distanceKm: 0.8, durationMinutes: 12, source: { url: diningUrl } },
+  });
 });
 
 it.each([
@@ -507,7 +545,9 @@ it.each([["off", "안내 1 준비 완료 ©"], ["occasional", "안내 1️⃣ �
 it("rejects wrong permissions, scope, origin, stale turns and extra input before inference", async () => {
   expect((await handleChat(request(good, ""), db)).status).toBe(401);
   expect((await handleChat(request(good, cookie("viewer", ["viewRoom"])), db)).status).toBe(403);
-  expect((await handleChat(request(good, cookie("peer")), db)).status).toBe(404);
+  const peer = cookie("peer");
+  saveChatConsent(db, "peer", true);
+  expect((await handleChat(request(good, peer), db)).status).toBe(404);
   expect((await handleChat(request(good, alice, { origin: "https://other.invalid" }), db)).status).toBe(403);
   expect((await send({ ...good, roomId: "other-room" })).status).toBe(404);
   expect((await send({ ...good, conversationId: "other" })).status).toBe(409);

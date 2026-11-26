@@ -14,7 +14,7 @@ import { AUTH_CHANGED_EVENT, createBrowserAuth } from "@/lib/prototype-auth";
 import type { UserProfile } from "@/lib/types";
 import { GoogleAccountConnection } from "./google-account-connection";
 import { ManagementShell } from "./management-shell";
-import { AccountPreferences, AlertPreferences, DisplayPreferences, PasswordPreferences, SettingsHeading, SupportPreferences } from "./settings-sections";
+import { AccountPreferences, AlertPreferences, DisplayPreferences, ExternalAIPreferences, PasswordPreferences, SettingsHeading, SupportPreferences } from "./settings-sections";
 import { WorkspaceBrandMark } from "./workspace-brand-mark";
 
 const sections = [
@@ -158,6 +158,7 @@ function AccountSettings({ profile }: { profile: UserProfile }) {
           {id === "reply" && (!canChat ? <p className="settings-empty">답변 스타일을 설정할 권한이 없습니다.</p> : visitedReply && <ReplyPreferences />)}
           {id === "support" && location.section === id && <SupportPreferences />}
           {id === "security" && location.section === id && <>
+            {canChat && profile.accountId && <ExternalAIPreferences accountId={profile.accountId} />}
             <PasswordPreferences accountId={profile.accountId} />
             <section className="settings-security-block" aria-label="외부 서비스 연결">
             <h3><Link2 size={25} aria-hidden="true" />외부 서비스 연결</h3>

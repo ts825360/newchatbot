@@ -8,7 +8,6 @@ import { conversationHistoryKey } from "../lib/conversation-scope";
 import type { ConversationHistory } from "../lib/conversation-store";
 import type { ChatMessage } from "../lib/types";
 import { chatProposalCandidates } from "../lib/chat-tool-candidates";
-import { openAIChatConsentVersion } from "../lib/assistant-privacy";
 
 beforeAll(() => {
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
@@ -158,7 +157,7 @@ describe("workspace 3-1", () => {
     const chat = within(screen.getByRole("region", { name: "개인 대화" }));
     fireEvent.click(await chat.findByRole("button", { name: "준비 진행도 · 미검토" }));
     const summary = within(screen.getByRole("complementary", { name: "행사 요약" }));
-    expect(summary.getByRole("progressbar", { name: "준비 진행도" }).getAttribute("value")).toBe("0");
+    expect((await summary.findByRole("progressbar", { name: "준비 진행도" })).getAttribute("value")).toBe("0");
     expect(summary.getByText("0%")).toBeDefined();
     expect(summary.getByText("아직 점검하지 않았어요.")).toBeDefined();
     fireEvent.click(summary.getByRole("button", { name: "중간점검" }));
@@ -239,7 +238,7 @@ describe("workspace 3-1", () => {
     expect(props.onAddExtractedEvent).not.toHaveBeenCalled();
   });
 
-  it("confirms the first send, remembers consent across reloads, and still blocks detected private messages", async () => {
+  it("links to settings instead of asking for consent in chat and still blocks detected private messages", async () => {
     const profile = props.profile;
     const { id: roomId } = props.room;
     const key = conversationHistoryKey(profile.accountId, roomId);
@@ -248,7 +247,7 @@ describe("workspace 3-1", () => {
     let approved = false;
     let release!: (response: Response) => void;
     const firstReply = new Promise<Response>((resolve) => { release = resolve; });
-    const calls: { roomId: string; conversationId: string; userMessageId: string; userMessageText: string; consent: string }[] = [];
+    const calls: { roomId: string; conversationId: string; userMessageId: string; userMessageText: string }[] = [];
     const snapshot = (written: boolean) => {
       const record = { key, value: stored, version: String(revision) };
       return Response.json({ records: [record], profile, activeRoomId: roomId, written: written ? [record] : undefined });
@@ -259,10 +258,6 @@ describe("workspace 3-1", () => {
         revision++;
         return snapshot(true);
       }
-      if (path === "/api/chat" && init.method === "DELETE") {
-        approved = false;
-        return Response.json({ approved });
-      }
       if (path === "/api/chat" && init.method !== "POST") return Response.json({ approved });
       if (path === "/api/chat") {
         const call = JSON.parse(init.body as string) as typeof calls[number];
@@ -271,7 +266,7 @@ describe("workspace 3-1", () => {
         const conversation = history.conversations.find(item => item.id === call.conversationId)!;
         expect(conversation.messages).toEqual([{ id: call.userMessageId, sender: "user", text: "Synthetic question", time: "방금 전" }]);
         expect(conversation.draft).toBe("");
-        if (calls.length === 1) { approved = call.consent === openAIChatConsentVersion; return firstReply; }
+        if (calls.length === 1) return firstReply;
         conversation.messages.push({ id: "openai-test", sender: "assistant", text: "Synthetic model reply", time: "방금 전" });
         stored = JSON.stringify(history);
         revision++;
@@ -284,51 +279,55 @@ describe("workspace 3-1", () => {
     configureBackendUser(profile);
     await refreshBackendData(roomId);
     const view = render(<EventWorkspace {...props} renderProposals={() => null} />);
+    await screen.findByText("외부 AI 꺼짐");
     fireEvent.change(screen.getByRole("textbox", { name: "메시지" }), { target: { value: "Unapproved draft" } });
     fireEvent.click(screen.getByRole("button", { name: "전송" }));
     expect(calls).toHaveLength(0);
     expect(screen.queryByText("Synthetic question", { selector: "p" })).toBeNull();
-    fireEvent.click(within(screen.getByRole("dialog", { name: "OpenAI에 메시지 보내기" })).getByRole("button", { name: "취소" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("link", { name: "보안 및 개인정보 설정" }).getAttribute("href")).toContain("section=security");
     expect((screen.getByRole("textbox", { name: "메시지" }) as HTMLTextAreaElement).value).toBe("Unapproved draft");
+    approved = true;
+    view.unmount();
+    const approvedView = render(<EventWorkspace {...props} renderProposals={() => null} />);
+    await screen.findByText("외부 AI 허용됨");
+    fireEvent.change(screen.getByRole("textbox", { name: "메시지" }), { target: { value: "Synthetic question" } });
     fireEvent.click(screen.getByRole("button", { name: "전송" }));
-    const preview = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "외부로 보낼 메시지" });
-    expect(preview.value).toBe("Unapproved draft");
-    fireEvent.change(preview, { target: { value: "Synthetic question" } });
-    fireEvent.click(screen.getByRole("button", { name: "동의하고 보내기" }));
     await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0].consent).toBe(openAIChatConsentVersion);
+    expect(calls[0]).not.toHaveProperty("consent");
     expect(calls[0].userMessageText).toBe("Synthetic question");
     expect(screen.getByText("답변 작성 중")).toBeDefined();
     expect((screen.getByRole("button", { name: "전송" }) as HTMLButtonElement).disabled).toBe(true);
     release(Response.json({ error: "OpenAI를 사용할 수 없습니다." }, { status: 503 }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "OpenAI를 사용할 수 없습니다.");
     await waitFor(() => expect(screen.queryByText("답변 작성 중")).toBeNull());
-    view.unmount();
-    render(<EventWorkspace {...props} renderProposals={() => null} />);
-    await screen.findByRole("button", { name: "OpenAI 전송 동의 관리" });
+    approvedView.unmount();
+    const retriedView = render(<EventWorkspace {...props} renderProposals={() => null} />);
+    await screen.findByText("외부 AI 허용됨");
     fireEvent.click(screen.getByRole("button", { name: "답변 다시 요청" }));
     expect(screen.queryByRole("dialog", { name: "OpenAI에 메시지 보내기" })).toBeNull();
     expect(await screen.findByText("Synthetic model reply")).toBeDefined();
-    const { consent: _, ...retried } = calls[0];
-    expect(calls).toEqual([calls[0], retried]);
+    expect(calls).toEqual([calls[0], calls[0]]);
     expect(screen.queryByText("샘플 응답")).toBeNull();
     expect(screen.queryByText("샘플 제안 검토")).toBeNull();
     expect(screen.queryByRole("button", { name: "답변 다시 요청" })).toBeNull();
     fireEvent.change(screen.getByRole("textbox", { name: "메시지" }), { target: { value: "가상 담당자 010-0000-0000" } });
     fireEvent.click(screen.getByRole("button", { name: "전송" }));
-    expect(screen.getByRole("dialog", { name: "OpenAI에 메시지 보내기" })).toBeDefined();
-    expect(screen.getByRole<HTMLButtonElement>("button", { name: "보내기" }).disabled).toBe(true);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("연락처");
     fireEvent.click(screen.getByRole("button", { name: "내부에만 저장" }));
     expect(screen.getByText("내부 기록")).toBeDefined();
     await waitFor(() => expect(stored).toContain("local-only"));
     expect(calls).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "답변 다시 요청" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "OpenAI 전송 동의 관리" }));
-    fireEvent.click(screen.getByRole("button", { name: "전송 동의 철회" }));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "OpenAI 전송 동의 관리" })).toBeNull());
+    approved = false;
+    retriedView.unmount();
+    render(<EventWorkspace {...props} renderProposals={() => null} />);
+    await screen.findByText("외부 AI 꺼짐");
     fireEvent.change(screen.getByRole("textbox", { name: "메시지" }), { target: { value: "After revocation" } });
     fireEvent.click(screen.getByRole("button", { name: "전송" }));
-    expect(screen.getByRole("dialog", { name: "OpenAI에 메시지 보내기" })).toBeDefined();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("link", { name: "보안 및 개인정보 설정" })).toBeDefined();
     expect(calls).toHaveLength(2);
   });
 
