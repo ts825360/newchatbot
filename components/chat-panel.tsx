@@ -22,6 +22,7 @@ type TurnActions = {
   canAddCalendarEvent?: (message: ChatMessage) => boolean;
   onAddChecklist?: (message: ChatMessage) => void;
   onImportRoster?: (source: ChatRosterSource) => void;
+  onSaveNearbyPlace?: (name: string) => Promise<"added" | "already-saved">;
   retreatVenueScope?: ConversationScope;
 };
 
@@ -92,7 +93,7 @@ function MessageTurn({ message, previous, source, server, actions, busy, onRefer
       {assistant && message.replyElapsedMs != null && <p className="workspace-reply-elapsed workspace-reply-completed">
         {message.replyElapsedMs < 1000 ? "1초 미만" : `${Math.floor(message.replyElapsedMs / 1000)}초`} 소요
       </p>}
-      <MessageBody message={message} review={review} />
+      <MessageBody message={message} review={review} saveNearbyPlace={actions.onSaveNearbyPlace} busy={busy} />
       {assistant && message.actions?.includes(eventPublicVenueUsedAction) && <p className="workspace-reply-elapsed workspace-reply-completed">행사방 대표 장소 참고</p>}
       {retreatVenueScope && assistant && message.actions?.includes(venueHistoryReplyAction) &&
         <RetreatVenueHistory scope={retreatVenueScope} question={previous?.sender === "user" ? previous.text : ""} />}
@@ -188,7 +189,22 @@ function Composer({ conversation, reference, onClearReference, onEditReference, 
       </footer>;
 }
 
-function MessageBody({ message, review }: { message: ChatMessage; review: ReactNode }) {
+function NearbyPlaceApproval({ name, save, disabled }: { name: string; save: NonNullable<TurnActions["onSaveNearbyPlace"]>; disabled: boolean }) {
+  const [state, setState] = useState<"idle" | "saving" | "added" | "already-saved">("idle");
+  const [error, setError] = useState("");
+  async function approve() {
+    setState("saving"); setError("");
+    try { setState(await save(name)); }
+    catch (cause) { setState("idle"); setError(cause instanceof Error ? cause.message : "장소를 저장하지 못했습니다."); }
+  }
+  return <div className="workspace-place-approval">
+    {state === "added" || state === "already-saved" ? <span role="status">{state === "added" ? "장소에 저장했습니다." : "이미 장소 목록에 있습니다."}</span> :
+      <button type="button" className="workspace-start-button" disabled={disabled || state === "saving"} onClick={() => void approve()}><MapPin size={15} aria-hidden="true" />{state === "saving" ? "저장 중" : "장소에 저장"}</button>}
+    {error && <span role="alert">{error}</span>}
+  </div>;
+}
+
+function MessageBody({ message, review, saveNearbyPlace, busy }: { message: ChatMessage; review: ReactNode; saveNearbyPlace?: TurnActions["onSaveNearbyPlace"]; busy: boolean }) {
   if (message.sender === "assistant" && isDiningRecommendations(message.dining)) {
     const { kind, venue, checkedAt, restaurants, transportMode, selectedRank } = message.dining;
     const attraction = kind === "attraction";
@@ -199,6 +215,7 @@ function MessageBody({ message, review }: { message: ChatMessage; review: ReactN
     return <section className="workspace-plan workspace-dining" aria-label={title}>
       <div className="workspace-plan-heading"><span className="workspace-plan-icon">{attraction ? <MapPin size={17} aria-hidden="true" /> : <Utensils size={17} aria-hidden="true" />}</span><h3>{title}</h3><span className="workspace-plan-state">검색 후보 · 확인 필요</span></div>
       <p className="workspace-message-text">{message.text}</p>
+      {message.dining.placeSaveRequested && saveNearbyPlace && <NearbyPlaceApproval name={restaurants[0].name} save={saveNearbyPlace} disabled={busy} />}
       <ol className="workspace-dining-list">{restaurants.map((restaurant, index) => <li key={restaurant.name}>
         <h4><span>{selectedRank ?? index + 1}순위</span>{restaurant.name}</h4>
         <p>{restaurant.reason}</p>
@@ -223,7 +240,7 @@ function MessageBody({ message, review }: { message: ChatMessage; review: ReactN
   }
   const plan = message.advisor;
   if (message.sender !== "assistant" || !isAdvisorPresentation(plan) || plan.kind !== "plan") {
-    return <><p className="workspace-message-text">{message.text}</p>{review}</>;
+    return <><p className="workspace-message-text workspace-message-bubble">{message.text}</p>{review}</>;
   }
   return <div className="workspace-plan">
     <div className="workspace-plan-heading"><span className="workspace-plan-icon"><CalendarDays size={18} aria-hidden="true" /></span><h3>{plan.title}</h3><span className="workspace-plan-state">검토용</span></div>

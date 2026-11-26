@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventWorkspace } from "../components/event-workspace";
+import { ChatPanel } from "../components/chat-panel";
 import { PreparationProgressReview, PreparationProgressShortcut } from "../components/preparation-progress-review";
 import { createInitialState } from "../lib/prototype-state";
 import { configureBackendUser, enableBackendConnection, refreshBackendData, resetBackendClient } from "../lib/backend-client";
@@ -34,6 +35,25 @@ const props = {
 };
 
 describe("workspace 3-1", () => {
+  it("gives a plain AI answer a bubble and requires an explicit click to save a selected public candidate", async () => {
+    enableBackendConnection(true);
+    configureBackendUser(props.profile);
+    const save = vi.fn(async () => "added" as const);
+    const dining: ChatMessage = { id: "proposal", sender: "assistant", text: "장소 저장 확인", time: "", dining: {
+      venue: "대표 숙소", date: null, visitTime: null, checkedAt: "2026-11-26T00:00:00.000Z", selectedRank: 2, placeSaveRequested: true,
+      restaurants: [{ name: "가상 백반집", reason: "식사 후보", hours: "확인 필요", rating: null, sources: [{ url: "https://example.org/shop", label: "후보 출처" }] }],
+    } };
+    render(<ChatPanel conversation={{ id: "thread", title: "후보", draft: "", createdAt: "", updatedAt: "", messages: [
+      { id: "plain", sender: "assistant", text: "일반 답변", time: "" }, dining,
+    ] }} onDraftChange={vi.fn()} onSendMessage={vi.fn()} onNewConversation={vi.fn()} onOpenDocuments={vi.fn()} onSaveNearbyPlace={save} />);
+    expect(screen.getByText("일반 답변").classList.contains("workspace-message-bubble")).toBe(true);
+    const proposal = screen.getByRole("region", { name: "주변 식당 추천" });
+    expect(within(proposal).getByText("장소 저장 확인").classList.contains("workspace-message-bubble")).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.click(within(proposal).getByRole("button", { name: "장소에 저장" }));
+    expect(save).toHaveBeenCalledWith("가상 백반집");
+    expect(await within(proposal).findByText("장소에 저장했습니다.")).toBeDefined();
+  });
   it("moves keyboard focus into conversation history when opening it", () => {
     render(<EventWorkspace {...props} />);
     fireEvent.click(screen.getByRole("button", { name: "대화 목록 닫기" }));

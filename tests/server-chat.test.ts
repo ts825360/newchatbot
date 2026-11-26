@@ -527,6 +527,37 @@ it("keeps the original search and ranking after multiple candidate selections", 
   expect(fetchProvider).toHaveBeenCalledTimes(1);
 });
 
+it("offers a scoped approval for the chosen place and completes a missing rank without reordering existing candidates", async () => {
+  const options = ["가상 후보 A", "가상 후보 B"];
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult(options.map(name => ({ ...diningCandidate, name })))));
+  expect((await diningQuestion("숙소 주변 맛집 추천해줘")).status).toBe(200);
+  const before = db.prepare("SELECT data_json FROM records WHERE kind='location' AND owner_id='alice'").get()?.data_json;
+  expect((await append("save-two", "2순위가 맘에들어 우리 장소에 추가해줘")).status).toBe(200);
+  expect(fetchProvider).toHaveBeenCalledTimes(1);
+  expect(getHistory().conversations[0].messages.at(-1)).toMatchObject({ dining: {
+    placeSaveRequested: true, selectedRank: 2, restaurants: [{ name: "가상 후보 B" }],
+  } });
+  expect(db.prepare("SELECT data_json FROM records WHERE kind='location' AND owner_id='alice'").get()?.data_json).toBe(before);
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult(["가상 후보 B", "가상 후보 C"].map(name => ({ ...diningCandidate, name })) )));
+  expect((await append("more-three", "3순위도 추천해줘")).status).toBe(200);
+  expect(JSON.parse(providerBody().input)).toMatchObject({ kind: "restaurant", findAlternatives: true });
+  const merged = getHistory().conversations[0].messages.at(-1);
+  expect(merged?.dining?.restaurants.map(candidate => candidate.name)).toEqual([...options, "가상 후보 C"]);
+  expect((await append("reuse-two", "2순위 다시 보여줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.dining).toMatchObject({ selectedRank: 2, restaurants: [{ name: "가상 후보 B" }] });
+  expect(fetchProvider).toHaveBeenCalledTimes(2);
+});
+
+it("refreshes unchanged conditions without repeating the previous candidates", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult([{ ...diningCandidate, name: "이전 식당" }])));
+  expect((await diningQuestion("숙소 주변 맛집 추천해줘")).status).toBe(200);
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult(["이전 식당", "새 식당"].map(name => ({ ...diningCandidate, name })) )));
+  expect((await append("different-places", "다시 찾아줘")).status).toBe(200);
+  expect(JSON.parse(providerBody().input)).toMatchObject({ findAlternatives: true });
+  expect(providerBody().input).not.toContain("이전 식당");
+  expect(getHistory().conversations[0].messages.at(-1)?.dining?.restaurants.map(item => item.name)).toEqual(["새 식당"]);
+});
+
 it("does not promote search facts whose only proof is a URL seen in the search", async () => {
   fetchProvider.mockResolvedValueOnce(Response.json(diningResult([{ ...diningCandidate, rating: 4.8, ratingUrl: diningUrl, routeMode: "walking", distanceKm: 0.8, routeUrl: diningUrl }])));
   expect((await diningQuestion("우리 숙소 주변 맛집 추천해줘")).status).toBe(200);

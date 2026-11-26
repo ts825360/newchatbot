@@ -14,7 +14,9 @@ import { SupportButton } from "./support-dialog";
 import { SettingsEntry } from "./settings-entry";
 import { TransportPanel } from "./transport-panel";
 import { BackendError, backendFetch, followBackendConversation, flushBackendWrites, getBackendProfile, getBackendState, isBackendConnected, refreshBackendData } from "@/lib/backend-client";
-import { conversationHistoryKey, scopeId, type ConversationScope } from "@/lib/conversation-scope";
+import { conversationHistoryKey, privateToolKey, scopeId, type ConversationScope } from "@/lib/conversation-scope";
+import { appendConversationPlace } from "@/lib/conversation-places";
+import type { ServerSnapshot } from "@/lib/backend-contract";
 import { classifyContinuation } from "@/lib/chat-continuity";
 import { GoogleCalendarConnection } from "./google-calendar-connection";
 import { BlankGoogleFormLink } from "./google-forms-sharing";
@@ -339,8 +341,24 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     return <button key={mode} type="button" className="workspace-start-button" onClick={() => openTool(mode)}><Icon size={17} aria-hidden="true" />{name} 보기</button>;
   })}<BlankGoogleFormLink className="workspace-start-button" /></div>;
   const activePrivacyNotice = privacyNotice?.identity === identity ? privacyNotice : null;
+  const saveNearbyPlace = async (current: ConversationScope, name: string) => {
+    if (!canChat || hasObviousPrivateData(name)) throw new Error("이 장소를 저장할 수 없습니다.");
+    await flushBackendWrites();
+    const snapshot: ServerSnapshot = await backendFetch(`/api/data?roomId=${encodeURIComponent(current.roomId)}&conversationId=${encodeURIComponent(current.conversationId)}`);
+    if (snapshot.profile.accountId !== current.accountId || getBackendProfile()?.accountId !== current.accountId) throw new Error("접속 계정이 변경됐습니다.");
+    const key = privateToolKey(current, "location");
+    const record = snapshot.records.find(item => item.key === key);
+    if (!record) throw new Error("현재 행사방의 장소 목록을 확인하지 못했습니다.");
+    const next = appendConversationPlace(record.value === null ? { location: "" } : JSON.parse(record.value), name);
+    if (!next) return "already-saved" as const;
+    await backendFetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roomId: current.roomId, writes: [{ key, version: record.version, value: JSON.stringify(next) }] }) });
+    await refreshBackendData(current.roomId, current.conversationId).catch(() => { /* The confirmed write already succeeded. */ });
+    return "added" as const;
+  };
   const chat = <>{(error || notice) && <div className={`workspace-notice ${error || noticeError ? "is-error" : ""}`} role={error || noticeError ? "alert" : "status"}>{error || notice}</div>}{canChat ? <ChatPanel conversation={active} visible={chatVisible} shortcuts={shortcuts} onDraftChange={changeDraft} onSendMessage={submitChat} replyStartedAt={replyStartedAt} onRetryReply={retryReply} onNewConversation={() => create()} onOpenDocuments={() => openTool("documents")} onReviewProposals={renderProposals ? replyId => openTool("proposals", replyId) : undefined}
         externalAIApproved={consentApproved}
+        onSaveNearbyPlace={server && readyScope && canChat ? name => saveNearbyPlace(readyScope, name) : undefined}
         privacyNotice={activePrivacyNotice && <div className="workspace-notice workspace-ai-notice" role="alert">
           <span>{activePrivacyNotice.reason === "private" ? openAIPrivacyWarning : "외부 AI 이용이 꺼져 있어 전송하지 않았습니다."}</span>
           {activePrivacyNotice.reason === "consent" && <a href={externalAISettingsHref} onClick={event => {
