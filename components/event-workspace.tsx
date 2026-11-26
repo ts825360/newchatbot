@@ -18,6 +18,7 @@ import { conversationHistoryKey, privateToolKey, scopeId, type ConversationScope
 import { appendConversationPlace } from "@/lib/conversation-places";
 import type { ServerSnapshot } from "@/lib/backend-contract";
 import { classifyContinuation } from "@/lib/chat-continuity";
+import { isEventVenueRouteQuestion } from "@/lib/chat-venue-route";
 import { GoogleCalendarConnection } from "./google-calendar-connection";
 import { BlankGoogleFormLink } from "./google-forms-sharing";
 import { useToolsResize } from "./workspace-tools-resize";
@@ -111,7 +112,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   const isRetreat = server && "category" in room && room.category === "retreat";
   const canReviewRetreat = isRetreat &&
     retreatReviewPermissions.every(permission => profile.permissions.includes(permission));
-  const isLocalQuestion = (text: string) => classifyContinuation(text) === "cancel" || isPreparationChat(text) || isPreparationStatusChat(text) || isRetreat && isVenueHistoryChat(text);
+  const isLocalQuestion = (text: string) => isEventVenueRouteQuestion(text) || classifyContinuation(text) === "cancel" || isPreparationChat(text) || isPreparationStatusChat(text) || isRetreat && isVenueHistoryChat(text);
   const consentApproved = externalAI?.account === accountId ? externalAI.approved : undefined;
   const scope = useMemo<ConversationScope | null>(() => canChat && active ? { accountId, roomId: room.id, conversationId: active.id } : null, [canChat, accountId, room.id, active?.id]);
   const identity = scope ? scopeId(scope) : "";

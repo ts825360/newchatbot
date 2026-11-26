@@ -35,6 +35,16 @@ const props = {
 };
 
 describe("workspace 3-1", () => {
+  it("links a locally verified lodging route to Maps with only the public origin and destination", () => {
+    render(<ChatPanel conversation={{ id: "thread", title: "숙소 위치", draft: "", createdAt: "", updatedAt: "", messages: [
+      { id: "route", sender: "assistant", text: "실제 소요 시간은 지도에서 확인하세요.", time: "", venueRoute: { venueName: "한화리조트 대천 파로스", origin: "대전역" } },
+    ] }} onDraftChange={vi.fn()} onSendMessage={vi.fn()} onNewConversation={vi.fn()} onOpenDocuments={vi.fn()} />);
+    const details = new URL(screen.getByRole("link", { name: "대전역에서 숙소까지 길찾기" }).getAttribute("href")!);
+    expect(details.host).toBe("www.google.com");
+    expect(details.searchParams.get("origin")).toBe("대전역");
+    expect(details.searchParams.get("destination")).toContain("해수욕장3길 11-10");
+    expect(details.searchParams.has("travelmode")).toBe(false);
+  });
   it("gives a plain AI answer a bubble and requires an explicit click to save a selected public candidate", async () => {
     enableBackendConnection(true);
     configureBackendUser(props.profile);

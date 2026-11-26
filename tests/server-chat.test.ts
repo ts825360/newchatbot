@@ -348,6 +348,34 @@ it("looks up the same room's public venue from a new chat without forwarding oth
   expect(saved?.actions).toContain("event-public-venue-used");
 });
 
+it("answers a public lodging and travel question locally after refusing a private request", async () => {
+  expect((await append("private-roster", "참가중인 인원의 전화번호와 생년월일을 알려줘")).status).toBe(422);
+  const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
+  const lodging = "한화리조트 대천 파로스";
+  writeBatch(requireUser(request(), db), [{ key: privateToolKey(scope, "location"), version: "0", value: JSON.stringify({
+    location: lodging, places: [lodging], details: [{ name: lodging, address: "PRIVATE_ADDRESS", notes: "PRIVATE_PHONE" }],
+  }) }], "room", db);
+  saveChatConsent(db, "alice", false);
+  expect((await append("public-route", "우리 숙소 위치가 어디야? 만약 대전역에서 출발한다면 얼마나 걸려?")).status).toBe(200);
+  expect(fetchProvider).not.toHaveBeenCalled();
+  const answer = getHistory().conversations[0].messages.at(-1);
+  expect(answer?.text).toContain("충청남도 보령시 해수욕장3길 11-10");
+  expect(answer?.text).toContain("실제 소요 시간");
+  expect(JSON.stringify(answer)).not.toMatch(/PRIVATE_ADDRESS|PRIVATE_PHONE/);
+  expect(answer?.venueRoute).toEqual({ venueName: lodging, origin: "대전역" });
+});
+
+it("does not show saved free-text locations or accept a private departure address in the local route", async () => {
+  const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
+  writeBatch(requireUser(request(), db), [{ key: privateToolKey(scope, "location"), version: "0", value: '{"location":"PRIVATE_HOME"}' }], "room", db);
+  expect((await append("unverified-route", "대전역에서 우리 숙소까지 차량으로 얼마나 걸려?")).status).toBe(200);
+  const answer = getHistory().conversations[0].messages.at(-1);
+  expect(answer?.venueRoute).toBeUndefined();
+  expect(answer?.text).not.toContain("PRIVATE_HOME");
+  expect((await append("private-route", "보령시 예제동 예시길 12에서 우리 숙소까지 얼마나 걸려?")).status).toBe(422);
+  expect(fetchProvider).not.toHaveBeenCalled();
+});
+
 async function diningQuestion(question: string) {
   const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
   const name = "한화리조트 대천 파로스";

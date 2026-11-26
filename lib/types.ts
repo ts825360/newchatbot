@@ -90,6 +90,7 @@ export type ChatMessage = {
   advisor?: import("./chat-advisor").AdvisorPresentation;
   dining?: import("./chat-dining").DiningRecommendations;
   nearbyTask?: import("./chat-dining").NearbyTask;
+  venueRoute?: import("./chat-venue-route").VenueRoute;
 };
 
 export type CalendarEvent = {
