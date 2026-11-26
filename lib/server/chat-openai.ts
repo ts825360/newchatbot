@@ -1,3 +1,4 @@
+import { hasObviousPrivateData } from "../assistant-privacy";
 import { ApiError } from "./http";
 import { object, text } from "./record-schema";
 
@@ -26,6 +27,8 @@ async function readReply(response: Response): Promise<unknown> {
 
 export type OpenAIChatTurn = { role: "user" | "assistant"; content: string };
 type ReadTool = { definition: { type: "function"; name: string; strict: true; description: string; parameters: Record<string, unknown> }; run: () => string };
+const maxInFlight = 4;
+let inFlight = 0;
 
 async function withOpenAI<T>(signal: AbortSignal, timeoutMs: number, run: (respond: (body: Record<string, unknown>) => Promise<unknown[]>, model: string) => Promise<T>) {
   const key = process.env.OPENAI_API_KEY?.trim();
@@ -59,13 +62,15 @@ async function withOpenAI<T>(signal: AbortSignal, timeoutMs: number, run: (respo
     if (!object(reply) || reply.status !== "completed" || !Array.isArray(reply.output)) throw invalidReply();
     return reply.output as unknown[];
   }
+  if (inFlight >= maxInFlight) throw new ApiError(429, "외부 AI 요청이 많습니다. 잠시 뒤 다시 시도해 주세요.");
+  inFlight++;
   try { return await run(respond, model); }
   catch (error) {
     if (signal.aborted) throw new ApiError(408, "답변 요청이 취소되었습니다.");
     if (timeout.aborted) throw new ApiError(504, "OpenAI 답변 시간이 초과되었습니다. 다시 시도해 주세요.");
     if (error instanceof ApiError) throw error;
     throw unavailable();
-  }
+  } finally { inFlight--; }
 }
 
 export function searchOpenAIWeb(input: string, signal: AbortSignal, instructions: string, format: Record<string, unknown>) {
@@ -78,6 +83,9 @@ export function searchOpenAIWeb(input: string, signal: AbortSignal, instructions
 }
 
 export async function generateOpenAIText(input: string | OpenAIChatTurn[], signal: AbortSignal, instructions = "", format?: Record<string, unknown>, tool?: ReadTool): Promise<string> {
+  if ((typeof input === "string" ? [input] : input.map(turn => turn.content)).some(hasObviousPrivateData)) {
+    throw new ApiError(422, "개인정보가 포함된 문맥은 외부 AI에 보낼 수 없습니다.");
+  }
   return withOpenAI(signal, 45_000, async (request, model) => {
     const respond = (context: string | readonly unknown[], continuation = false) => request({
       ...(instructions && { instructions }), input: context, reasoning: { effort: model === "gpt-6-luna" ? "none" : "low" }, max_output_tokens: 1200,

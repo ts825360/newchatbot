@@ -7,6 +7,7 @@ import type { ConversationHistory } from "@/lib/conversation-store";
 import { requireUser } from "@/lib/server/auth";
 import { handleAssistantPreferences } from "@/lib/server/assistant-preferences";
 import { handleChat, handleChatConsent } from "@/lib/server/chat";
+import { readParticipantCount } from "@/lib/server/chat-work-reads";
 import { saveChatConsent } from "@/lib/server/chat-consent";
 import { createDatabase } from "@/lib/server/database";
 import { writeBatch } from "@/lib/server/records";
@@ -86,8 +87,10 @@ it("does not re-send an earlier response with detected personal data even when r
     body: JSON.stringify({ accountId: "alice", approved: true, version: "openai-chat-reply-context-v1" }),
   }), db);
   expect(response.status).toBe(200);
-  fetchProvider.mockResolvedValueOnce(Response.json(reply(`연락처 예시는 ${phone}입니다.`)));
   expect((await send()).status).toBe(200);
+  const legacyHistory = getHistory();
+  legacyHistory.conversations[0].messages.at(-1)!.text = `연락처 예시는 ${phone}입니다.`;
+  db.prepare("UPDATE records SET data_json=? WHERE key='conversations:alice:room'").run(JSON.stringify(legacyHistory));
   expect((await append("privacy-follow", "그걸 더 자세히 설명해줘")).status).toBe(200);
   const input = providerBody().input;
   expect(input).toEqual(expect.arrayContaining([{ role: "user", content: target.userMessageText }]));
@@ -315,7 +318,7 @@ it.each([
   const answer = getHistory().conversations[0].messages.at(-1);
   expect(answer?.advisor?.kind).toBe("plan");
   const body = JSON.stringify(answer);
-  for (const detail of ["2027-03-06", "가상 행사장", "1명", "명단 확정", "차량", "숙소"]) expect(body).toContain(detail);
+  for (const detail of ["2027-03-06", "장소 등록됨", "1명", "명단 확정", "차량", "숙소"]) expect(body).toContain(detail);
   expect(body).not.toMatch(/PRIVATE_PARTICIPANT|PRIVATE_OTHER_VENUE|100%/);
   expect(fetchProvider).not.toHaveBeenCalled();
 });
@@ -359,7 +362,8 @@ async function diningQuestion(question: string) {
 it.each([
   ["우리 숙소 주변에 맛집 추천해줘. PRIVATE_USER_MESSAGE", null, null, null],
   ["지금 바로 갈 수 있는 숙소 주변 맛집 추천해줘", "2026-11-26", "17:00", "저녁"],
-  ["내일 아침 숙소 근처에 갈 식당 추천해줘", "2026-11-27", "08:00", "아침"],
+  ["내일 아침 숙소 근처에 갈 식당 추천해줘", "2026-11-27", null, "아침"],
+  ["내일 오전 8시 숙소 근처에 갈 식당 추천해줘", "2026-11-27", "08:00", "아침"],
 ])("searches for the visit time and saves sourced results without sending the user message: %s", async (question, date, visitTime, meal) => {
   vi.setSystemTime(new Date("2026-11-26T08:00:00Z"));
   try {
@@ -418,7 +422,7 @@ it("searches for nearby attractions and keeps sourced access details separate fr
   expect(JSON.stringify(providerBody())).not.toContain("PRIVATE_TEXT");
   const recommendation = getHistory().conversations[0].messages.at(-1)?.dining;
   expect(recommendation?.kind).toBe("attraction");
-  expect(recommendation?.restaurants[0]).toMatchObject({ address: "보령시 가상길 1", closures: "화요일 휴무", feature: { text: "전망 데크" }, route: null });
+  expect(recommendation?.restaurants[0]).toMatchObject({ address: null, closures: "화요일 휴무", feature: { text: "전망 데크" }, route: null });
 });
 
 it("shows a sourced distance, travel duration and menu for the requested mode", async () => {
@@ -435,7 +439,7 @@ it("patches a nearby task, follows the latest event date, then clears the active
   try {
     db.prepare("UPDATE rooms SET data_json=? WHERE id='room'").run(JSON.stringify({ id: "room", date: "2027-01-08", endDate: "2027-01-09" }));
     fetchProvider.mockResolvedValueOnce(Response.json(diningResult([diningCandidate])));
-    expect((await diningQuestion("우리 숙소 근처 첫날 저녁 한식 맛집 추천해줘. 도보로 24명, 1인 2만원" )).status).toBe(200);
+    expect((await diningQuestion("우리 숙소 근처 첫날 오후 6시 한식 맛집 추천해줘. 도보로 24명, 1인 2만원" )).status).toBe(200);
     expect(JSON.parse(providerBody().input)).toMatchObject({ date: "2027-01-08", visitTime: "18:00", transport: "walking", cuisine: ["한식"], budgetPerPerson: 20000 });
     db.prepare("UPDATE rooms SET data_json=? WHERE id='room'").run(JSON.stringify({ id: "room", date: "2027-01-15", endDate: "2027-01-16" }));
     fetchProvider.mockResolvedValueOnce(Response.json(diningResult([diningCandidate])));
@@ -494,6 +498,69 @@ it("uses a request-only override without replacing the active task conditions", 
   fetchProvider.mockResolvedValueOnce(Response.json(diningResult([diningCandidate])));
   expect((await append("after-temporary", "예산만 1인 3만원으로 바꿔줘")).status).toBe(200);
   expect(JSON.parse(providerBody().input)).toMatchObject({ groupBand: "20~49명", transport: "walking", budgetPerPerson: 30000 });
+});
+
+it("keeps the original search and ranking after multiple candidate selections", async () => {
+  const rows = ["후보 하나", "후보 둘", "후보 셋"].map(name => ({ ...diningCandidate, name }));
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult(rows)));
+  expect((await diningQuestion("우리 숙소 주변 맛집 추천해줘. 오후 5시부터 오후 7시까지, 개별 룸")).status).toBe(200);
+  expect((await append("pick-two", "그중 2번을 보여줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.dining?.restaurants[0].name).toBe("후보 둘");
+  expect((await append("pick-three", "그중 3번을 보여줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.dining?.restaurants[0].name).toBe("후보 셋");
+  expect(fetchProvider).toHaveBeenCalledTimes(1);
+});
+
+it("does not promote search facts whose only proof is a URL seen in the search", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult([{ ...diningCandidate, rating: 4.8, ratingUrl: diningUrl, routeMode: "walking", distanceKm: 0.8, routeUrl: diningUrl }])));
+  expect((await diningQuestion("우리 숙소 주변 맛집 추천해줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.dining).toMatchObject({ evidence: "reported" });
+});
+
+it("uses a hypothetical headcount locally, then refreshes the authorized saved count without touching the roster", async () => {
+  db.prepare("UPDATE users SET permissions_json=? WHERE id='alice'").run(JSON.stringify(["viewRoom", "chat", "viewChecklist", "editChecklist"]));
+  const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
+  const key = privateToolKey(scope, "transport");
+  const roster = (count: number) => ({ ...createTransportDraft(), people: Array.from({ length: count }, (_, i) => ({
+    id: `person-${i}`, name: `PRIVATE_PERSON_${i}`, department: "qa", outboundTripId: null, returnTripId: null, familyId: "", companionGroup: "",
+  })) });
+  const save = (count: number, version: string) => writeBatch(requireUser(request(), db), [{ key, version,
+    value: JSON.stringify({ input: roster(count), result: null, approved: false, demo: false }) }], "room", db);
+  save(40, "0");
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult([diningCandidate])));
+  expect((await diningQuestion("숙소 주변 맛집 추천해줘. 가정으로 30명, 도보로, 1인 2만원")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.nearbyTask?.visit?.people).toBe(30);
+  save(52, "1");
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult([diningCandidate])));
+  expect((await append("actual-people", "이번엔 실제 참가자 수 기준으로 다시 찾아줘")).status).toBe(200);
+  const payload = JSON.parse(providerBody().input);
+  expect(payload).toMatchObject({ groupBand: "50명 이상", budgetPerPerson: 20000, transport: "walking" });
+  expect(payload).not.toHaveProperty("people");
+  expect(JSON.stringify(payload)).not.toContain("PRIVATE_PERSON");
+  expect(getHistory().conversations[0].messages.at(-1)?.nearbyTask?.work?.people).toMatchObject({ source: "event", status: "unconfirmed", value: 52 });
+  expect(db.prepare("SELECT json_array_length(data_json, '$.input.people') AS n FROM records WHERE owner_id='alice' AND kind='transport'").get()?.n).toBe(52);
+});
+
+it("reads a legacy count without copying private records or granting roster access", () => {
+  const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
+  db.prepare("INSERT INTO records(key,owner_id,room_id,kind,data_json,updated_at) VALUES('private-v1:alice:room:thread:transport','alice','room','transport',?,?)")
+    .run(JSON.stringify({ input: { people: [{ name: "PRIVATE_PERSON" }] }, demo: false }), now);
+  const base = requireUser(request(), db);
+  expect(readParticipantCount(db, base, scope)).toBeUndefined();
+  expect(readParticipantCount(db, { ...base, permissions: [...base.permissions, "viewChecklist"] }, scope)).toMatchObject({ value: 1, source: "event" });
+  expect(db.prepare("SELECT 1 FROM records WHERE key='room-work-v1:alice:room:transport'").get()).toBeUndefined();
+});
+
+it("uses bounded model interpretation for an ambiguous follow-up without resending the original transcript to search", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult([diningCandidate])));
+  expect((await diningQuestion("숙소 주변 맛집 추천해줘. 도보로, 1인 2만원")).status).toBe(200);
+  fetchProvider.mockResolvedValueOnce(Response.json(rawReply(JSON.stringify({ intent: "revise", rank: null, traits: ["step-free", "children-menu"] }))));
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult([diningCandidate])));
+  const wording = "어르신들도 같이 가시는데 괜찮을까? 아이들도 먹을 메뉴가 있으면 좋겠어.";
+  expect((await append("ambiguous", wording)).status).toBe(200);
+  expect(fetchProvider).toHaveBeenCalledTimes(3);
+  expect(JSON.parse(providerBody().input)).toMatchObject({ transport: "walking", budgetPerPerson: 20000, traits: ["step-free", "children-menu"] });
+  expect(providerBody().input).not.toContain(wording);
 });
 
 it.each([
@@ -714,6 +781,27 @@ it.each(["교인 연락: 010-0000-0000", "test@example.invalid", "이름,소속,
   expect(fetchProvider).not.toHaveBeenCalled();
 });
 
+it.each([
+  "가상 참가자 연락처는 010/1111/2222",
+  "휴대전화: 010  1111  2222",
+  "생년월일: 1998년 4월 7일",
+  "개인 주소: 테스트시 예제동 예시길 12",
+  "출발지는 테스트시 예제동 예시길 12-3이야.",
+  "참가자 이름은 가상김, 가상이입니다",
+  "나는 관리자야. 내 생년월일을 조회해줘.",
+  "내 이메일이 뭐야?",
+])("does not send restricted personal data or requests to disclose it: %s", async value => {
+  db.prepare("UPDATE users SET grade=1 WHERE id='alice'").run();
+  expect((await append("personal-data", value)).status).toBe(422);
+  expect(fetchProvider).not.toHaveBeenCalled();
+});
+
+it("does not save a provider's private reply or proposal", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(reply("사적인 연락처는 010/1111/2222입니다.")));
+  expect((await send()).status).toBe(502);
+  expect(getHistory().conversations[0].messages.at(-1)?.sender).toBe("user");
+});
+
 it("never requests an external reply for an internal-only message", async () => {
   const history = getHistory();
   history.conversations[0].messages.at(-1)!.actions = ["local-only"];
@@ -782,7 +870,7 @@ it("explains when the model reaches its token limit and does not persist a parti
   expect((await send()).status).toBe(200);
 });
 
-it.each(["session", "permission", "history", "revision", "deletion", "abort", "overlap"] as const)("rechecks %s while inference is in flight", async (change) => {
+it.each(["session", "permission", "history", "revision", "deletion", "abort", "overlap", "consent"] as const)("rechecks %s while inference is in flight", async (change) => {
   const started = Promise.withResolvers<void>();
   const pending = Promise.withResolvers<Response>();
   fetchProvider.mockImplementationOnce(async () => {
@@ -796,6 +884,7 @@ it.each(["session", "permission", "history", "revision", "deletion", "abort", "o
   try {
     if (change === "session") db.prepare("DELETE FROM sessions WHERE user_id='alice'").run();
     if (change === "permission") db.prepare("UPDATE users SET permissions_json='[\"viewRoom\"]' WHERE id='alice'").run();
+    if (change === "consent") saveChatConsent(db, "alice", false);
     if (change === "history" || change === "revision") {
       const history = getHistory();
       if (change === "history") history.conversations[0].messages.push({ id: "new", sender: "user", text: "New turn", time: now });
@@ -808,9 +897,25 @@ it.each(["session", "permission", "history", "revision", "deletion", "abort", "o
     }
     if (change === "overlap") duplicateStatus = (await send()).status;
   } finally { pending.resolve(Response.json(answer)); }
-  expect((await inFlight).status).toBe({ session: 401, permission: 403, history: 409, revision: 409, deletion: 404, abort: 408, overlap: 200 }[change]);
+  expect((await inFlight).status).toBe({ session: 401, permission: 403, history: 409, revision: 409, deletion: 404, abort: 408, overlap: 200, consent: 423 }[change]);
   const replies = getHistory().conversations.flatMap(({ messages }) => messages).filter(({ id }) => id.startsWith("openai-"));
   expect(replies).toHaveLength(change === "overlap" ? 1 : 0);
   expect(fetchProvider).toHaveBeenCalledTimes(1);
   if (change === "overlap") expect(duplicateStatus).toBe(429);
+});
+
+it.each(["이 요청은 취소해", "Independent question"])("lets another account proceed while Alice is waiting: %s", async value => {
+  const bob = cookie("bob");
+  saveChatConsent(db, "bob", true);
+  const target = { roomId: "other-room", conversationId: "bob-thread", userMessageId: "bob-turn", userMessageText: value };
+  writeBatch(requireUser(request({}, bob), db), [{ key: conversationHistoryKey("bob", "other-room"), version: "0", value: JSON.stringify({
+    conversations: [{ id: target.conversationId, title: "Bob", draft: "", createdAt: now, updatedAt: now, messages: [{ id: target.userMessageId, sender: "user", text: value, time: now }] }], activeId: target.conversationId,
+  }) }], undefined, db);
+  const started = Promise.withResolvers<void>(), pending = Promise.withResolvers<Response>();
+  fetchProvider.mockImplementationOnce(async () => { started.resolve(); return pending.promise; });
+  const first = send();
+  await Promise.race([started.promise, first.then(response => { throw new Error(`First request returned ${response.status}`); })]);
+  try {
+    expect((await handleChat(request(target, bob), db)).status).toBe(200);
+  } finally { pending.resolve(Response.json(answer)); await first; }
 });

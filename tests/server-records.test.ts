@@ -68,7 +68,9 @@ describe("authoritative shared/private records", () => {
       const record = second.records.find(({ key }) => key === privateToolKey(secondScope, kind));
       expect(record?.value).toBe(kind === "documents" ? null : JSON.stringify(values[kind]));
     }
-    expect(loadPreparationStatus(db, actor, secondScope).advisor?.rows[0].detail).toContain("PRIVATE_LOCATION");
+    const placeSummary = loadPreparationStatus(db, actor, secondScope).advisor?.rows[0].detail;
+    expect(placeSummary).toContain("장소 등록됨");
+    expect(placeSummary).not.toContain("PRIVATE_LOCATION");
     const anotherRoom = { ...room, id: "another-room" };
     db.prepare("INSERT INTO rooms(id,data_json) VALUES(?,?)").run(anotherRoom.id, JSON.stringify(anotherRoom));
     const elsewhere = readSnapshot(actor, anotherRoom.id, db, "initial-another-room");

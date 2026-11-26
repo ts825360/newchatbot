@@ -1,6 +1,6 @@
 "use client";
 import { isBackendConnected } from "@/lib/backend-client";
-import { internalChatAction } from "@/lib/assistant-privacy";
+import { internalChatAction, replyPrivacyNotice } from "@/lib/assistant-privacy";
 
 import { CalendarDays, CalendarPlus, ChevronDown, ClipboardCheck, Copy, Ellipsis, ExternalLink, ListPlus, LoaderCircle, LockKeyhole, MapPin, Paperclip, Pencil, RefreshCw, Reply, Send, UserRound, UsersRound, Utensils, X } from "lucide-react";
 import { chatProposalCandidates, type ChatRosterSource } from "@/lib/chat-tool-candidates";
@@ -172,6 +172,7 @@ function Composer({ conversation, reference, onClearReference, onEditReference, 
           <div className="workspace-message-quote"><strong>{editing ? "내 메시지 수정" : reference.source.sender === "assistant" ? "행사비서에게 답장" : "내 메시지에 답장"}</strong><span>{reference.source.text}</span></div>
           <button type="button" className="workspace-icon-button" aria-label={editing ? "수정 취소" : "답장 취소"} onClick={() => { onClearReference(); input.current?.focus(); }}><X size={16} aria-hidden="true" /></button>
         </div>}
+        {reference?.kind === "reply" && server && externalAIApproved && <p className="workspace-composer-caption">{replyPrivacyNotice}</p>}
         <form className="workspace-composer" onSubmit={(event) => { event.preventDefault(); send(); }}>
           <div className="workspace-composer-tools"><button type="button" className="workspace-icon-button" aria-label="자료 열기" title="자료 열기" onClick={onOpenDocuments}><Paperclip size={18} aria-hidden="true" /></button>
             {onImportRoster && !reference && conversation?.draft.trim() && !busy && <button type="button" className="workspace-icon-button" aria-label="전송 없이 참가자 가져오기" title="전송 없이 참가자 가져오기" onClick={() => onImportRoster({ id: `draft:${conversation.draft}`, text: conversation.draft, fromDraft: true })}><UsersRound size={17} aria-hidden="true" /></button>}
@@ -189,35 +190,35 @@ function Composer({ conversation, reference, onClearReference, onEditReference, 
 
 function MessageBody({ message, review }: { message: ChatMessage; review: ReactNode }) {
   if (message.sender === "assistant" && isDiningRecommendations(message.dining)) {
-    const { kind, venue, checkedAt, restaurants, transportMode } = message.dining;
+    const { kind, venue, checkedAt, restaurants, transportMode, selectedRank } = message.dining;
     const attraction = kind === "attraction";
     const title = attraction ? "주변 관광지 추천" : "주변 식당 추천";
     const modes = { walking: "도보", driving: "차량", transit: "대중교통" } as const;
     const notation = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 });
     const checked = new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(checkedAt));
     return <section className="workspace-plan workspace-dining" aria-label={title}>
-      <div className="workspace-plan-heading"><span className="workspace-plan-icon">{attraction ? <MapPin size={17} aria-hidden="true" /> : <Utensils size={17} aria-hidden="true" />}</span><h3>{title}</h3><span className="workspace-plan-state">웹 검색</span></div>
+      <div className="workspace-plan-heading"><span className="workspace-plan-icon">{attraction ? <MapPin size={17} aria-hidden="true" /> : <Utensils size={17} aria-hidden="true" />}</span><h3>{title}</h3><span className="workspace-plan-state">검색 후보 · 확인 필요</span></div>
       <p className="workspace-message-text">{message.text}</p>
       <ol className="workspace-dining-list">{restaurants.map((restaurant, index) => <li key={restaurant.name}>
-        <h4><span>{index + 1}순위</span>{restaurant.name}</h4>
+        <h4><span>{selectedRank ?? index + 1}순위</span>{restaurant.name}</h4>
         <p>{restaurant.reason}</p>
         {restaurant.address && <p className="workspace-dining-facts"><strong>주소</strong> {restaurant.address}</p>}
-        <p className="workspace-dining-facts"><strong>{attraction ? "운영시간" : "영업시간"}</strong> {restaurant.hours}</p>
+        <p className="workspace-dining-facts"><strong>{attraction ? "운영시간 (검색 정보)" : "영업시간 (검색 정보)"}</strong> {restaurant.hours}</p>
         {kind && <>
           <p className="workspace-dining-facts"><strong>휴무</strong> {restaurant.closures ?? "미확인"}</p>
           <p className="workspace-dining-facts"><strong>{attraction ? "볼거리·체험" : "추천 메뉴"}</strong> {restaurant.feature ? <>{restaurant.feature.text} <a href={restaurant.feature.source.url} target="_blank" rel="noopener noreferrer">출처</a></> : "미확인"}</p>
-          <p className="workspace-dining-facts"><strong>숙소에서 이동</strong> {restaurant.route ? <>
+          <p className="workspace-dining-facts"><strong>숙소에서 이동 (검색 정보)</strong> {restaurant.route ? <>
             {modes[restaurant.route.mode]} · {restaurant.route.distanceKm === null ? "거리 미확인" : `${notation.format(restaurant.route.distanceKm)}km`} · {restaurant.route.durationMinutes === null ? "시간 미확인" : `약 ${restaurant.route.durationMinutes}분`} <a href={restaurant.route.source.url} target="_blank" rel="noopener noreferrer">경로 출처</a>
           </> : "거리·소요 시간 미확인"}</p>
         </>}
-        <p className="workspace-dining-facts"><strong>평점</strong>{restaurant.rating ? <> {restaurant.rating.value}/5 · {restaurant.rating.count ? `리뷰 ${restaurant.rating.count.toLocaleString("ko-KR")}개` : "리뷰 수 미확인"} <a href={restaurant.rating.source.url} target="_blank" rel="noopener noreferrer">평점 출처</a></> : " 확인되지 않음"}</p>
+        <p className="workspace-dining-facts"><strong>평점 (검색 정보)</strong>{restaurant.rating ? <> {restaurant.rating.value}/5 · {restaurant.rating.count ? `리뷰 ${restaurant.rating.count.toLocaleString("ko-KR")}개` : "리뷰 수 미확인"} <a href={restaurant.rating.source.url} target="_blank" rel="noopener noreferrer">평점 출처</a></> : " 확인되지 않음"}</p>
         <div className="workspace-dining-links">
           <a href={diningMapUrl(restaurant.name, venue, restaurant.address)} target="_blank" rel="noopener noreferrer"><MapPin size={14} aria-hidden="true" /> 지도에서 찾기</a>
           <a href={nearbyDirectionsUrl(venue, restaurant.name, restaurant.address, restaurant.route?.mode ?? transportMode)} target="_blank" rel="noopener noreferrer"><MapPin size={14} aria-hidden="true" />숙소에서 길찾기</a>
           {restaurant.sources.map((source, index) => <a key={source.url} href={source.url} title={source.label} target="_blank" rel="noopener noreferrer"><ExternalLink size={13} aria-hidden="true" />{index === 0 ? attraction ? "운영 출처" : "영업 출처" : `추가 출처 ${index}`}</a>)}
         </div>
       </li>)}</ol>
-      <p className="workspace-dining-checked">검색 {checked} (한국 시각) · 영업시간이 바뀔 수 있으니 출발 전 확인하세요.</p>
+      <p className="workspace-dining-checked">검색 {checked} (한국 시각) · 출처 링크가 개별 정보의 정확성을 보장하지 않습니다. 실제 영업, 가격과 예약 가능 여부는 방문 전에 확인하세요.</p>
     </section>;
   }
   const plan = message.advisor;

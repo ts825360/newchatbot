@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
-import { eventPublicVenueUsedAction, hasObviousPrivateData, internalChatAction, openAIChatConsentVersion, openAIReplyContextConsentVersion, openAIPrivacyWarning } from "../assistant-privacy";
+import { eventPublicVenueUsedAction, hasObviousPrivateData, internalChatAction, openAIChatConsentVersion, openAIReplyContextConsentVersion, openAIPrivacyWarning, requestsPersonalDisclosure } from "../assistant-privacy";
 import { isPreparationChat, isPreparationStatusChat } from "../chat-tool-candidates";
 import { advisorReplyFormat, parseAdvisorReply } from "../chat-advisor";
 import { extractChatCalendarFields } from "../chat-calendar";
@@ -14,8 +15,11 @@ import type { ChatMessage } from "../types";
 import { requirePermission, requireUser } from "./auth";
 import { generateOpenAIText, type OpenAIChatTurn } from "./chat-openai";
 import { eventVenueTool, readPublicEventVenue } from "./chat-venue-tool";
-import { diningVisit, nearbySearchKind, recommendDining } from "./chat-dining";
+import { diningVisit, nearbySearchKind, participantBand, recommendDining } from "./chat-dining";
 import { classifyContinuation, contextOrdinal, requestOnlyConditions, type EventWindow } from "../chat-continuity";
+import { resolveWorkConditions, type WorkCondition } from "../chat-work-state";
+import { readParticipantCount } from "./chat-work-reads";
+import { interpretNearbyFollowUp, type NearbyIntent } from "./chat-interpretation";
 import type { NearbyTask } from "../chat-dining";
 import { verifiedPublicPlace } from "../conversation-places";
 import { validDate } from "../room-timing";
@@ -29,7 +33,8 @@ import { id, object, text, validateRecord } from "./record-schema";
 
 const changed = () => new ApiError(409, "대화가 변경되었습니다. 최신 메시지를 확인한 뒤 다시 시도해 주세요.");
 const full = () => new ApiError(413, "대화 저장 한도에 도달했습니다. 새 대화를 시작해 주세요.");
-let generating = false;
+const pendingHistories = new WeakMap<DatabaseSync, Set<string>>();
+const wantsSavedHeadcount = (text: string) => /(?:실제|확정된|저장된|등록된)\s*(?:행사\s*)?(?:참가자(?:\s*수)?|인원)/.test(text);
 
 export async function handleChatConsent(request: Request, database = getDatabase()): Promise<Response> {
   try {
@@ -67,7 +72,7 @@ function replyIdFor(scope: ConversationScope, turn: ChatMessage, internal: boole
 }
 
 function confirmedOpenAITurn(scope: ConversationScope, question?: ChatMessage, reply?: ChatMessage) {
-  return question?.sender === "user" && !question.actions?.includes(internalChatAction) && reply?.sender === "assistant"
+  return question?.sender === "user" && !question.actions?.includes(internalChatAction) && !requestsPersonalDisclosure(question.text) && reply?.sender === "assistant"
     && reply.id === replyIdFor(scope, question, false, false);
 }
 
@@ -76,7 +81,7 @@ function chatInput(scope: ConversationScope, messages: readonly ChatMessage[], c
     const index = messages.findIndex(message => message.id === current.reference?.messageId);
     const quoted = messages[index];
     const approved = quoted?.sender === "assistant" ? confirmedOpenAITurn(scope, messages[index - 1], quoted) : confirmedOpenAITurn(scope, quoted, messages[index + 1]);
-    const selectedReply = approved && quoted && !hasObviousPrivateData(quoted.text) ? quoted.text.slice(0, 600) : null;
+    const selectedReply = approved && quoted && !quoted.actions?.includes(eventPublicVenueUsedAction) && !hasObviousPrivateData(quoted.text) ? quoted.text.slice(0, 600) : null;
     return [{ role: "user", content: JSON.stringify({ selectedReply }) }, { role: "user", content: current.text }];
   }
   const context: OpenAIChatTurn[] = [];
@@ -142,12 +147,6 @@ function selectNearby(answer: ChatMessage, text: string) {
   const rows = answer.dining.restaurants;
   const ordinal = contextOrdinal(text);
   if (ordinal !== undefined) return rows[ordinal - 1];
-  if (/가장\s*가까|가까운\s*순/.test(text)) {
-    const mode = rows[0]?.route?.mode;
-    if (mode && rows.every(row => row.route?.mode === mode && row.route.distanceKm !== null)) {
-      return [...rows].sort((a, b) => a.route!.distanceKm! - b.route!.distanceKm!)[0];
-    }
-  }
 }
 
 function findTurn(db: DatabaseSync, scope: ConversationScope, userMessageId: string, userMessageText: string, internal: boolean, retreatVenueReview: boolean) {
@@ -195,7 +194,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
     if (!localReview && (!hasChatConsent(db, actor.id) || data.consent !== undefined && data.consent !== openAIChatConsentVersion)) {
       throw new ApiError(423, "환경설정의 보안 및 개인정보에서 외부 AI 이용을 허용해 주세요.");
     }
-    if (!localReview && hasObviousPrivateData(data.userMessageText)) throw new ApiError(422, openAIPrivacyWarning);
+    if (requestsPersonalDisclosure(data.userMessageText) || !localReview && hasObviousPrivateData(data.userMessageText)) throw new ApiError(422, openAIPrivacyWarning);
     const scope = { accountId: actor.id, roomId: data.roomId, conversationId: data.conversationId };
     const currentTurn = () => {
       if (request.signal.aborted) throw new ApiError(408, "답변 요청이 취소되었습니다.");
@@ -206,16 +205,29 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
       return findTurn(db, scope, data.userMessageId, data.userMessageText, localReview, retreatVenueReview);
     };
     const original = currentTurn();
-    const { nearbyKind, previousNearby } = original;
+    let { nearbyKind } = original;
+    const { previousNearby } = original;
     const assertSameHistory = (turn: typeof original) => {
       if (turn.row.revision !== original.row.revision || turn.row.data_json !== original.row.data_json) throw changed();
     };
     if (original.complete) return json({ ok: true });
-    if (generating) return json({ error: "다른 답변을 작성 중입니다. 잠시 후 다시 시도해 주세요." }, 429);
-    generating = true;
+    const pending = pendingHistories.get(db) ?? new Set<string>();
+    pendingHistories.set(db, pending);
+    // All conversations in the same account and room share one optimistic history revision.
+    if (pending.has(original.key)) return json({ error: "이 행사방의 다른 답변을 작성 중입니다. 잠시 후 다시 시도해 주세요." }, 429);
+    pending.add(original.key);
     try {
       const preferences = loadAssistantPreferences(db, actor.id);
       const format = (value: string) => value.trim() ? formatAssistantReply(value.trim(), preferences.emoji) : "";
+      let assertSourcesStillCurrent = () => {};
+      let interpretation: NearbyIntent | null | undefined;
+      if (nearbyKind && previousNearby && action === "unknown" && !original.message.reference && !nearbySearchKind(data.userMessageText) && !wantsSavedHeadcount(data.userMessageText)) {
+        const root = original.conversation.messages.find(message => message.id === previousNearby.nearbyTask?.candidateMessageId);
+        interpretation = await interpretNearbyFollowUp(data.userMessageText, nearbyKind, (root ?? previousNearby).dining?.restaurants.length ?? 0, request.signal);
+        assertSameHistory(currentTurn());
+        if (!hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
+        if (interpretation?.intent === "unrelated") nearbyKind = null;
+      }
       let reply: Pick<ChatMessage, "text" | "advisor" | "actions" | "dining" | "nearbyTask">;
       if (action === "cancel") {
         reply = { text: "이 대화에서 이어가던 요청을 중단했어요. 행사방에 저장된 기록은 변경하지 않았습니다.", actions: ["context-cancelled"] };
@@ -223,7 +235,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         loadRetreatVenueReview(db, actor, scope);
         reply = { text: "수련회 결과 보고서의 이용 이력과 비교 후보입니다.", actions: [venueHistoryReplyAction] };
       } else if (detailedPreparation) {
-        reply = { text: formatAssistantReply(summarizeRetreatReview(loadRetreatReview(db, actor, scope)), preferences.emoji) };
+        reply = { text: formatAssistantReply(summarizeRetreatReview(loadRetreatReview(db, actor, scope, "available", new Date(), false), false), preferences.emoji) };
       } else if (localReview) {
         reply = loadPreparationStatus(db, actor, scope);
       } else if (nearbyKind) {
@@ -234,32 +246,72 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         const venue = readVenue();
         const now = new Date();
         const window = eventWindow(db, scope.roomId);
-        const visit = diningVisit(data.userMessageText, now, nearbyKind, window, previous?.visit ?? undefined);
-        const priorResult = previous && previousNearby?.dining;
-        const reusable = !!(venue && visit && priorResult && previous?.visit && !previous.temporaryResult && priorResult.venue === venue.name
-          && JSON.stringify(visit) === JSON.stringify(previous.visit) && now.getTime() - Date.parse(priorResult.checkedAt) <= 20 * 60_000);
-        const selected = reusable && previousNearby ? selectNearby(previousNearby, data.userMessageText) : undefined;
-        if (!venue) reply = { text: place.origin === "unverified" ? "임시로 지정한 장소는 공개 위치를 확인할 수 없어 검색하지 않았어요. 저장된 대표 장소로 바꿔 다시 검색할 수 있습니다."
-          : "이 행사방에서 검색에 사용할 공개 대표 장소를 확인하지 못했어요. 장소에서 대표 숙소를 확인해 주세요." };
-        else if (!visit) reply = { text: "어느 날짜와 시간에 방문할까요? 예를 들어 ‘내일 아침’이나 ‘토요일 오후 6시’라고 알려주세요." };
-        else if (selected && priorResult) {
-          reply = { text: `이전 검색에서 선택한 후보입니다. 영업과 이동 정보는 카드의 조회 시점 기준이에요.`, dining: { ...priorResult, restaurants: [selected] } };
-        } else if (reusable && /가장\s*가까|가까운\s*순/.test(data.userMessageText)) {
-          reply = { text: "같은 이동 수단으로 비교할 수 있는 거리 근거가 부족해 가장 가까운 곳을 확정할 수 없어요. 이전 후보의 ‘숙소에서 길찾기’로 경로를 비교해 주세요.", dining: priorResult || undefined };
-        }
-        else {
-          reply = await recommendDining(nearbyKind, venue, visit, now, request.signal);
-          assertSameHistory(currentTurn());
-          if (!hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
-          if (JSON.stringify(venue) !== JSON.stringify(readVenue()) || visit.basis.origin === "event" && JSON.stringify(window) !== JSON.stringify(eventWindow(db, scope.roomId))) {
+        let visit = diningVisit(data.userMessageText, now, nearbyKind, window, previous?.visit ?? undefined);
+        const requestOnly = requestOnlyConditions(data.userMessageText);
+        const peopleInMessage = [...data.userMessageText.matchAll(/(?<!\d)(\d{1,3})\s*명/g)];
+        const inheritCount = previous?.work?.people?.source === "event" && peopleInMessage.length === 0;
+        const useSavedCount = wantsSavedHeadcount(data.userMessageText) || inheritCount;
+        let count: WorkCondition<number> | undefined;
+        if (useSavedCount) count = readParticipantCount(db, actor, scope);
+        else if (visit?.people != null && peopleInMessage.length === 1) count = { value: visit.people, source: "user", scope: requestOnly ? "request" : "task",
+          nature: /가정|예상|가상/.test(data.userMessageText) ? "assumption" : "required" };
+        const work = resolveWorkConditions(previous?.work ?? {}, { people: count });
+        if (visit && count) visit = { ...visit, people: count.value, groupBand: participantBand(count.value) };
+        if (visit && interpretation?.traits.length) visit = { ...visit, traits: [...new Set([...(visit.traits ?? []), ...interpretation.traits])] };
+        const root = previous?.candidateMessageId && original.conversation.messages.find(message => message.id === previous.candidateMessageId);
+        const snapshot = root || previousNearby;
+        const priorResult = previous && snapshot?.dining;
+        const venueFingerprint = venue && createHash("sha256").update(JSON.stringify(venue)).digest("hex");
+        const age = priorResult ? now.getTime() - Date.parse(priorResult.checkedAt) : Infinity;
+        const reusable = !!(venueFingerprint && visit && priorResult && previous?.visit && !previous.temporaryResult && previous.venueFingerprint === venueFingerprint
+          && isDeepStrictEqual(visit, previous.visit) && age >= 0 && age <= 20 * 60_000);
+        assertSourcesStillCurrent = () => {
+          if (!isDeepStrictEqual(venue, readVenue()) || visit?.basis.origin === "event" && !isDeepStrictEqual(window, eventWindow(db, scope.roomId))) {
             throw new ApiError(409, "행사 장소나 일정이 변경되었습니다. 다시 요청해 주세요.");
           }
+          if (useSavedCount && !isDeepStrictEqual(count, readParticipantCount(db, requireUser(request, db), scope))) {
+            throw new ApiError(409, "행사 참가자 정보 또는 조회 권한이 변경되었습니다. 다시 요청해 주세요.");
+          }
+        };
+        const selected = reusable && snapshot ? interpretation?.intent === "select" && interpretation.rank != null
+          ? priorResult?.restaurants[interpretation.rank - 1] : selectNearby(snapshot, data.userMessageText) : undefined;
+        const wantsAlternative = interpretation?.intent === "alternative" || action === "reference" && /말고|다른\s*(?:곳|데|후보)|대안/.test(data.userMessageText);
+        const wantsRank = interpretation?.intent === "select" || action === "reference" && contextOrdinal(data.userMessageText) !== undefined;
+        let candidateMessageId: string | undefined;
+        if (useSavedCount && !count) reply = { text: "현재 조회 가능한 등록 참가자 수가 없어요. 참가자 등록과 조회 권한을 확인해 주세요. 이전 가정 인원으로 대신 검색하지 않았습니다." };
+        else if (interpretation === null || interpretation?.intent === "clarify") {
+          reply = { text: "이전 후보를 비교할까요, 아니면 조건을 바꿔 다시 찾을까요? 지원되지 않는 조건은 임의로 적용하지 않았어요." };
+          candidateMessageId = reusable ? snapshot?.id : undefined;
+        } else if (!venue) reply = { text: place.origin === "unverified" ? "임시로 지정한 장소는 공개 위치를 확인할 수 없어 검색하지 않았어요. 저장된 대표 장소로 바꿔 다시 검색할 수 있습니다."
+          : "이 행사방에서 검색에 사용할 공개 대표 장소를 확인하지 못했어요. 장소에서 대표 숙소를 확인해 주세요." };
+        else if (!visit) reply = { text: "어느 날짜와 시간에 방문할까요? 예를 들어 ‘내일 아침’이나 ‘토요일 오후 6시’라고 알려주세요." };
+        else if (selected && priorResult && !wantsAlternative) {
+          reply = { text: "이전 검색에서 선택한 후보입니다. 영업과 이동 정보는 당시 검색 내용이며 실제 이용 여부는 확인이 필요해요.",
+            dining: { ...priorResult, restaurants: [selected], selectedRank: priorResult.restaurants.indexOf(selected) + 1 } };
+          candidateMessageId = snapshot?.id;
+        } else if (wantsRank && !wantsAlternative) {
+          reply = { text: reusable ? "원래 검색에 그 번호의 후보가 없어요." : "이전 후보의 검색 조건이나 장소가 달라졌거나 결과가 오래됐어요. 최신 후보를 다시 찾아달라고 요청해 주세요." };
+          candidateMessageId = reusable ? snapshot?.id : undefined;
+        } else if (reusable && interpretation?.intent === "assess") {
+          reply = { text: "이전 후보를 유지했습니다. 검색 카드만으로는 가격이나 단체 이용 조건을 확정할 수 없어요.", dining: priorResult || undefined };
+          candidateMessageId = snapshot?.id;
+        } else if (reusable && /가장\s*가까|가까운\s*순/.test(data.userMessageText)) {
+          reply = { text: "같은 이동 수단으로 비교할 수 있는 거리 근거가 부족해 가장 가까운 곳을 확정할 수 없어요. 이전 후보의 ‘숙소에서 길찾기’로 경로를 비교해 주세요.", dining: priorResult || undefined };
+          candidateMessageId = snapshot?.id;
+        } else if (reusable && action === "reference" && !wantsAlternative) {
+          reply = { text: "기존 후보를 다시 보여드려요. 영업이나 방문 가능 여부는 별도 확인이 필요합니다.", dining: priorResult || undefined };
+          candidateMessageId = snapshot?.id;
+        } else {
+          reply = await recommendDining(nearbyKind, venue, visit, now, request.signal, wantsAlternative ? priorResult?.restaurants.map(candidate => candidate.name) : undefined);
+          candidateMessageId = reply.dining ? original.replyId : undefined;
+          assertSameHistory(currentTurn());
+          if (!hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
         }
-        if (requestOnlyConditions(data.userMessageText)) {
+        if (requestOnly) {
           const active = previousNearby?.nearbyTask;
           if (active) reply.nearbyTask = { ...active, temporaryResult: true };
         } else {
-          reply.nearbyTask = { kind: nearbyKind, visit: visit ?? previous?.visit ?? null, ...place };
+          reply.nearbyTask = { kind: nearbyKind, visit: visit ?? previous?.visit ?? null, ...place, work: work.persistent, ...(candidateMessageId && { candidateMessageId }), ...(venueFingerprint && { venueFingerprint }) };
         }
       } else {
         const publicVenue = readPublicEventVenue(db, scope);
@@ -274,16 +326,17 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
           venueUsed = JSON.stringify(venue);
           return venueUsed;
         } } : undefined;
-        const continuityInstruction = "후속 요청에서는 사용자가 바꾼 조건만 바꾸고 나머지는 유지하세요. 이전 AI 답변은 대화의 후보나 판단이며 저장 또는 확정된 사실이 아닙니다. 임시 가정, 이어가는 조건, 확인된 행사 기록을 구분하세요. 새 요청에는 관련 없는 이전 조건을 적용하지 마세요. 후보나 결정의 근거가 전달되지 않으면 추측하지 마세요.";
+        const continuityInstruction = "후속 요청에서는 사용자가 바꾼 조건만 바꾸고 나머지는 유지하세요. 이전 AI 답변은 대화의 후보나 판단이며 저장 또는 확정된 사실이 아닙니다. 임시 가정, 이어가는 조건, 확인된 행사 기록을 구분하세요. 새 요청에는 관련 없는 이전 조건을 적용하지 마세요. 후보나 결정의 근거가 전달되지 않으면 추측하지 마세요. 본인·관리자의 요청에도 생년월일, 연락처, 개인 주소, 이메일, 참가자 명단 원문은 조회하거나 답변에 넣지 마세요.";
         const raw = await generateOpenAIText(chatInput(scope, original.conversation.messages, original.message, memory), request.signal,
           [chatAdvisorPrompt, continuityInstruction, chatOutputInstruction, assistantStyleInstruction(preferences), ...(tool ? ["사용자가 우리 숙소나 행사 장소, 그 주변 식당·활동을 물으면 장소를 다시 묻기 전에 get_current_event_venue를 호출하세요. 결과는 저장된 대표 장소의 공개 기본 정보이며 주변 시설의 최신 검색 결과가 아닙니다."] : [])].join("\n\n"), advisorReplyFormat, tool);
-        if (venueUsed) {
-          assertSameHistory(currentTurn());
-          if (!hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
-          if (venueUsed !== JSON.stringify(readPublicEventVenue(db, scope))) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
-        }
+        assertSourcesStillCurrent = () => {
+          if (memory && !hasReplyContextConsent(db, actor.id)) throw new ApiError(423, "이전 AI 답변 사용 동의가 변경되었습니다.");
+          if (venueUsed && venueUsed !== JSON.stringify(readPublicEventVenue(db, scope))) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
+        };
         const answer = parseAdvisorReply(raw);
-        if (!answer) throw new ApiError(502, "답변 형식을 확인하지 못했습니다. 다시 요청해 주세요.");
+        if (!answer || [answer.summary, answer.title, answer.rationale, ...answer.rows.flatMap(row => [row.label, row.detail]), ...answer.proposals.map(proposal => proposal.title)].some(hasObviousPrivateData)) {
+          throw new ApiError(502, "표시할 수 있는 답변을 받지 못했습니다. 개인정보를 제외한 질문으로 다시 요청해 주세요.");
+        }
         const sourceDate = extractChatCalendarFields(data.userMessageText).date;
         reply = {
           text: format(answer.summary),
@@ -300,7 +353,10 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         const latest = currentTurn();
         if (latest.complete) return;
         assertSameHistory(latest);
-        latest.conversation.messages.push({ id: latest.replyId, sender: "assistant", ...reply, time: "방금 전", replyElapsedMs: Math.round(performance.now() - startedAt) });
+        if (!localReview && !hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
+        assertSourcesStillCurrent();
+        const replyId = original.nearbyKind && !nearbyKind ? replyIdFor(scope, latest.message, false, false) : latest.replyId;
+        latest.conversation.messages.push({ id: replyId, sender: "assistant", ...reply, time: "방금 전", replyElapsedMs: Math.round(performance.now() - startedAt) });
         const updatedAt = new Date().toISOString();
         latest.conversation.updatedAt = updatedAt;
         validateRecord("conversations", latest.history);
@@ -312,6 +368,6 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         bumpRevision(db);
       });
       return json({ ok: true });
-    } finally { generating = false; }
+    } finally { pending.delete(original.key); }
   } catch (error) { return errorResponse(error); }
 }

@@ -63,7 +63,7 @@ function checklist(accountId: string, conversationId: string, items: Partial<Che
 
 const byKey = (body: any, key: string) => body.fields.find((item: { key: string }) => item.key === key);
 
-it("uses only pinned private reference files as recommendation evidence, never as facts or Gemini input", async () => {
+it("keeps pinned references in the preparation tool and out of AI chat history and provider input", async () => {
   function reference(conversationId: string, filename: string, excerpt: string, pinned: boolean) {
     const bytes = Buffer.from(excerpt);
     db.prepare("INSERT INTO records(key,owner_id,room_id,kind,data_json,updated_at) VALUES(?,'alice','retreat','documents',?,?)")
@@ -86,7 +86,9 @@ it("uses only pinned private reference files as recommendation evidence, never a
   const reply = await handleChat(new Request("http://localhost/api/chat", { method: "POST", headers: { cookie: alice, "content-type": "application/json" },
     body: JSON.stringify({ roomId: "retreat", conversationId: "initial-retreat", userMessageId: message.id, userMessageText: message.text }) }), db);
   expect(reply.status).toBe(200);
-  expect(String(db.prepare("SELECT data_json FROM records WHERE key='conversations:alice:retreat'").get()?.data_json)).toContain("2025 요람.txt");
+  const chat = String(db.prepare("SELECT data_json FROM records WHERE key='conversations:alice:retreat'").get()?.data_json);
+  expect(chat).toContain("저장된 기록 기준");
+  expect(chat).not.toMatch(/2025 요람\.txt|참가 가능 여부를 먼저 확인했다|PRIVATE_OTHER_THREAD/);
   expect(upstream).not.toHaveBeenCalled();
 });
 

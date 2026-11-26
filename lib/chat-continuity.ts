@@ -1,8 +1,36 @@
 import { validDate } from "./room-timing";
 
-export type ContinuationAction = "new" | "revise" | "supplement" | "reference" | "cancel";
+export type ContinuationAction = "new" | "revise" | "supplement" | "reference" | "cancel" | "unknown";
 export type EventWindow = { start: string; end: string };
-export type VisitBasis = { date: string | null; origin: "explicit" | "now" | "event" | "undecided"; eventDay?: number };
+type Interval = { start: string; end: string };
+export type VisitBasis = { date: string | null; origin: "explicit" | "now" | "event" | "undecided"; eventDay?: number;
+  range?: Interval; alternatives?: string[]; excluded?: string[] };
+
+const dateMentions = /\b(\d{4})[.-](\d{1,2})[.-](\d{1,2})\b|(?:(\d{4})\s*년\s*)?(\d{1,2})\s*월\s*(\d{1,2})\s*일|모레|내일|오늘|(이번\s*주|다음\s*주|내주)?\s*([월화수목금토일])요일/g;
+const excludedSuffix = /^\s*(?:(?:조식|아침|점심|석식|저녁|야식|오전|오후|밤)?\s*(?:\d{1,2}(?::\d{2}|\s*시(?:\s*(?:반|\d{1,2}\s*분))?))?\s*)?(?:(?:은|는|을|를|이|가)\s*)?(?:말고|아닌|제외(?:하고)?|빼고)/;
+
+export function withoutExcludedDateContext(message: string) {
+  const dates = [...message.matchAll(dateMentions)];
+  return dates.reduceRight((copy, match, i) => {
+    const end = match.index + match[0].length;
+    const excluded = excludedSuffix.exec(message.slice(end, dates[i + 1]?.index));
+    return excluded ? copy.slice(0, match.index) + " " + copy.slice(end + excluded[0].length) : copy;
+  }, message);
+}
+
+export function resolveTemporalValues(message: string, mentions: { value: string; start: number; end: number }[]) {
+  const excluded: string[] = [], included: typeof mentions = [];
+  for (const [i, mention] of mentions.entries()) {
+    const tail = message.slice(mention.end, mentions[i + 1]?.start);
+    if (excludedSuffix.test(tail)) excluded.push(mention.value);
+    else included.push(mention);
+  }
+  const values = [...new Set(included.map(item => item.value))].filter(value => !excluded.includes(value));
+  if (values.length === 2 && /(?:부터|[~～–—]|\s-\s)/.test(message.slice(included[0].end, included[1].start))) {
+    return { value: null, range: { start: values[0], end: values[1] }, excluded };
+  }
+  return { value: values.length === 1 ? values[0] : null, alternatives: values.length > 1 ? values : undefined, excluded };
+}
 
 export function requestOnlyConditions(message: string) {
   return /이번\s*만|(?:이번|이)\s*(?:요청|질문|검색|비교|계산|답변)(?:에서|에)?\s*만/.test(message);
@@ -21,7 +49,7 @@ export function classifyContinuation(input: string): ContinuationAction {
   if (/^(?:(?:좀|더|조금)\s*)*(?:구체화해|이어\s*가|계속해|자세히\s*(?:알려|설명))/.test(text)) return "reference";
   if (/^(?:(?:참고로|추가로)\s*)?(?:인원|예산|비용|장소|주소|숙소|날짜|일정|시간|출발|귀가|제외\s*조건)(?:은|는|이|가|:)(?:\s*[^\n]{1,100})$/.test(text)) return "supplement";
   if (/^\s*(?:\d{1,3}\s*명|\d{1,3}\s*만\s*원|내일\s*(?:아침|점심|저녁)|도보|차량)(?:\s*(?:기준|으로|이야|입니다|요))*[.!?\s]*$/.test(text)) return "supplement";
-  return "new";
+  return "unknown";
 }
 
 export function contextOrdinal(message: string) {
@@ -40,21 +68,23 @@ export const addCalendarDays = (date: string, offset: number) => {
 export function resolveVisitBasis(message: string, event: EventWindow | undefined, today: string, previous?: VisitBasis): VisitBasis | null {
   const undecided = /(?:날짜|일정|방문일)(?:은|는|이|가)?\s*(?:아직\s*)?(?:미정|정하지\s*않|안\s*정)/.test(message);
   if (undecided) return { date: null, origin: "undecided" };
-  const absolute = message.match(/\b(\d{4})[.-](\d{1,2})[.-](\d{1,2})\b/) ?? message.match(/(?:(\d{4})\s*년\s*)?(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
-  const relative = message.match(/모레|내일|오늘/)?.[0];
-  if (absolute) {
-    const date = `${absolute[1] ?? today.slice(0, 4)}-${absolute[2].padStart(2, "0")}-${absolute[3].padStart(2, "0")}`;
-    return validDate(date) && date >= today ? { date, origin: "explicit" } : null;
+  const explicit = [...message.matchAll(dateMentions)];
+  if (explicit.length) {
+    const mentions = explicit.slice(0, 8).map(match => {
+      const word = match[0];
+      const current = (new Date(`${today}T00:00:00Z`).getUTCDay() + 6) % 7;
+      const delta = match[8] ? "월화수목금토일".indexOf(match[8]) - current : 0;
+      const value = match[8] ? addCalendarDays(today, !match[7] ? (delta + 7) % 7 : delta + (/다음|내주/.test(match[7]) ? 7 : 0))
+        : match[2] || match[5] ? `${match[1] ?? match[4] ?? today.slice(0, 4)}-${(match[2] ?? match[5]).padStart(2, "0")}-${(match[3] ?? match[6]).padStart(2, "0")}`
+          : addCalendarDays(today, word === "모레" ? 2 : word === "내일" ? 1 : 0);
+      return { value, start: match.index, end: match.index + word.length };
+    });
+    if (explicit.length > 8 || mentions.some(({ value }) => !validDate(value))) return null;
+    const { value, alternatives, range, excluded } = resolveTemporalValues(message, mentions);
+    if (value && value < today || range && (range.start < today || range.end < range.start) || alternatives?.some(date => date < today)) return null;
+    return { date: value, origin: "explicit", ...(alternatives && { alternatives }), ...(range && { range }), ...(excluded.length > 0 && { excluded }) };
   }
-  if (relative) return { date: addCalendarDays(today, relative === "모레" ? 2 : relative === "내일" ? 1 : 0), origin: "explicit" };
-  if (/(?:지금|당장|바로)\s*(?:(?:당장|바로)\s*)?(?:갈|먹|출발|방문|문\s*연|열린|영업)|(?:지금|현재)\s*(?:영업|열려|문\s*열)/.test(message)) return { date: today, origin: "now" };
-  const weekday = message.match(/(이번\s*주|다음\s*주|내주)?\s*([월화수목금토일])요일/);
-  if (weekday) {
-    const current = (new Date(`${today}T00:00:00Z`).getUTCDay() + 6) % 7;
-    const difference = "월화수목금토일".indexOf(weekday[2]) - current;
-    const offset = !weekday[1] ? (difference + 7) % 7 : difference + (/다음|내주/.test(weekday[1]) ? 7 : 0);
-    return offset < 0 ? null : { date: addCalendarDays(today, offset), origin: "explicit" };
-  }
+  if (/(?:지금|당장|바로)\s*(?:(?:당장|바로)\s*)?(?:갈|가서|먹|출발|방문|문\s*연|열린|영업)|(?:지금|현재)\s*(?:영업|열려|문\s*열)/.test(message)) return { date: today, origin: "now" };
   const ordinal = message.match(/(\d{1,2})\s*일\s*차/)?.[1];
   const requestedDay = /마지막\s*날/.test(message) ? -1 : /첫\s*(?:날|째\s*날)/.test(message) ? 1 : ordinal ? Number(ordinal) : undefined;
   if (requestedDay === undefined && /(?:주말|다음\s*주|내주|이번\s*주)/.test(message)) return { date: null, origin: "undecided" };
@@ -64,7 +94,8 @@ export function resolveVisitBasis(message: string, event: EventWindow | undefine
     const date = event && (eventDay === -1 ? event.end : eventDay >= 1 ? addCalendarDays(event.start, eventDay - 1) : null);
     return { date: date && event && date >= today && date <= event.end ? date : null, origin: "event", eventDay };
   }
-  if (previous?.origin === "explicit") return previous.date && previous.date >= today ? previous : { date: null, origin: "undecided" };
+  if (previous?.origin === "explicit") return (previous.date === null || previous.date >= today) && (!previous.range || previous.range.start >= today)
+    && !previous.alternatives?.some(date => date < today) ? previous : { date: null, origin: "undecided" };
   if (previous?.origin === "now") return { date: today, origin: "now" };
   if (previous?.origin === "undecided") return previous;
   return { date: null, origin: "undecided" };

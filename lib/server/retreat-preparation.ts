@@ -120,7 +120,7 @@ export function handleRetreatPreparation(request: Request, database?: DatabaseSy
   } catch (error) { return errorResponse(error); }
 }
 
-export function loadRetreatReview(db: DatabaseSync, actor: Actor, scope: ConversationScope, meeting: MeetingAvailability = "available", now = new Date()): RetreatReview {
+export function loadRetreatReview(db: DatabaseSync, actor: Actor, scope: ConversationScope, meeting: MeetingAvailability = "available", now = new Date(), includeReferences = true): RetreatReview {
     if (actor.id !== scope.accountId) throw new ApiError(404, "이 대화를 확인할 수 없습니다.");
     for (const permission of retreatReviewPermissions) requirePermission(actor, permission);
     const { roomId, conversationId } = scope;
@@ -155,17 +155,17 @@ export function loadRetreatReview(db: DatabaseSync, actor: Actor, scope: Convers
       { date: room.date, name: room.name }, readItems<CalendarEvent>(eventRow, "events"),
       readItems<ChecklistItem>(privateRecord("checklist"), "checklist"), location, approvedTransport, meeting, now,
     );
-    return { roomId, conversationId, ...review, references: readRetreatReferences(db, actor, scope, review.next) };
+    return { roomId, conversationId, ...review, references: includeReferences ? readRetreatReferences(db, actor, scope, review.next) : [] };
 }
 
-export function summarizeRetreatReview(review: RetreatReview): string {
+export function summarizeRetreatReview(review: RetreatReview, includeValues = true): string {
   const singleLine = (text: string) => text.replace(/[\x00-\x1F\x7F\u2028\u2029]/g, " ").trim();
   const fields = review.fields.map(field => {
     const state = field.status === "confirmed" ? "확정" : field.status === "deferred" ? "보류" : field.status === "not_applicable" ? "해당 없음" : "미정";
-    const value = typeof field.value === "string" && field.status === "confirmed" ? ` (${singleLine(field.value)})` : "";
+    const value = includeValues && typeof field.value === "string" && field.status === "confirmed" ? ` (${singleLine(field.value)})` : "";
     return `- ${field.label}: ${state}${value}`;
   });
-  const references = review.references?.map(ref => `- ${singleLine(ref.sourceTitle)}: ${singleLine(ref.excerpt)}`) ?? [];
+  const references = includeValues ? review.references?.map(ref => `- ${singleLine(ref.sourceTitle)}: ${singleLine(ref.excerpt)}`) ?? [] : [];
   return [`${review.year}년 준비 점검 · 저장된 기록 기준`, ...fields,
     ...(references.length ? ["", "참고 자료 (올해 확정 정보 아님)", ...references] : []),
     "", ...(review.next.length ? review.next.map(task => `[준비 제안] ${task.label}`) : ["지금 제안할 준비 항목이 없습니다."]),
