@@ -334,8 +334,9 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
           if (venueUsed && venueUsed !== JSON.stringify(readPublicEventVenue(db, scope))) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
         };
         const answer = parseAdvisorReply(raw);
-        if (!answer || [answer.summary, answer.title, answer.rationale, ...answer.rows.flatMap(row => [row.label, row.detail]), ...answer.proposals.map(proposal => proposal.title)].some(hasObviousPrivateData)) {
-          throw new ApiError(502, "표시할 수 있는 답변을 받지 못했습니다. 개인정보를 제외한 질문으로 다시 요청해 주세요.");
+        if (!answer) throw new ApiError(502, "AI 답변 형식을 읽지 못했습니다. 답변을 다시 요청해 주세요.");
+        if ([answer.summary, answer.title, answer.rationale, ...answer.rows.flatMap(row => [row.label, row.detail]), ...answer.proposals.map(proposal => proposal.title)].some(hasObviousPrivateData)) {
+          throw new ApiError(502, "AI 답변에 공개할 수 없는 정보가 포함되어 표시하지 않았습니다. 작성한 질문은 그대로 있으니 ‘답변 다시 요청’을 눌러 주세요.");
         }
         const sourceDate = extractChatCalendarFields(data.userMessageText).date;
         reply = {

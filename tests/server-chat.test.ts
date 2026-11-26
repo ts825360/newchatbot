@@ -425,6 +425,22 @@ it("searches for nearby attractions and keeps sourced access details separate fr
   expect(recommendation?.restaurants[0]).toMatchObject({ address: null, closures: "화요일 휴무", feature: { text: "전망 데크" }, route: null });
 });
 
+it.each([
+  "숙소 주변에 주차하고 돌아다닐 수 있는 장소를 알려줘",
+  "숙소 근처에 차를 세우고 걸어서 둘러볼 만한 곳 찾아줘",
+])("treats park-and-walk requests as a public nearby search: %s", async wording => {
+  fetchProvider.mockResolvedValueOnce(Response.json(diningResult([{ ...diningCandidate, name: "가상 해안공원",
+    reason: "보령시 예제동 예시길 12에 가까워요.", feature: "해안 산책로", featureUrl: diningUrl }])));
+  expect((await diningQuestion(wording)).status).toBe(200);
+  const payload = providerBody();
+  expect(payload.tools[0].type).toBe("web_search");
+  expect(JSON.parse(payload.input)).toMatchObject({ kind: "attraction", transport: "driving", traits: expect.arrayContaining(["parking", "walkable-area"]) });
+  expect(payload.input).not.toContain(wording);
+  const result = getHistory().conversations[0].messages.at(-1)?.dining;
+  expect(result?.restaurants[0]).toMatchObject({ name: "가상 해안공원", feature: { text: "해안 산책로" } });
+  expect(JSON.stringify(result)).not.toContain("예시길 12");
+});
+
 it("shows a sourced distance, travel duration and menu for the requested mode", async () => {
   fetchProvider.mockResolvedValueOnce(Response.json(diningResult([{ ...diningCandidate, feature: "바지락칼국수", featureUrl: diningUrl,
     routeMode: "walking", distanceKm: 0.8, durationMinutes: 12, routeUrl: diningUrl }])));
@@ -798,7 +814,9 @@ it.each([
 
 it("does not save a provider's private reply or proposal", async () => {
   fetchProvider.mockResolvedValueOnce(Response.json(reply("사적인 연락처는 010/1111/2222입니다.")));
-  expect((await send()).status).toBe(502);
+  const response = await send();
+  expect(response.status).toBe(502);
+  expect(await response.json()).toEqual({ error: expect.stringContaining("AI 답변에") });
   expect(getHistory().conversations[0].messages.at(-1)?.sender).toBe("user");
 });
 
