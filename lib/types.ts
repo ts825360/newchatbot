@@ -82,6 +82,7 @@ export type ChatMessage = {
   sender: ChatSender;
   text: string;
   time: string;
+  replyElapsedMs?: number;
   actions?: string[];
   advisor?: import("./chat-advisor").AdvisorPresentation;
 };

@@ -24,7 +24,9 @@ async function readReply(response: Response): Promise<unknown> {
   catch { throw invalidReply(); }
 }
 
-export async function generateOpenAIText(input: string, signal: AbortSignal, instructions = "", format?: Record<string, unknown>): Promise<string> {
+export type OpenAIChatTurn = { role: "user"; content: string };
+
+export async function generateOpenAIText(input: string | OpenAIChatTurn[], signal: AbortSignal, instructions = "", format?: Record<string, unknown>): Promise<string> {
   const key = process.env.OPENAI_API_KEY?.trim();
   const model = process.env.OPENAI_MODEL?.trim() || "gpt-6-luna";
   if (process.env.AI_PROVIDER !== "openai" || !key || (model !== "gpt-6-luna" && model !== "gpt-6.2-sol")) throw unavailable();

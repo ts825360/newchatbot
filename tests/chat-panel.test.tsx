@@ -25,12 +25,22 @@ it("keeps the speaker and text but hides stored timestamps from message turns", 
 
 it("shows current request elapsed time and resets it between replies", () => {
   vi.useFakeTimers({ toFake: ["performance", "setInterval", "clearInterval"] });
-  const view = render(<ChatPanel {...props} replyStartedAt={performance.now()} />);
-  expect(screen.getByText("답변 작성 중")).toBeDefined();
+  const pending = { ...conversation, messages: conversation.messages.slice(0, 1) };
+  const view = render(<ChatPanel {...props} conversation={pending} replyStartedAt={performance.now()} />);
+  const log = within(screen.getByRole("log", { name: "대화 내용" }));
+  expect(log.getByText("답변 작성 중")).toBeDefined();
   act(() => vi.advanceTimersByTime(3100));
   expect(screen.getByText("3초")).toBeDefined();
   view.rerender(<ChatPanel {...props} replyStartedAt={null} />);
   expect(screen.queryByText("답변 작성 중")).toBeNull();
-  view.rerender(<ChatPanel {...props} replyStartedAt={performance.now()} />);
+  view.rerender(<ChatPanel {...props} conversation={pending} replyStartedAt={performance.now()} />);
   expect(screen.getByText("0초")).toBeDefined();
+});
+
+it("renders the recorded duration above the matching assistant reply only", () => {
+  const completed: Conversation = { ...conversation, messages: [conversation.messages[0], { ...conversation.messages[1], replyElapsedMs: 4100 }] };
+  render(<ChatPanel {...props} conversation={completed} />);
+  const answer = screen.getByText("예시 답변");
+  const duration = within(answer.closest("article")!).getByText("4초 소요");
+  expect(duration.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });

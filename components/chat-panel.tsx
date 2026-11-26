@@ -35,15 +35,16 @@ type ComposerProps = {
 export function ChatPanel({ conversation, visible = true, onDraftChange, onSendMessage, replyStartedAt, onRetryReply, onManageConsent, onNewConversation, onOpenDocuments, shortcuts, progress, ...actions }:
   ComposerProps & TurnActions & { visible?: boolean; onNewConversation: () => void; shortcuts?: ReactNode; progress?: ReactNode }) {
   const scroll = useRef<HTMLDivElement>(null);
-  const lastScrolled = useRef<{ id?: string; count?: number }>({});
+  const lastScrolled = useRef<{ id?: string; count?: number; pending?: boolean }>({});
   const id = conversation?.id, count = conversation?.messages.length;
+  const pending = replyStartedAt != null && conversation?.messages.at(-1)?.sender === "user";
   const server = isBackendConnected();
   const showHeading = Boolean(count || conversation && conversation.title !== "새 대화");
   useLayoutEffect(() => {
-    if (!visible || !scroll.current || lastScrolled.current.id === id && lastScrolled.current.count === count) return;
+    if (!visible || !scroll.current || lastScrolled.current.id === id && lastScrolled.current.count === count && lastScrolled.current.pending === pending) return;
     scroll.current.scrollTop = scroll.current.scrollHeight;
-    lastScrolled.current = { id, count };
-  }, [id, count, visible]);
+    lastScrolled.current = { id, count, pending };
+  }, [id, count, pending, visible]);
   return <section className="workspace-chat" aria-label="개인 대화">
     {(showHeading || progress) && <header className={`workspace-chat-heading${showHeading ? "" : " is-untitled"}`}><div className="workspace-reading-width">
       {showHeading && <h2>{conversation?.title ?? "대화 선택"}</h2>}
@@ -52,7 +53,10 @@ export function ChatPanel({ conversation, visible = true, onDraftChange, onSendM
     <div className="workspace-messages" ref={scroll} role="log" aria-label="대화 내용" aria-live="polite">
       {conversation?.messages.length ? <div className="workspace-message-list">{conversation.messages.map((message, index) => (
         <MessageTurn key={message.id} message={message} previous={conversation.messages[index - 1]} server={server} actions={actions} />
-      ))}</div> : <div className="workspace-chat-empty"><div className="workspace-empty-symbol" role="img" aria-label="행사비서 로고"><WorkspaceBrandMark size={42} /></div>
+      ))}{pending && <div className="workspace-message from-assistant">
+        <span className="workspace-message-avatar" aria-hidden="true"><WorkspaceBrandMark size={19} /></span>
+        <ReplyActivity key={replyStartedAt} startedAt={replyStartedAt} />
+      </div>}</div> : <div className="workspace-chat-empty"><div className="workspace-empty-symbol" role="img" aria-label="행사비서 로고"><WorkspaceBrandMark size={42} /></div>
         {showHeading ? <h3>무엇을 도와드릴까요?</h3> : <h2>{conversation ? "무엇을 도와드릴까요?" : "대화를 시작하세요"}</h2>}
         {conversation ? shortcuts : <button type="button" className="workspace-start-button" onClick={onNewConversation}>새 대화 만들기</button>}
       </div>}
@@ -75,6 +79,9 @@ function MessageTurn({ message, previous, server, actions }: { message: ChatMess
         {assistant && !server && <span className="workspace-sample-label">샘플 응답</span>}
         {message.actions?.includes(internalChatAction) && <span className="workspace-sample-label">내부 기록</span>}
       </div>
+      {assistant && message.replyElapsedMs != null && <p className="workspace-reply-elapsed workspace-reply-completed">
+        {message.replyElapsedMs < 1000 ? "1초 미만" : `${Math.floor(message.replyElapsedMs / 1000)}초`} 소요
+      </p>}
       <MessageBody message={message} review={review} />
       {retreatVenueScope && assistant && message.actions?.includes(venueHistoryReplyAction) &&
         <RetreatVenueHistory scope={retreatVenueScope} question={previous?.sender === "user" ? previous.text : ""} />}
@@ -117,7 +124,7 @@ function Composer({ conversation, onDraftChange, onSendMessage, replyStartedAt, 
           }} />
           <button type="submit" className="workspace-send" aria-label="전송" title="전송" disabled={busy || !conversation?.draft.trim()}><Send size={17} aria-hidden="true" /></button>
         </form>
-        <div className="workspace-composer-caption">{replyStartedAt != null ? <ReplyActivity key={replyStartedAt} startedAt={replyStartedAt} /> : onManageConsent
+        <div className="workspace-composer-caption">{busy ? null : onManageConsent
           ? <button type="button" className="workspace-consent-link" aria-label="OpenAI 전송 동의 관리" onClick={onManageConsent}><LockKeyhole size={12} aria-hidden="true" />외부 전송 동의됨</button>
           : <span role="status">{server && <LockKeyhole size={12} aria-hidden="true" />}{server ? "첫 외부 전송 전 동의" : "화면 체험용 · 샘플 응답"}</span>}
           {!busy && onRetryReply && <div><button type="button" className="workspace-start-button gap-2" onClick={onRetryReply}><RefreshCw size={14} aria-hidden="true" />답변 다시 요청</button></div>}
