@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isEventVenueRouteQuestion, venueRouteFor } from "../chat-venue-route";
 import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
 import { eventPublicVenueUsedAction, hasObviousPrivateData, internalChatAction, openAIChatConsentVersion, openAIReplyContextConsentVersion, openAIPrivacyWarning, requestsPersonalDisclosure } from "../assistant-privacy";
@@ -186,11 +187,12 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
     const retreatVenueReview = isVenueHistoryChat(data.userMessageText) && isRetreatRoom(db, data.roomId);
     const detailedPreparation = isPreparationChat(data.userMessageText) && isRetreatRoom(db, data.roomId);
     const action = classifyContinuation(data.userMessageText);
-    const localReview = action === "cancel" || isPreparationChat(data.userMessageText) || isPreparationStatusChat(data.userMessageText) || retreatVenueReview;
+    const venueRouteQuestion = !nearbySearchKind(data.userMessageText) && isEventVenueRouteQuestion(data.userMessageText);
+    const localReview = venueRouteQuestion || action === "cancel" || isPreparationChat(data.userMessageText) || isPreparationStatusChat(data.userMessageText) || retreatVenueReview;
     if (!localReview && (!hasChatConsent(db, actor.id) || data.consent !== undefined && data.consent !== openAIChatConsentVersion)) {
       throw new ApiError(423, "환경설정의 보안 및 개인정보에서 외부 AI 이용을 허용해 주세요.");
     }
-    if (requestsPersonalDisclosure(data.userMessageText) || !localReview && hasObviousPrivateData(data.userMessageText)) throw new ApiError(422, openAIPrivacyWarning);
+    if (requestsPersonalDisclosure(data.userMessageText) || (!localReview || venueRouteQuestion) && hasObviousPrivateData(data.userMessageText)) throw new ApiError(422, openAIPrivacyWarning);
     const scope = { accountId: actor.id, roomId: data.roomId, conversationId: data.conversationId };
     const currentTurn = () => {
       if (request.signal.aborted) throw new ApiError(408, "답변 요청이 취소되었습니다.");
@@ -225,9 +227,19 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         if (!hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
         if (interpretation?.intent === "unrelated") nearbyKind = null;
       }
-      let reply: Pick<ChatMessage, "text" | "advisor" | "actions" | "dining" | "nearbyTask">;
+      let reply: Pick<ChatMessage, "text" | "advisor" | "actions" | "dining" | "nearbyTask" | "venueRoute">;
       if (action === "cancel") {
         reply = { text: "이 대화에서 이어가던 요청을 중단했어요. 행사방에 저장된 기록은 변경하지 않았습니다.", actions: ["context-cancelled"] };
+      } else if (venueRouteQuestion) {
+        const venue = readPublicEventVenue(db, scope);
+        assertSourcesStillCurrent = () => {
+          if (!isDeepStrictEqual(venue, readPublicEventVenue(db, scope))) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
+        };
+        reply = venue ? {
+          text: `이 행사방의 대표 숙소는 ${venue.name}입니다.\n주소: ${venue.address}\n이 앱은 경로를 실시간으로 계산하지 않습니다. 실제 소요 시간은 아래 지도에서 이동 수단을 선택해 확인해 주세요.`,
+          venueRoute: venueRouteFor(venue.name, data.userMessageText),
+          actions: [eventPublicVenueUsedAction],
+        } : { text: "이 행사방에서 확인된 공개 대표 숙소가 없어요. 장소 목록에서 대표 숙소를 먼저 확인해 주세요." };
       } else if (retreatVenueReview) {
         loadRetreatVenueReview(db, actor, scope);
         reply = { text: "수련회 결과 보고서의 이용 이력과 비교 후보입니다.", actions: [venueHistoryReplyAction] };

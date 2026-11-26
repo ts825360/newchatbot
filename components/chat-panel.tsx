@@ -6,6 +6,7 @@ import { CalendarDays, CalendarPlus, ChevronDown, ClipboardCheck, Copy, Ellipsis
 import { chatProposalCandidates, type ChatRosterSource } from "@/lib/chat-tool-candidates";
 import { isAdvisorPresentation } from "@/lib/chat-advisor";
 import { diningMapUrl, isDiningRecommendations, nearbyDirectionsUrl } from "@/lib/chat-dining";
+import { venueDirectionsUrl } from "@/lib/chat-venue-route";
 import { venueHistoryReplyAction } from "@/lib/retreat-venue-history";
 import { eventPublicVenueUsedAction } from "@/lib/assistant-privacy";
 import type { ConversationScope } from "@/lib/conversation-scope";
@@ -240,7 +241,10 @@ function MessageBody({ message, review, saveNearbyPlace, busy }: { message: Chat
   }
   const plan = message.advisor;
   if (message.sender !== "assistant" || !isAdvisorPresentation(plan) || plan.kind !== "plan") {
-    return <><p className="workspace-message-text workspace-message-bubble">{message.text}</p>{review}</>;
+    const route = message.sender === "assistant" ? message.venueRoute : undefined;
+    const href = route ? venueDirectionsUrl(route) : null;
+    return <><p className="workspace-message-text workspace-message-bubble">{message.text}</p>
+      {href && <div className="workspace-place-approval"><a className="workspace-start-button" href={href} target="_blank" rel="noopener noreferrer"><MapPin size={15} aria-hidden="true" />{route?.origin ? `${route.origin}에서 숙소까지 길찾기` : "Google Maps에서 숙소까지 길찾기"}</a></div>}{review}</>;
   }
   return <div className="workspace-plan">
     <div className="workspace-plan-heading"><span className="workspace-plan-icon"><CalendarDays size={18} aria-hidden="true" /></span><h3>{plan.title}</h3><span className="workspace-plan-state">검토용</span></div>
