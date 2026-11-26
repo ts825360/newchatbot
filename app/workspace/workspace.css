@@ -189,7 +189,10 @@
 .workspace-message-quote span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-composer-reference { max-width: var(--reading-width); margin: 0 auto 5px; display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
 .workspace-message-text { max-width: 68ch; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.from-user .workspace-message-text { width: fit-content; max-width: 100%; margin-inline-start: auto; padding: 9px 13px; border-radius: var(--card-radius); background: hsl(var(--selection)); }
+.workspace-message-bubble { width: fit-content; max-width: min(100%, 68ch); padding: 9px 13px; border-radius: var(--card-radius); background: hsl(var(--surface-input)); }
+.from-user .workspace-message-bubble { margin-inline-start: auto; background: hsl(var(--selection)); }
+.workspace-place-approval { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 8px; font-size: 13px; }
+.workspace-place-approval [role="status"] { color: hsl(var(--muted-foreground)); }
 .workspace-plan { max-width: 900px; padding: 16px 17px 12px; border: 1px solid hsl(var(--border)); border-radius: var(--card-radius); overflow-wrap: anywhere; box-shadow: var(--shadow-raised); }
 .workspace-plan-heading { display: flex; align-items: center; gap: 7px 10px; flex-wrap: wrap; margin-bottom: 9px; }
 .workspace-plan-heading h3 { margin: 0; flex: 1; min-width: min(100%, 8ch); font-size: 17px; font-weight: 750; line-height: 1.4; }

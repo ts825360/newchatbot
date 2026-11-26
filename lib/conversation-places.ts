@@ -43,3 +43,15 @@ export function readConversationPlaces(value: unknown): string[] {
   const legacy = value.location.trim();
   return value.places ?? (validPlace(legacy) ? [legacy] : []);
 }
+
+export function appendConversationPlace(value: unknown, input: string): ConversationPlaceRecord | null {
+  if (!isConversationPlaceRecord(value)) throw new Error("저장된 장소를 불러오지 못했습니다.");
+  const name = input.trim();
+  if (!validPlace(name)) throw new Error("저장할 장소 이름을 확인해 주세요.");
+  const places = readConversationPlaces(value);
+  const identity = (place: string) => place.normalize("NFKC").toLocaleLowerCase("ko-KR").replace(/\s/g, "");
+  if (places.some(place => identity(place) === identity(name))) return null;
+  if (places.length >= maxConversationPlaces) throw new Error(`장소는 최대 ${maxConversationPlaces}개까지 저장할 수 있습니다.`);
+  const next = [...places, name];
+  return { location: next[0], places: next, ...(value.details && { details: value.details }) };
+}

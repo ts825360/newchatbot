@@ -45,6 +45,7 @@ export function classifyContinuation(input: string): ContinuationAction {
   if (/^(?:(?:이(?:전)?|그|지금|방금|아까|진행\s*중인)\s*)?(?:(?:요청|작업|검색|추천|계획|건)(?:은|는|을|를)?\s*)?(?:취소(?:해(?:줘|주세요)?|할래|하자)?|그만(?:해(?:줘|주세요)?|할래|하자)?|중단(?:해(?:줘|주세요)?|하자)?|됐어)[.!?\s]*$/.test(text)) return "cancel";
   if (/^(?:새(?:로운)?\s*(?:질문|요청|주제)|다른\s*(?:질문|주제)|이제\s+[^\n]{1,36}부터)/.test(text)) return "new";
   if (/(?:나머지|다른\s*조건)은?\s*그대로|다시\s*(?:계산|추천|찾|비교|짜|검토|해)|(?:으?로|만)\s*(?:바꿔|바꾸|수정|변경)|(?:만|는|은|를|을)\s*(?:빼고|제외|추가)|(?:기준|조건)(?:을|을\s*)?\s*(?:바꿔|수정|변경)/.test(text)) return "revise";
+  if (/\d{1,2}\s*순위/.test(text)) return "reference";
   if (/(?:그중|그\s*중|그것|그걸|이걸|그거|그\s*(?:안|곳|일정|후보)(?:을|를|은|는|에|만|도|이\s|\s|$)|앞(?:서|의)|이전\s*(?:추천|답변|후보)|아까|방금(?:\s+(?:말|추천|제안|답변))|(?:\d+\s*번|첫\s*번|두\s*번|세\s*번)\s*(?:째|안|후보|항목|만|을|이|으로|부터|의))/.test(text)) return "reference";
   if (/^(?:(?:좀|더|조금)\s*)*(?:구체화해|이어\s*가|계속해|자세히\s*(?:알려|설명))/.test(text)) return "reference";
   if (/^(?:(?:참고로|추가로)\s*)?(?:인원|예산|비용|장소|주소|숙소|날짜|일정|시간|출발|귀가|제외\s*조건)(?:은|는|이|가|:)(?:\s*[^\n]{1,100})$/.test(text)) return "supplement";
@@ -53,7 +54,7 @@ export function classifyContinuation(input: string): ContinuationAction {
 }
 
 export function contextOrdinal(message: string) {
-  const number = message.match(/(\d{1,2})\s*번(?!\s*차량)/)?.[1];
+  const number = message.match(/(?<!\d)(\d{1,2})\s*(?:순위|번(?!\s*차량))/)?.[1];
   if (number) return Number(number);
   const named = message.match(/(첫|두|세|네)\s*번째/)?.[1];
   return named ? ["첫", "두", "세", "네"].indexOf(named) + 1 : undefined;

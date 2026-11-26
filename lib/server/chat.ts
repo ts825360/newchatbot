@@ -34,6 +34,9 @@ import { id, object, text, validateRecord } from "./record-schema";
 const changed = () => new ApiError(409, "대화가 변경되었습니다. 최신 메시지를 확인한 뒤 다시 시도해 주세요.");
 const full = () => new ApiError(413, "대화 저장 한도에 도달했습니다. 새 대화를 시작해 주세요.");
 const pendingHistories = new WeakMap<DatabaseSync, Set<string>>();
+const wantsPlaceSave = (text: string) => /(?:장소(?:\s*목록)?|저장한\s*장소)(?:에|로)\s*(?:추가|저장|등록|넣어)/.test(text)
+  && !/(?:추가|저장|등록|넣)(?:하)?지\s*(?:말|않)/.test(text);
+const wantsSearch = (text: string) => /추천|검색|찾아|알아봐/.test(text);
 const wantsSavedHeadcount = (text: string) => /(?:실제|확정된|저장된|등록된)\s*(?:행사\s*)?(?:참가자(?:\s*수)?|인원)/.test(text);
 
 export async function handleChatConsent(request: Request, database = getDatabase()): Promise<Response> {
@@ -142,13 +145,6 @@ function nearbyOrigin(message: string, previous?: NearbyTask): Pick<NearbyTask, 
   return previous ? { origin: previous.origin, ...(previous.venueName && { venueName: previous.venueName }) } : { origin: "saved" };
 }
 
-function selectNearby(answer: ChatMessage, text: string) {
-  if (classifyContinuation(text) !== "reference" || !answer.dining) return;
-  const rows = answer.dining.restaurants;
-  const ordinal = contextOrdinal(text);
-  if (ordinal !== undefined) return rows[ordinal - 1];
-}
-
 function findTurn(db: DatabaseSync, scope: ConversationScope, userMessageId: string, userMessageText: string, internal: boolean, retreatVenueReview: boolean) {
   requireOwnedConversation(db, scope);
   const key = canonicalConversationHistory(scope.accountId, scope.roomId);
@@ -221,7 +217,8 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
       const format = (value: string) => value.trim() ? formatAssistantReply(value.trim(), preferences.emoji) : "";
       let assertSourcesStillCurrent = () => {};
       let interpretation: NearbyIntent | null | undefined;
-      if (nearbyKind && previousNearby && action === "unknown" && !original.message.reference && !nearbySearchKind(data.userMessageText) && !wantsSavedHeadcount(data.userMessageText)) {
+      const savePlace = Boolean(previousNearby && wantsPlaceSave(data.userMessageText));
+      if (nearbyKind && previousNearby && action === "unknown" && !savePlace && !original.message.reference && !nearbySearchKind(data.userMessageText) && !wantsSavedHeadcount(data.userMessageText)) {
         const root = original.conversation.messages.find(message => message.id === previousNearby.nearbyTask?.candidateMessageId);
         interpretation = await interpretNearbyFollowUp(data.userMessageText, nearbyKind, (root ?? previousNearby).dining?.restaurants.length ?? 0, request.signal);
         assertSameHistory(currentTurn());
@@ -263,8 +260,9 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         const priorResult = previous && snapshot?.dining;
         const venueFingerprint = venue && createHash("sha256").update(JSON.stringify(venue)).digest("hex");
         const age = priorResult ? now.getTime() - Date.parse(priorResult.checkedAt) : Infinity;
-        const reusable = !!(venueFingerprint && visit && priorResult && previous?.visit && !previous.temporaryResult && previous.venueFingerprint === venueFingerprint
-          && isDeepStrictEqual(visit, previous.visit) && age >= 0 && age <= 20 * 60_000);
+        const sameSearch = !!(venueFingerprint && visit && priorResult && previous?.visit && !previous.temporaryResult && previous.venueFingerprint === venueFingerprint
+          && isDeepStrictEqual(visit, previous.visit));
+        const reusable = sameSearch && age >= 0 && age <= 20 * 60_000;
         assertSourcesStillCurrent = () => {
           if (!isDeepStrictEqual(venue, readVenue()) || visit?.basis.origin === "event" && !isDeepStrictEqual(window, eventWindow(db, scope.roomId))) {
             throw new ApiError(409, "행사 장소나 일정이 변경되었습니다. 다시 요청해 주세요.");
@@ -273,23 +271,46 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
             throw new ApiError(409, "행사 참가자 정보 또는 조회 권한이 변경되었습니다. 다시 요청해 주세요.");
           }
         };
-        const selected = reusable && snapshot ? interpretation?.intent === "select" && interpretation.rank != null
-          ? priorResult?.restaurants[interpretation.rank - 1] : selectNearby(snapshot, data.userMessageText) : undefined;
-        const wantsAlternative = interpretation?.intent === "alternative" || action === "reference" && /말고|다른\s*(?:곳|데|후보)|대안/.test(data.userMessageText);
-        const wantsRank = interpretation?.intent === "select" || action === "reference" && contextOrdinal(data.userMessageText) !== undefined;
+        const rank = interpretation?.intent === "select" ? interpretation.rank ?? undefined : contextOrdinal(data.userMessageText);
+        const selected = rank && reusable ? priorResult?.restaurants[rank - 1] : undefined;
+        const wantsAlternative = interpretation?.intent === "alternative" || action === "reference" && /말고|다른\s*(?:곳|데|후보)|대안/.test(data.userMessageText)
+          || sameSearch && rank === undefined && /다시\s*(?:추천|검색|찾아|알아봐)/.test(data.userMessageText);
+        const extendRanking = !wantsAlternative && reusable && priorResult && rank === priorResult.restaurants.length + 1 && rank <= 3 && wantsSearch(data.userMessageText);
+        const approvalRank = rank ?? previous?.selectedCandidateRank ?? (priorResult?.restaurants.length === 1 ? 1 : undefined);
+        const placeCandidate = approvalRank ? priorResult?.restaurants[approvalRank - 1] : undefined;
         let candidateMessageId: string | undefined;
-        if (useSavedCount && !count) reply = { text: "현재 조회 가능한 등록 참가자 수가 없어요. 참가자 등록과 조회 권한을 확인해 주세요. 이전 가정 인원으로 대신 검색하지 않았습니다." };
+        let selectedCandidateRank = previous?.selectedCandidateRank;
+        if (savePlace) {
+          candidateMessageId = priorResult ? snapshot?.id : undefined;
+          if (placeCandidate && priorResult && !hasObviousPrivateData(placeCandidate.name)) {
+            selectedCandidateRank = approvalRank;
+            reply = { text: `‘${placeCandidate.name}’을 행사방 장소 목록에 추가할 수 있어요. 아래에서 확인하면 저장됩니다.`,
+              dining: { ...priorResult, restaurants: [placeCandidate], selectedRank: approvalRank, placeSaveRequested: true } };
+          } else reply = { text: "저장할 장소를 고르려면 이전 검색 후보의 순위를 알려주세요." };
+        } else if (useSavedCount && !count) reply = { text: "현재 조회 가능한 등록 참가자 수가 없어요. 참가자 등록과 조회 권한을 확인해 주세요. 이전 가정 인원으로 대신 검색하지 않았습니다." };
         else if (interpretation === null || interpretation?.intent === "clarify") {
           reply = { text: "이전 후보를 비교할까요, 아니면 조건을 바꿔 다시 찾을까요? 지원되지 않는 조건은 임의로 적용하지 않았어요." };
           candidateMessageId = reusable ? snapshot?.id : undefined;
         } else if (!venue) reply = { text: place.origin === "unverified" ? "임시로 지정한 장소는 공개 위치를 확인할 수 없어 검색하지 않았어요. 저장된 대표 장소로 바꿔 다시 검색할 수 있습니다."
           : "이 행사방에서 검색에 사용할 공개 대표 장소를 확인하지 못했어요. 장소에서 대표 숙소를 확인해 주세요." };
         else if (!visit) reply = { text: "어느 날짜와 시간에 방문할까요? 예를 들어 ‘내일 아침’이나 ‘토요일 오후 6시’라고 알려주세요." };
-        else if (selected && priorResult && !wantsAlternative) {
+        else if (extendRanking && priorResult) {
+          const found = await recommendDining(nearbyKind, venue, visit, now, request.signal, priorResult.restaurants.map(item => item.name));
+          const next = found.dining?.restaurants[0];
+          if (next) {
+            reply = { text: `기존 순위를 유지하고 ${rank}순위 후보를 추가로 찾았습니다. 방문 가능 여부는 따로 확인해 주세요.`,
+              dining: { ...priorResult, restaurants: [...priorResult.restaurants, next] } };
+            candidateMessageId = original.replyId;
+          } else {
+            reply = { text: `${found.text} 기존 후보와 순위는 유지했습니다.` };
+            candidateMessageId = snapshot?.id;
+          }
+        } else if (selected && priorResult && !wantsAlternative) {
           reply = { text: "이전 검색에서 선택한 후보입니다. 영업과 이동 정보는 당시 검색 내용이며 실제 이용 여부는 확인이 필요해요.",
-            dining: { ...priorResult, restaurants: [selected], selectedRank: priorResult.restaurants.indexOf(selected) + 1 } };
+            dining: { ...priorResult, restaurants: [selected], selectedRank: rank } };
           candidateMessageId = snapshot?.id;
-        } else if (wantsRank && !wantsAlternative) {
+          selectedCandidateRank = rank;
+        } else if (rank !== undefined && !wantsAlternative) {
           reply = { text: reusable ? "원래 검색에 그 번호의 후보가 없어요." : "이전 후보의 검색 조건이나 장소가 달라졌거나 결과가 오래됐어요. 최신 후보를 다시 찾아달라고 요청해 주세요." };
           candidateMessageId = reusable ? snapshot?.id : undefined;
         } else if (reusable && interpretation?.intent === "assess") {
@@ -303,15 +324,24 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
           candidateMessageId = snapshot?.id;
         } else {
           reply = await recommendDining(nearbyKind, venue, visit, now, request.signal, wantsAlternative ? priorResult?.restaurants.map(candidate => candidate.name) : undefined);
-          candidateMessageId = reply.dining ? original.replyId : undefined;
+          if (reply.dining) {
+            candidateMessageId = original.replyId;
+            selectedCandidateRank = undefined;
+          } else if (sameSearch && priorResult) {
+            reply.text += " 기존 후보는 유지했습니다.";
+            candidateMessageId = snapshot?.id;
+          }
           assertSameHistory(currentTurn());
           if (!hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
         }
-        if (requestOnly) {
+        if (savePlace && previous && candidateMessageId) {
+          reply.nearbyTask = { ...previous, candidateMessageId, ...(selectedCandidateRank && { selectedCandidateRank }) };
+        } else if (requestOnly) {
           const active = previousNearby?.nearbyTask;
           if (active) reply.nearbyTask = { ...active, temporaryResult: true };
         } else {
-          reply.nearbyTask = { kind: nearbyKind, visit: visit ?? previous?.visit ?? null, ...place, work: work.persistent, ...(candidateMessageId && { candidateMessageId }), ...(venueFingerprint && { venueFingerprint }) };
+          reply.nearbyTask = { kind: nearbyKind, visit: visit ?? previous?.visit ?? null, ...place, work: work.persistent,
+            ...(candidateMessageId && { candidateMessageId, ...(selectedCandidateRank && { selectedCandidateRank }) }), ...(venueFingerprint && { venueFingerprint }) };
         }
       } else {
         const publicVenue = readPublicEventVenue(db, scope);

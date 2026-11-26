@@ -25,14 +25,14 @@ export type NearbyVisit = {
   traits?: NearbyTrait[];
 };
 export type NearbyTask = { kind: NearbyKind; visit: NearbyVisit | null; origin: "saved" | "hypothetical" | "unverified"; venueName?: string; temporaryResult?: true;
-  candidateMessageId?: string; venueFingerprint?: string; work?: WorkConditions<{ people: number }> };
+  candidateMessageId?: string; selectedCandidateRank?: number; venueFingerprint?: string; work?: WorkConditions<{ people: number }> };
 export type NearbyRoute = { mode: NearbyRouteMode; distanceKm: number | null; durationMinutes: number | null; source: DiningSource };
 export type DiningRestaurant = {
   name: string; reason: string; hours: string; rating: { value: number; count: number | null; source: DiningSource } | null; sources: DiningSource[];
   address?: string | null; closures?: string | null; feature?: { text: string; source: DiningSource } | null; route?: NearbyRoute | null;
 };
 export type DiningRecommendations = { kind?: NearbyKind; date: string | null; visitTime: string | null; checkedAt: string; venue: string; restaurants: DiningRestaurant[];
-  transportMode?: NearbyRouteMode | null; evidence?: "reported"; selectedRank?: number };
+  transportMode?: NearbyRouteMode | null; evidence?: "reported"; selectedRank?: number; placeSaveRequested?: true };
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 export const diningLine = (value: unknown, limit: number): value is string => typeof value === "string" && !!value.trim() && value.length <= limit && !/[\x00-\x1f\x7f]/.test(value);
@@ -68,6 +68,7 @@ export function isNearbyTask(value: unknown): value is NearbyTask {
   if (!record(value) || !(value.kind === "restaurant" || value.kind === "attraction")
     || !(value.origin === "saved" || value.origin === "hypothetical" || value.origin === "unverified")
     || (value.candidateMessageId !== undefined && (typeof value.candidateMessageId !== "string" || !/^dining-[a-f0-9]{64}$/.test(value.candidateMessageId)))
+    || (value.selectedCandidateRank !== undefined && ![1, 2, 3].some(rank => rank === value.selectedCandidateRank))
     || (value.venueFingerprint !== undefined && (typeof value.venueFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(value.venueFingerprint)))
     || (value.work !== undefined && (!record(value.work) || Object.keys(value.work).some(key => key !== "people")
       || value.work.people !== undefined && !isWorkCondition(value.work.people, (value): value is number => typeof value === "number" && nullableInteger(value, 999))))
@@ -95,6 +96,7 @@ export function isDiningRecommendations(value: unknown): value is DiningRecommen
     && (value.kind === undefined || value.kind === "restaurant" || value.kind === "attraction")
     && (value.transportMode == null || isNearbyRouteMode(value.transportMode))
     && Array.isArray(value.restaurants) && value.restaurants.length > 0 && value.restaurants.length <= 3
+    && (value.placeSaveRequested === undefined || value.placeSaveRequested === true && value.selectedRank !== undefined && value.restaurants.length === 1)
     && value.restaurants.every(row => record(row) && diningLine(row.name, 90) && diningLine(row.reason, 250) && diningLine(row.hours, 150)
       && (row.address == null || diningLine(row.address, 180)) && (row.closures == null || diningLine(row.closures, 130))
       && (row.feature == null || record(row.feature) && diningLine(row.feature.text, 160) && source(row.feature.source))
