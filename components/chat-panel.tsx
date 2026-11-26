@@ -25,6 +25,7 @@ type TurnActions = {
   onImportRoster?: (source: ChatRosterSource) => void;
   onSaveNearbyPlace?: (name: string) => Promise<"added" | "already-saved">;
   retreatVenueScope?: ConversationScope;
+  renderWorkProposal?: (message: ChatMessage) => ReactNode;
 };
 
 type ComposerProps = {
@@ -94,7 +95,11 @@ function MessageTurn({ message, previous, source, server, actions, busy, onRefer
       {assistant && message.replyElapsedMs != null && <p className="workspace-reply-elapsed workspace-reply-completed">
         {message.replyElapsedMs < 1000 ? "1초 미만" : `${Math.floor(message.replyElapsedMs / 1000)}초`} 소요
       </p>}
-      <MessageBody message={message} review={review} saveNearbyPlace={actions.onSaveNearbyPlace} busy={busy} />
+      {assistant && message.workProposal && actions.renderWorkProposal ? <div className="chat-work-answer">
+        <p className="workspace-message-text">{message.text}</p>
+        {message.advisor?.rows.length ? <dl className="workspace-plan-rows">{message.advisor.rows.map(row => <div key={row.label}><dt>{row.label}</dt><dd>{row.detail}</dd></div>)}</dl> : null}
+        {actions.renderWorkProposal(message)}
+      </div> : <MessageBody message={message} review={review} saveNearbyPlace={actions.onSaveNearbyPlace} busy={busy} />}
       {assistant && message.actions?.includes(eventPublicVenueUsedAction) && <p className="workspace-reply-elapsed workspace-reply-completed">행사방 대표 장소 참고</p>}
       {retreatVenueScope && assistant && message.actions?.includes(venueHistoryReplyAction) &&
         <RetreatVenueHistory scope={retreatVenueScope} question={previous?.sender === "user" ? previous.text : ""} />}

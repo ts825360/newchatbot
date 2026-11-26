@@ -134,6 +134,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   db?.close();
@@ -320,6 +321,62 @@ it.each([
   const body = JSON.stringify(answer);
   for (const detail of ["2027-03-06", "장소 등록됨", "1명", "명단 확정", "차량", "숙소"]) expect(body).toContain(detail);
   expect(body).not.toMatch(/PRIVATE_PARTICIPANT|PRIVATE_OTHER_VENUE|100%/);
+  expect(fetchProvider).not.toHaveBeenCalled();
+});
+
+it("reads preparation and proposes only outstanding checklist items without writing or forwarding records", async () => {
+  db.prepare("UPDATE users SET permissions_json=? WHERE id='alice'").run(JSON.stringify(["viewRoom", "chat", "viewChecklist", "editChecklist"]));
+  db.prepare("UPDATE rooms SET data_json=? WHERE id='room'").run(JSON.stringify({ id: "room", date: "2027-03-06", endDate: "2027-03-07" }));
+  const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
+  writeBatch(requireUser(request(), db), [{ key: privateToolKey(scope, "location"), version: "0", value: '{"location":"TEST_PRIVATE_VENUE"}' }], "room", db);
+  expect((await append("preparation-work", "현재 우리 행사는 어디까지 준비가 되었고 어디가 준비가 안되었어? 체크리스트에 나타내줘")).status).toBe(200);
+  const saved = getHistory().conversations[0].messages.at(-1);
+  expect(saved?.workProposal).toMatchObject({ kind: "checklist", confirmed: expect.arrayContaining(["행사 기간 등록", "대표 숙소 등록"]),
+    items: expect.arrayContaining(["최종 참가 인원 확인", "차량 배정 완료 여부 확인", "타임테이블 검토"]) });
+  expect(JSON.stringify(saved)).not.toContain("TEST_PRIVATE_VENUE");
+  expect(db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='checklist'").get()?.total).toBe(0);
+  expect(fetchProvider).not.toHaveBeenCalled();
+});
+
+it("answers actual registered headcount from the current workspace, without revealing roster entries", async () => {
+  db.prepare("UPDATE users SET permissions_json=? WHERE id='alice'").run(JSON.stringify(["viewRoom", "chat", "viewChecklist", "editChecklist"]));
+  const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
+  const input = createTransportDraft();
+  input.people = [{ id: "p1", name: "PRIVATE_NAME", department: "test", outboundTripId: null, returnTripId: null, familyId: "", companionGroup: "" }];
+  writeBatch(requireUser(request(), db), [{ key: privateToolKey(scope, "transport"), version: "0", value: JSON.stringify({ input, result: null, approved: false }) }], "room", db);
+  expect((await append("headcount", "우리 총 몇명이 가는거야?")).status).toBe(200);
+  const output = getHistory().conversations[0].messages.at(-1)?.text;
+  expect(output).toContain("1명");
+  expect(output).not.toContain("PRIVATE_NAME");
+  expect(fetchProvider).not.toHaveBeenCalled();
+});
+
+it("offers a dated, all-day calendar proposal for a month/day request without writing a shared event", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-26T12:00:00Z"));
+  db.prepare("UPDATE users SET permissions_json=? WHERE id='alice'").run(JSON.stringify(["viewRoom", "chat", "viewCalendar", "createEvent", "editEvent"]));
+  const question = "11월 28일에 해당 내용에 대해서 회의를 할거야 공용캘린더에 가상행사 임원회의 라고 적어줘";
+  expect((await append("calendar-work", question)).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.workProposal).toEqual({ kind: "calendar", title: "가상행사 임원회의", date: "2026-11-28", time: "", inferredYear: true });
+  expect(db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='events'").get()?.total).toBe(0);
+  expect(fetchProvider).not.toHaveBeenCalled();
+});
+
+it("creates a reviewable timetable plan and a standard survey draft without invoking OpenAI", async () => {
+  db.prepare("UPDATE rooms SET data_json=? WHERE id='room'").run(JSON.stringify({ id: "room", name: "가상행사", category: "retreat", date: "2027-03-06", endDate: "2027-03-07" }));
+  expect((await append("timeline-work", "대략적인 타임테이블도 작성해줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.workProposal).toMatchObject({ kind: "timetable", plan: { days: 2, startDate: "2027-03-06", entries: expect.arrayContaining([expect.objectContaining({ day: 2 })]) } });
+  expect(db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='timetable'").get()?.total).toBe(0);
+  expect((await append("survey-work", "우리 설문폼을 만들어줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.workProposal).toEqual({ kind: "survey", title: "가상행사 참가 설문" });
+  expect(fetchProvider).not.toHaveBeenCalled();
+});
+
+it("does not offer a name-required Google Forms template for an explicit anonymous survey", async () => {
+  expect((await append("anonymous-survey", "참가자 이름 없이 익명 만족도 구글 폼 만들어줘")).status).toBe(200);
+  const reply = getHistory().conversations[0].messages.at(-1);
+  expect(reply?.workProposal).toBeUndefined();
+  expect(reply?.text).toContain("익명");
   expect(fetchProvider).not.toHaveBeenCalled();
 });
 

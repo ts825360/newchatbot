@@ -17,19 +17,21 @@ function validEditorUrl(value: unknown): value is string {
   return typeof value === "string" && /^https:\/\/docs\.google\.com\/forms\/d\/[A-Za-z0-9_-]{8,128}\/edit$/.test(value);
 }
 
-export function GoogleFormDraftActions({ scope, onUseEditorUrl, showConsent = true }: {
+export function GoogleFormDraftActions({ scope, onUseEditorUrl, showConsent = true, initialTitle = "수련회 참가 설문", initiallyExpanded = false }: {
   showConsent?: boolean;
   scope?: { roomId: string; conversationId: string };
   onUseEditorUrl?: (url: string) => void;
+  initialTitle?: string;
+  initiallyExpanded?: boolean;
 }) {
   const manages = !scope;
   const panelId = useId();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(initiallyExpanded);
   const [status, setStatus] = useState<Status>();
   const [check, setCheck] = useState(0);
   const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState<"connect" | "disconnect" | "create" | "">("");
-  const [title, setTitle] = useState("수련회 참가 설문");
+  const [title, setTitle] = useState(initialTitle);
   const [editorUrl, setEditorUrl] = useState("");
   const [error, setError] = useState("");
   const wantsStatus = manages || expanded;
@@ -108,9 +110,12 @@ export function GoogleFormDraftActions({ scope, onUseEditorUrl, showConsent = tr
       : <p role="status" className="text-xs text-muted-foreground">생성 권한 확인 중...</p>)}
     {error && <p className="text-sm text-danger" role="alert">{error}</p>}
     <div id={panelId} hidden={!expanded}>
-      {!manages && status && !status.connected && <Link className="lobby-secondary" href={googleSettingsHref("forms")}>
-        <Link2 size={14} aria-hidden="true" />환경설정에서 생성 권한 연결
-      </Link>}
+      {!manages && status && !status.connected && <div className="flex flex-wrap items-center gap-2">
+        {!status.configured && <span className="text-xs text-muted-foreground">서버 설정 필요</span>}
+        <Link className="lobby-secondary" href={googleSettingsHref("forms")}>
+          <Link2 size={14} aria-hidden="true" />환경설정에서 생성 권한 연결
+        </Link>
+      </div>}
       {expanded && status?.connected && <form className="grid w-full min-w-0 gap-2 rounded-md border border-border p-3" onSubmit={(event) => void create(event)}>
         <label className="grid min-w-0 gap-1 text-sm font-medium">설문 제목
           <input type="text" className="w-full min-w-0 rounded-md border border-border bg-panel px-3 py-2" required maxLength={100} value={title} disabled={!!busy}

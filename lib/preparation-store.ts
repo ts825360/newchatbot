@@ -6,8 +6,10 @@ import { validDate } from "./room-timing";
 import { writeBrowserRecord } from "./storage-status";
 import { dataStorage, hasBackendRecord, isBackendConnected } from "./backend-client";
 import { privateToolKey, type ConversationScope } from "./conversation-scope";
+import type { Timetable } from "./timetable";
 
-export type ProposalDraft = { id: string; kind: "checklist" | "calendar"; title: string; date: string; sourceTitle: string; excerpt: string; origin?: "assistant" | "preparation" };
+export type ProposalDraft = { id: string; kind: "checklist" | "calendar" | "timetable"; title: string; date: string; sourceTitle: string; excerpt: string; origin?: "assistant" | "preparation";
+  time?: string; timetable?: Timetable; checklistItems?: { id: string; title: string }[] };
 export type ProposalDecision = { id: string; status: "pending" | "accepted" | "deferred" | "excluded"; reason: string; title?: string; date?: string };
 export type ProposalApplyResult = boolean | { ok: boolean; applied?: ProposalDraft; recovered?: boolean; error?: string };
 export const PREPARATION_CHANGED_EVENT = "church-preparation-changed";

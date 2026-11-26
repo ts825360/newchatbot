@@ -27,7 +27,7 @@ const savedItems = <T>(kind: "events" | "checklist", raw: string) => {
 };
 const shortLine = (text: string) => text.replace(/[\x00-\x1f\x7f\u2028\u2029]+/g, " ").slice(0, 180).trim();
 
-export function loadPreparationStatus(db: DatabaseSync, actor: Actor, scope: ConversationScope): Pick<ChatMessage, "text" | "advisor"> {
+export function loadPreparationStatus(db: DatabaseSync, actor: Actor, scope: ConversationScope, proposeChecklist = false): Pick<ChatMessage, "text" | "advisor" | "workProposal"> {
   if (actor.id !== scope.accountId) throw new ApiError(404, "이 대화를 확인할 수 없습니다.");
   requireOwnedConversation(db, scope);
   inheritWorkspaceRecords(db, scope);
@@ -81,5 +81,21 @@ export function loadPreparationStatus(db: DatabaseSync, actor: Actor, scope: Con
     { label: "차량·숙소", detail: transportNote || `${vehicle} / ${lodgingDetails}` },
     { label: "준비 체크리스트", detail: checklistDetail },
   ];
-  return { text: `이 행사방의 공동 일정과 내 준비 기록입니다. ${next}`, advisor: { kind: "plan", title: "저장된 준비 현황", rows, rationale: "", proposals: [] } };
+  const draft = proposeChecklist && canView && checklist?.status !== "unreadable";
+  const confirmed: string[] = [], outstanding: string[] = [];
+  if (draft) {
+    (date ? confirmed : outstanding).push(date ? "행사 기간 등록" : "행사 기간 확정");
+    (place ? confirmed : outstanding).push(place ? "대표 숙소 등록" : "대표 숙소 확인");
+    if (transport?.status !== "unreadable") {
+      (rosterConfirmed ? confirmed : outstanding).push(rosterConfirmed ? `참가 명단 확정 (${people.length}명)` : "최종 참가 인원 확인");
+      (real?.approved ? confirmed : outstanding).push(real?.approved ? `차량 배정 확정 (${vehicles}대)` : "차량 배정 완료 여부 확인");
+      const roomsEntered = lodging && lodging.active.length > 0 && !lodging.pending && lodging.numbered === lodging.active.length;
+      (roomsEntered ? confirmed : outstanding).push(roomsEntered ? "숙소 인원 배정·호수 등록" : "숙소 인원 배정·호수 확인");
+    }
+    if (timetable.status !== "unreadable") outstanding.push("타임테이블 검토");
+  }
+  const existing = new Set(items.map(item => item.title.normalize("NFKC").replace(/\s+/g, "").trim()));
+  const newItems = outstanding.filter(title => !existing.has(title.normalize("NFKC").replace(/\s+/g, "").trim()));
+  return { text: `이 행사방의 공동 일정과 내 준비 기록입니다. ${next}`, advisor: { kind: "plan", title: "저장된 준비 현황", rows, rationale: "", proposals: [] },
+    ...(draft && { workProposal: { kind: "checklist", confirmed, items: newItems } }) };
 }
