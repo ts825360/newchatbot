@@ -1,4 +1,4 @@
-export const openAIChatConsentVersion = "openai-account-chat-v5";
+export const openAIChatConsentVersion = "openai-account-chat-v6";
 export const internalChatAction = "local-only";
 export const eventPublicVenueUsedAction = "event-public-venue-used";
 export const openAIPrivacyWarning = "연락처, 식별번호, 명단 또는 비밀키로 보이는 내용이 있습니다. 지우고 다시 보내거나 내부에만 저장해 주세요.";

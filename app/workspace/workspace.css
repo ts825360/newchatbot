@@ -195,6 +195,17 @@
 .workspace-plan-heading h3 { margin: 0; flex: 1; min-width: min(100%, 8ch); font-size: 17px; font-weight: 750; line-height: 1.4; }
 .workspace-plan-icon { display: grid; place-items: center; width: 31px; height: 31px; flex: none; border-radius: 7px; background: hsl(var(--selection)); color: hsl(var(--primary)); }
 .workspace-plan-state { padding: 2px 7px; border-radius: 5px; background: hsl(var(--selection)); color: hsl(var(--primary)); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.workspace-dining-list { display: grid; list-style: none; margin: 12px 0 0; padding: 0; }
+.workspace-dining-list li { padding: 12px 0; border-top: 1px solid hsl(var(--border)); }
+.workspace-dining-list h4 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0 0 5px; font-weight: 750; font-size: 15px; }
+.workspace-dining-list h4 span { color: hsl(var(--primary)); font-size: 12px; }
+.workspace-dining-list p { margin: 4px 0; font-size: 13px; line-height: 1.6; }
+.workspace-dining-facts, .workspace-dining-checked { color: hsl(var(--muted-foreground)); }
+.workspace-dining-facts strong { color: hsl(var(--foreground)); font-weight: 650; }
+.workspace-dining-links { display: flex; flex-wrap: wrap; gap: 3px 14px; margin-top: 6px; }
+.workspace-dining a { color: hsl(var(--primary)); text-decoration: underline; text-underline-offset: 3px; }
+.workspace-dining-links a { display: inline-flex; align-items: center; min-height: 28px; gap: 5px; font-size: 12px; }
+.workspace-dining-checked { margin: 0; font-size: 12px; line-height: 1.5; }
 .workspace-plan-rows { margin: 13px 0 0; border-radius: 7px; padding: 0 12px; background: hsl(var(--surface-input)); }
 .workspace-plan-rows > div { display: grid; grid-template-columns: minmax(54px, 16%) minmax(0, 1fr); align-items: baseline; gap: 10px; padding: 9px 0; }
 .workspace-plan-rows > div + div { border-top: 1px solid hsl(var(--border)); }

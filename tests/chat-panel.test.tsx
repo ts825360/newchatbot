@@ -23,6 +23,20 @@ it("keeps the speaker and text but hides stored timestamps from message turns", 
   expect(log.queryByText("14:00")).toBeNull();
 });
 
+it("renders ranked restaurants with keyboard-focusable map and source links", () => {
+  const url = "https://restaurant.example.org/hours";
+  const dining = { date: "2026-11-26", visitTime: "18:00", checkedAt: "2026-11-26T08:00:00.000Z", venue: "가상 숙소", restaurants: [
+    { name: "가상 식당", reason: "지역 해산물 요리", hours: "17:00~20:30", rating: null, sources: [{ url, label: "식당 영업시간" }] },
+  ] };
+  render(<ChatPanel {...props} conversation={{ ...conversation, messages: [conversation.messages[0], { ...conversation.messages[1], dining }] }} />);
+  const result = within(screen.getByRole("region", { name: "주변 식당 추천" }));
+  expect(result.getByRole("heading", { name: /1순위.*가상 식당/ })).toBeDefined();
+  expect(result.getByText(/확인되지 않음/)).toBeDefined();
+  expect(result.getByRole("link", { name: "영업 출처" }).getAttribute("href")).toBe(url);
+  const map = new URL(result.getByRole("link", { name: "지도에서 찾기" }).getAttribute("href")!);
+  expect(map.searchParams.get("query")).toContain("가상 식당");
+});
+
 it("shows current request elapsed time and resets it between replies", () => {
   vi.useFakeTimers({ toFake: ["performance", "setInterval", "clearInterval"] });
   const pending = { ...conversation, messages: conversation.messages.slice(0, 1) };
