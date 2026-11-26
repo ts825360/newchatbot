@@ -18,7 +18,7 @@ import { conversationHistoryKey, privateToolKey, scopeId, type ConversationScope
 import { appendConversationPlace } from "@/lib/conversation-places";
 import type { ServerSnapshot } from "@/lib/backend-contract";
 import { classifyContinuation } from "@/lib/chat-continuity";
-import { isEventVenueRouteQuestion } from "@/lib/chat-venue-route";
+import { isEventVenueRouteQuestion, venueRouteArrivalMatch, venueTravelAnchor } from "@/lib/chat-venue-route";
 import { GoogleCalendarConnection } from "./google-calendar-connection";
 import { BlankGoogleFormLink } from "./google-forms-sharing";
 import { useToolsResize } from "./workspace-tools-resize";
@@ -112,7 +112,12 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   const isRetreat = server && "category" in room && room.category === "retreat";
   const canReviewRetreat = isRetreat &&
     retreatReviewPermissions.every(permission => profile.permissions.includes(permission));
-  const isLocalQuestion = (text: string) => isEventVenueRouteQuestion(text) || classifyContinuation(text) === "cancel" || isPreparationChat(text) || isPreparationStatusChat(text) || isRetreat && isVenueHistoryChat(text);
+  const isLocalQuestion = (text: string, reference?: ChatMessageReference, beforeId?: string) => {
+    if (isEventVenueRouteQuestion(text) || classifyContinuation(text) === "cancel" || isPreparationChat(text) || isPreparationStatusChat(text) || isRetreat && isVenueHistoryChat(text)) return true;
+    if (!active || !venueRouteArrivalMatch(text)) return false;
+    const index = beforeId ? active.messages.findIndex(item => item.id === beforeId) : -1;
+    return Boolean(venueTravelAnchor(index < 0 ? active.messages : active.messages.slice(0, index), reference));
+  };
   const consentApproved = externalAI?.account === accountId ? externalAI.approved : undefined;
   const scope = useMemo<ConversationScope | null>(() => canChat && active ? { accountId, roomId: room.id, conversationId: active.id } : null, [canChat, accountId, room.id, active?.id]);
   const identity = scope ? scopeId(scope) : "";
@@ -190,7 +195,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     try { setHistory(store.setDraft(active.id, draft)); setUnsavedDraft(false); setError(""); }
     catch (cause) { setHistory({ ...history, conversations: history.conversations.map((item) => item.id === active.id ? { ...item, draft } : item) }); setUnsavedDraft(true); setError(message(cause)); }
   };
-  const requestReply = async (conversationId: string, userMessageId: string, userMessageText: string) => {
+  const requestReply = async (conversationId: string, userMessageId: string, userMessageText: string, reference?: ChatMessageReference) => {
     const controller = new AbortController();
     const stillCurrent = () => !controller.signal.aborted && getBackendProfile()?.accountId === accountId;
     chatRequest.current = controller;
@@ -204,7 +209,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
       });
       if (stillCurrent()) await refreshBackendData(room.id, null);
     } catch (cause) {
-      if (stillCurrent() && cause instanceof BackendError && cause.status === 423 && !isLocalQuestion(userMessageText)) {
+      if (stillCurrent() && cause instanceof BackendError && cause.status === 423 && !isLocalQuestion(userMessageText, reference, userMessageId)) {
         setExternalAI({ account: accountId, approved: false });
         setPrivacyNotice({ identity, reason: "consent" });
         return;
@@ -227,22 +232,22 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
       if (last?.sender === "user") userMessageId = last.id;
       return next;
     });
-    if (!failure && server && userMessageId && !localOnly) void requestReply(active.id, userMessageId, text.trim());
+    if (!failure && server && userMessageId && !localOnly) void requestReply(active.id, userMessageId, text.trim(), reference);
   };
   const unanswered = active?.messages.at(-1);
   const retry = (messageId: string, text: string) => {
     if (!active || !store || chatRequest.current || (unsavedDraft && mutate(() => store.load()))) return;
-    void requestReply(active.id, messageId, text);
+    void requestReply(active.id, messageId, text, unanswered?.reference);
   };
-  const blockedBy = (text: string) => isLocalQuestion(text) ? null : hasObviousPrivateData(text) ? "private" : consentApproved === false ? "consent" : null;
+  const blockedBy = (text: string, reference?: ChatMessageReference, beforeId?: string) => isLocalQuestion(text, reference, beforeId) ? null : hasObviousPrivateData(text) ? "private" : consentApproved === false ? "consent" : null;
   const submitChat = (text: string, reference?: ChatMessageReference) => {
     if (server && !identity) return;
-    const reason = server ? blockedBy(text) : null;
+    const reason = server ? blockedBy(text, reference) : null;
     if (reason) setPrivacyNotice({ identity, reason, save: reference?.kind === "edit" ? undefined : { text, reference } });
     else { setPrivacyNotice(null); sendChat(text, false, reference); }
   };
   const retryReply = server && active && store && unanswered?.sender === "user" && !unanswered.actions?.includes(internalChatAction) ? () => {
-    const reason = blockedBy(unanswered.text);
+    const reason = blockedBy(unanswered.text, unanswered.reference, unanswered.id);
     if (reason) setPrivacyNotice({ identity, reason });
     else { setPrivacyNotice(null); retry(unanswered.id, unanswered.text); }
   } : undefined;

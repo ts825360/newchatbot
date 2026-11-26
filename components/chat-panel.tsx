@@ -244,7 +244,10 @@ function MessageBody({ message, review, saveNearbyPlace, busy }: { message: Chat
     const route = message.sender === "assistant" ? message.venueRoute : undefined;
     const href = route ? venueDirectionsUrl(route) : null;
     return <><p className="workspace-message-text workspace-message-bubble">{message.text}</p>
-      {href && <div className="workspace-place-approval"><a className="workspace-start-button" href={href} target="_blank" rel="noopener noreferrer"><MapPin size={15} aria-hidden="true" />{route?.origin ? `${route.origin}에서 숙소까지 길찾기` : "Google Maps에서 숙소까지 길찾기"}</a></div>}{review}</>;
+      {href && <div className="workspace-place-approval">
+        <a className="workspace-start-button" href={href} target="_blank" rel="noopener noreferrer"><MapPin size={15} aria-hidden="true" />{route?.origin ? `${route.origin}에서 숙소까지 길찾기` : "Google Maps에서 숙소까지 길찾기"}</a>
+        {route?.sources?.map((url, index, sources) => <a className="workspace-start-button" key={url} href={url} target="_blank" rel="noopener noreferrer">경로 참고 출처{sources.length > 1 ? ` ${index + 1}` : ""}</a>)}
+      </div>}{review}</>;
   }
   return <div className="workspace-plan">
     <div className="workspace-plan-heading"><span className="workspace-plan-icon"><CalendarDays size={18} aria-hidden="true" /></span><h3>{plan.title}</h3><span className="workspace-plan-state">검토용</span></div>
