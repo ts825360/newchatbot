@@ -5,8 +5,17 @@ import { isWorkCondition, type WorkConditions } from "./chat-work-state";
 export type DiningSource = { url: string; label: string };
 export type NearbyKind = "restaurant" | "attraction";
 export const nearbyRouteModes = ["walking", "driving", "transit"] as const;
-export const nearbyTraits = ["step-free", "children-menu", "private-room", "mild-food", "accessible-restroom"] as const;
-export type NearbyTrait = typeof nearbyTraits[number];
+export const nearbyTraitLabels = {
+  "step-free": "계단 없는 접근",
+  "children-menu": "어린이 메뉴",
+  "private-room": "독립된 식사 공간",
+  "mild-food": "매운 음식 제외",
+  "accessible-restroom": "접근 가능한 화장실",
+  parking: "공개 주차 가능",
+  "walkable-area": "주차 후 걸어서 둘러볼 수 있는 범위",
+} as const;
+export type NearbyTrait = keyof typeof nearbyTraitLabels;
+export const nearbyTraits = Object.keys(nearbyTraitLabels) as NearbyTrait[];
 export type NearbyRouteMode = typeof nearbyRouteModes[number];
 export type NearbyVisit = {
   date: string | null; basis: VisitBasis; visitTime: string | null; meal: string | null; assumedMeal: boolean;
