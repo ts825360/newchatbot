@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { AdvisorPresentation } from "../chat-advisor";
 import { normalizeCalendarStatus } from "../calendar-status";
-import { readConversationPlaces } from "../conversation-places";
+import { readConversationPlaces, verifiedPublicPlace } from "../conversation-places";
 import type { ConversationScope, PrivateToolKind } from "../conversation-scope";
 import { initialLodgingPlan, rosterFingerprint, summarizeLodging } from "../lodging-plan";
 import { validDate } from "../room-timing";
@@ -48,7 +48,7 @@ export function loadPreparationStatus(db: DatabaseSync, actor: Actor, scope: Con
     : timetable.status === "unreadable" ? `타임테이블 ${unreadable}` : "";
   const schedule = [date ? `행사 기간 ${date}${end ? ` ~ ${end}` : ""}` : "행사 기간 미정",
     calendar?.status === "unreadable" ? `공동 일정 ${unreadable}` : sharedCount ? `공동 일정 확정 ${sharedCount}건` : "",
-    timelineDetail, place ? `장소 ${place.slice(0, 64)}` : places.status === "unreadable" ? `장소 ${unreadable}` : "장소 미등록"];
+    timelineDetail, place ? `장소 ${verifiedPublicPlace(place)?.name ?? "등록됨"}` : places.status === "unreadable" ? `장소 ${unreadable}` : "장소 미등록"];
 
   const canView = actor.permissions.includes("viewChecklist");
   const transport = canView ? read(onWorkspace("transport"), parseTransportSnapshot) : null;

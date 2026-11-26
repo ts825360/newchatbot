@@ -1,24 +1,25 @@
 import { validDate } from "./room-timing";
+import { resolveTemporalValues } from "./chat-continuity";
 import type { CalendarEvent } from "./types";
 
 type DateIssue = "missing" | "invalid" | "ambiguous" | "multiple" | null;
 
 export function extractChatCalendarFields(text: string): { date: string; time: string; dateIssue: DateIssue } {
   const pattern = /(?<![\d/-])(\d{4})-(\d{2})-(\d{2})(?![\d-])|(?<!\d)(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일(?!\d)/g;
-  const dates = [...text.matchAll(pattern)].map(match => {
+  const mentions = [...text.matchAll(pattern)].map(match => {
     const year = match[1] ?? match[4];
     const month = match[2] ?? match[5];
     const day = match[3] ?? match[6];
-    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+    return { value: `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`, start: match.index, end: match.index + match[0].length };
   });
-  const unique = [...new Set(dates)];
+  const unique = [...new Set(mentions.map(item => item.value))];
   const remainder = text.replace(pattern, " ");
   // Never resolve a partial or relative alternative against the room date or today's year.
   const ambiguous = /\d{4}[-/.]\d+[-/.]\d+|\d{1,2}\s*월\s*\d{1,2}\s*일|\d{1,2}[/.]\d{1,2}|\d{1,2}\s*일|오늘|내일|모레|어제|올해|내년|작년|다음\s*(?:주|달|월|해)|이번\s*(?:주|달|월)|다음\s*날/.test(remainder);
   const dateIssue: DateIssue = unique.length > 1 ? "multiple"
     : !unique.length ? "missing"
     : !validDate(unique[0]) || unique[0].startsWith("0000-") ? "invalid"
-    : ambiguous ? "ambiguous" : null;
+    : ambiguous || !resolveTemporalValues(text, mentions).value ? "ambiguous" : null;
   if (dateIssue) return { date: "", time: "", dateIssue };
   return { date: unique[0], time: explicitTime(remainder), dateIssue: null };
 }
@@ -26,18 +27,18 @@ export function extractChatCalendarFields(text: string): { date: string; time: s
 function explicitTime(text: string): string {
   if (/시\s*반|\b(?:UTC|GMT|KST|PST|EST)\b|[+-]\d{2}:\d{2}/i.test(text)) return "";
   const pattern = /(?<![\d:])(오전|오후)\s*(\d{1,2})(?::(\d{2})|시(?:\s*(\d{1,2})분)?)(?![\d:])|(?<![\d:])(\d{2}):(\d{2})(?![\d:])/g;
-  const times: string[] = [];
+  const times: { value: string; start: number; end: number }[] = [];
   let invalid = false;
   for (const match of text.matchAll(pattern)) {
     let hour = Number(match[2] ?? match[5]);
     const minute = Number(match[3] ?? match[4] ?? match[6] ?? 0);
     if (minute > 59 || (match[1] ? hour < 1 || hour > 12 : hour > 23)) { invalid = true; continue; }
     if (match[1]) hour = hour % 12 + (match[1] === "오후" ? 12 : 0);
-    times.push(`${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`);
+    times.push({ value: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`, start: match.index, end: match.index + match[0].length });
   }
-  const unique = [...new Set(times)];
+  const unique = [...new Set(times.map(item => item.value))];
   const ambiguous = /\d+\s*시|\d+:\d+/.test(text.replace(pattern, " "));
-  return !invalid && !ambiguous && unique.length === 1 ? unique[0] : "";
+  return !invalid && !ambiguous && unique.length === 1 ? resolveTemporalValues(text, times).value ?? "" : "";
 }
 
 export function chatCalendarSourceId(accountId: string, conversationId: string, messageId: string): string {

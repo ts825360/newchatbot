@@ -9,6 +9,7 @@ const verifiedPlace = {
   notes: "숙박 리조트 · 마리스 식당 · 대표전화 041-931-5500",
   source: "https://m2.hanwharesort.co.kr/resort/resort_place/view.do?locCd=0901",
 };
+export const verifiedPublicAddresses: readonly string[] = [verifiedPlace.address];
 const validPlace = (place: unknown): place is string =>
   typeof place === "string" && place.length <= 180 && usableLocation(place) && !/[\x00-\x1f\x7f]/.test(place);
 
