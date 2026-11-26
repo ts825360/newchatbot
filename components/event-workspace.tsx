@@ -4,7 +4,7 @@ import { ArrowLeft, CalendarClock, CalendarDays, LogOut, Moon, PanelLeftClose, P
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { hasObviousPrivateData, internalChatAction, openAIChatConsentVersion, openAIPrivacyWarning } from "@/lib/assistant-privacy";
 import { createConversationStore, type ConversationHistory } from "@/lib/conversation-store";
-import type { ChatMessage, EventRoom, UserProfile } from "@/lib/types";
+import type { ChatMessage, ChatMessageReference, EventRoom, UserProfile } from "@/lib/types";
 import { ChatPanel } from "./chat-panel";
 import { ConversationSidebar } from "./conversation-sidebar";
 import { DocumentsPanel } from "./documents-panel";
@@ -34,7 +34,7 @@ import { WorkspaceToolNavigation, workspaceTools, workspaceToolTrigger, type Wor
 const isTransportTool = (tool: Tool) => tool === "transport" || tool === "lodging";
 const narrowWorkspace = 760;
 const overviewDesktop = 1100;
-type ChatConfirmation = { identity: string; text: string } & ({ kind: "send" } | { kind: "retry"; messageId: string });
+type ChatConfirmation = { identity: string; text: string } & ({ kind: "send"; reference?: ChatMessageReference } | { kind: "retry"; messageId: string });
 const scheduleViews = [{ id: "calendar", label: "공동 캘린더", icon: CalendarDays }, { id: "timetable", label: "타임테이블", icon: CalendarClock }] as const;
 
 export function EventWorkspace({ room, profile, seedMessages, notice, noticeError, darkMode, onToggleTheme, onSignOut, onBackToRooms, onOpenSettings, onAddExtractedEvent, onAddExtractedChecklist, onAddChatEvent, canAddChatEvent, onAddChatChecklist, onScopeChange, renderTools, renderProposals, overview }: {
@@ -222,11 +222,11 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
       if (!controller.signal.aborted) setReplyStartedAt(null);
     }
   };
-  const sendChat = (text: string, localOnly = false, approve = false) => {
+  const sendChat = (text: string, localOnly = false, approve = false, reference?: ChatMessageReference) => {
     if (!active || !store || chatRequest.current) return;
     let userMessageId: string | undefined;
     const failure = mutate(() => {
-      const next = store.send(active.id, text, { localOnly });
+      const next = store.send(active.id, text, { localOnly, reference });
       const last = next.conversations.find(({ id }) => id === active.id)?.messages.at(-1);
       if (last?.sender === "user") userMessageId = last.id;
       return next;
@@ -239,9 +239,9 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     void requestReply(active.id, messageId, text, approve);
   };
   const needsConfirmation = (text: string) => !isLocalQuestion(text) && (!consentApproved || hasObviousPrivateData(text));
-  const submitChat = (text: string) => {
-    if (server && identity && needsConfirmation(text)) setConfirmation({ identity, kind: "send", text });
-    else if (!server || identity) sendChat(text);
+  const submitChat = (text: string, reference?: ChatMessageReference) => {
+    if (server && identity && needsConfirmation(text)) setConfirmation({ identity, kind: "send", text, reference });
+    else if (!server || identity) sendChat(text, false, false, reference);
   };
   const retryReply = server && active && store && unanswered?.sender === "user" && !unanswered.actions?.includes(internalChatAction) ? () => {
     if (needsConfirmation(unanswered.text)) setConfirmation({ identity, kind: "retry", messageId: unanswered.id, text: unanswered.text });
@@ -252,7 +252,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     if (!server || !identity || confirmation?.identity !== identity || !active || chatRequest.current ||
         !confirmation.text.trim() || (!localOnly && privateText)) return;
     setConfirmation(null);
-    if (confirmation.kind === "send") sendChat(confirmation.text, localOnly, !localOnly && !consentApproved);
+    if (confirmation.kind === "send") sendChat(confirmation.text, localOnly, !localOnly && !consentApproved, confirmation.reference);
     else if (!localOnly && unanswered?.id === confirmation.messageId && unanswered.text === confirmation.text && !unanswered.actions?.includes(internalChatAction)) retry(confirmation.messageId, confirmation.text, !consentApproved);
   };
   const revokeChatConsent = async () => {
@@ -436,7 +436,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     {confirmation?.identity === identity && <RoomDialog className="workspace-theme" title="OpenAI에 메시지 보내기" onClose={() => setConfirmation(null)}>
       <div className="room-dialog-body">
         <p>{consentApproved ? "이 메시지는 전송 전에 확인이 필요합니다." : "동의하면 앞으로 일반 질문을 보낼 때마다 확인창을 띄우지 않습니다. 전송 동의는 언제든 철회할 수 있습니다."}</p>
-        <p>이번 메시지와 이 대화에서 이전에 OpenAI로 보낸 내 메시지 최대 3개를 사용합니다. 내부에만 저장한 메시지, 다른 대화, 저장된 행사 자료, 첨부자료, 개인 지침은 보내지 않습니다.</p>
+        <p>이번 메시지와 이 대화에서 이전에 OpenAI로 보낸 내 메시지 최대 3개를 사용합니다. 답장으로 지정한 외부 대화의 일부도 포함될 수 있습니다. 내부 기록, 다른 대화, 저장된 행사 자료, 첨부자료, 개인 지침은 보내지 않습니다.</p>
         <label className="grid gap-2 text-sm">외부로 보낼 메시지
           <textarea className="w-full rounded-md border border-border bg-background p-3" rows={5} maxLength={8000}
             value={confirmation.text} readOnly={confirmation.kind === "retry"} onChange={(event) => setConfirmation({ ...confirmation, text: event.target.value })} />
@@ -445,7 +445,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
       </div>
       <footer className="room-dialog-footer flex-wrap">
         <button type="button" className="lobby-secondary" autoFocus onClick={() => setConfirmation(null)}>취소</button>
-        {confirmation.kind === "send" && <button type="button" className="lobby-secondary" disabled={!confirmation.text.trim()} onClick={() => confirmChat(true)}>내부에만 저장</button>}
+        {confirmation.kind === "send" && confirmation.reference?.kind !== "edit" && <button type="button" className="lobby-secondary" disabled={!confirmation.text.trim()} onClick={() => confirmChat(true)}>내부에만 저장</button>}
         <button type="button" className="lobby-primary" disabled={!confirmation.text.trim() || privateText} onClick={() => confirmChat()}>
           {isLocalQuestion(confirmation.text.trim()) ? "내부에서 확인" : consentApproved ? "보내기" : "동의하고 보내기"}
         </button>

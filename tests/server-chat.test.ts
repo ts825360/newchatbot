@@ -11,6 +11,7 @@ import { createDatabase } from "@/lib/server/database";
 import { writeBatch } from "@/lib/server/records";
 import { createTransportDraft } from "@/lib/transport";
 import { initialLodgingPlan, rosterFingerprint } from "@/lib/lodging-plan";
+import type { ChatMessageReference } from "@/lib/types";
 
 const fetchProvider = vi.fn<typeof fetch>();
 const testKey = "SYNTHETIC_TEST_KEY";
@@ -46,9 +47,9 @@ const getHistory = () => JSON.parse(String(getRow()!.data_json)) as Conversation
 const write = (history: ConversationHistory) => writeBatch(requireUser(request(), db), [
   { key, version: String(getRow()?.revision ?? 0), value: JSON.stringify(history) }
 ], undefined, db);
-const append = (id: string, text: string) => {
+const append = (id: string, text: string, reference?: ChatMessageReference) => {
   const history = getHistory();
-  history.conversations[0].messages.push({ id, sender: "user", text, time: now });
+  history.conversations[0].messages.push({ id, sender: "user", text, time: now, ...(reference && { reference }) });
   write(history);
   return send({ ...good, userMessageId: id, userMessageText: text });
 };
@@ -149,9 +150,9 @@ it("continues a restaurant request using recent confirmed messages from this con
   expect(instructions).toContain("검색 결과");
 });
 
-it("requires renewed consent when the existing approval only covered the current message", async () => {
+it.each(["openai-account-chat-v2", "openai-account-chat-v3"])("requires renewed consent for explicit external quotes: %s", async previousConsent => {
   db.prepare("INSERT INTO records(key,owner_id,kind,data_json,updated_at) VALUES('chat-external-consent:alice','alice','chat-external-consent',?,?)")
-    .run(JSON.stringify("openai-account-chat-v2"), now);
+    .run(JSON.stringify(previousConsent), now);
   expect((await send(target)).status).toBe(423);
   expect(fetchProvider).not.toHaveBeenCalled();
 });
@@ -165,6 +166,32 @@ it("bounds recent context without truncating the active request", async () => {
   expect((await append("large-context", "가".repeat(2401))).status).toBe(200);
   expect((await append("latest", "Latest message")).status).toBe(200);
   expect(providerBody().input).toBe("Latest message");
+});
+
+it("uses only an explicitly selected eligible reply and never sends an internal quote", async () => {
+  fetchProvider.mockResolvedValueOnce(Response.json(reply("두 가지 식사 후보입니다.")));
+  expect((await send()).status).toBe(200);
+  const answer = getHistory().conversations[0].messages.at(-1)!;
+  expect((await append("quote", "첫 번째 후보를 설명해줘", { kind: "reply", messageId: answer.id })).status).toBe(200);
+  expect(providerBody().input.at(-2).content).toContain("두 가지 식사 후보입니다.");
+  expect((await append("private-ref", "그 내용에 이어서 이야기해줘", { kind: "reply", messageId: "previous" })).status).toBe(200);
+  expect(JSON.stringify(providerBody().input)).not.toContain("PRIVATE_PRE_SWITCH_QUESTION");
+});
+
+it("answers a correction as a new turn without reusing the superseded wording", async () => {
+  expect((await send()).status).toBe(200);
+  const before = getHistory().conversations[0].messages;
+  expect((await append("revision", "Corrected question", { kind: "edit", messageId: "question" })).status).toBe(200);
+  expect(providerBody().input).toBe("Corrected question");
+  const after = getHistory().conversations[0].messages;
+  expect(after.slice(0, before.length)).toEqual(before);
+  expect(after.at(-1)?.sender).toBe("assistant");
+});
+
+it("rejects writing a reference to a message in another thread", () => {
+  const history = getHistory();
+  history.conversations[0].messages.at(-1)!.reference = { kind: "reply", messageId: "neighbor" };
+  expect(() => write(history)).toThrow();
 });
 
 it.each([undefined, "openai-single-turn-v1", "ollama-local-v1", true, "gemini-text-v2"])("requires the exact consent version (%s)", async (consent) => {

@@ -45,24 +45,39 @@ export function handleChatConsent(request: Request, database = getDatabase()): R
 
 function replyIdFor(scope: ConversationScope, turn: ChatMessage, internal: boolean, retreatVenueReview: boolean) {
   const prefix = retreatVenueReview ? "venue-history-" : internal ? "prep-" : "openai-";
-  return prefix + createHash("sha256").update(JSON.stringify([scope.accountId, scope.roomId, scope.conversationId, turn.id, turn.text])).digest("hex");
+  const reference = turn.reference ? [turn.reference.kind, turn.reference.messageId] : [];
+  return prefix + createHash("sha256").update(JSON.stringify([scope.accountId, scope.roomId, scope.conversationId, turn.id, turn.text, ...reference])).digest("hex");
 }
 
-function chatInput(scope: ConversationScope, messages: readonly ChatMessage[], current: string): string | OpenAIChatTurn[] {
+function confirmedOpenAITurn(scope: ConversationScope, question?: ChatMessage, reply?: ChatMessage) {
+  return question?.sender === "user" && !question.actions?.includes(internalChatAction) && reply?.sender === "assistant"
+    && reply.id === replyIdFor(scope, question, false, false);
+}
+
+function chatInput(scope: ConversationScope, messages: readonly ChatMessage[], current: ChatMessage): string | OpenAIChatTurn[] {
   const context: OpenAIChatTurn[] = [];
+  const edited = new Map<string, string>();
+  for (const message of messages) if (message.reference?.kind === "edit") edited.set(message.reference.messageId, message.id);
   const start = Math.max(0, messages.length - 13);
   let remaining = 2400;
   for (let i = messages.length - 3; i >= start && context.length < 3; i--) {
     const question = messages[i], reply = messages[i + 1];
     // A matching server-owned reply proves this exact question previously reached OpenAI.
-    if (question.sender !== "user" || reply.sender !== "assistant" || reply.id !== replyIdFor(scope, question, false, false)
-      || question.actions?.includes(internalChatAction) || hasObviousPrivateData(question.text)) continue;
+    if (!confirmedOpenAITurn(scope, question, reply) || hasObviousPrivateData(question.text) || edited.has(question.id)
+      || question.reference?.kind === "edit" && edited.get(question.reference.messageId) !== question.id
+      || current.reference?.kind === "reply" && current.reference.messageId === question.id) continue;
     const size = question.text.length;
     if (size > remaining) break;
     remaining -= size;
     context.unshift({ role: "user", content: question.text });
   }
-  return context.length ? [...context, { role: "user", content: current }] : current;
+  if (current.reference?.kind === "reply") {
+    const index = messages.findIndex(message => message.id === current.reference?.messageId);
+    const quoted = messages[index];
+    const approved = quoted?.sender === "assistant" ? confirmedOpenAITurn(scope, messages[index - 1], quoted) : confirmedOpenAITurn(scope, quoted, messages[index + 1]);
+    context.push({ role: "user", content: JSON.stringify({ selectedReply: approved && quoted && !hasObviousPrivateData(quoted.text) ? quoted.text.slice(0, 600) : null }) });
+  }
+  return context.length ? [...context, { role: "user", content: current.text }] : current.text;
 }
 
 function findTurn(db: DatabaseSync, scope: ConversationScope, userMessageId: string, userMessageText: string, internal: boolean, retreatVenueReview: boolean) {
@@ -86,7 +101,7 @@ function findTurn(db: DatabaseSync, scope: ConversationScope, userMessageId: str
     if (!text(messages[index].text, 8000)) throw new ApiError(400, "메시지는 8,000자 이내로 입력해 주세요.");
     if (messages.length >= 1000) throw full();
   }
-  return { key, row, history, conversation, replyId, complete };
+  return { key, row, history, conversation, message: messages[index], replyId, complete };
 }
 
 export async function handleChat(request: Request, database?: DatabaseSync): Promise<Response> {
@@ -142,7 +157,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
       } else if (localReview) {
         reply = loadPreparationStatus(db, actor, scope);
       } else {
-        const raw = await generateOpenAIText(chatInput(scope, original.conversation.messages, data.userMessageText), request.signal,
+        const raw = await generateOpenAIText(chatInput(scope, original.conversation.messages, original.message), request.signal,
           [chatAdvisorPrompt, chatOutputInstruction, assistantStyleInstruction(preferences)].join("\n\n"), advisorReplyFormat);
         const answer = parseAdvisorReply(raw);
         if (!answer) throw new ApiError(502, "답변 형식을 확인하지 못했습니다. 다시 요청해 주세요.");
