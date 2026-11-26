@@ -19,6 +19,7 @@ import { appendConversationPlace } from "@/lib/conversation-places";
 import type { ServerSnapshot } from "@/lib/backend-contract";
 import { classifyContinuation } from "@/lib/chat-continuity";
 import { isEventVenueRouteQuestion, venueRouteArrivalMatch, venueTravelAnchor } from "@/lib/chat-venue-route";
+import { localWorkIntent } from "@/lib/chat-work-proposal";
 import { GoogleCalendarConnection } from "./google-calendar-connection";
 import { BlankGoogleFormLink } from "./google-forms-sharing";
 import { useToolsResize } from "./workspace-tools-resize";
@@ -40,7 +41,7 @@ const overviewDesktop = 1100;
 type ChatPrivacyNotice = { identity: string; reason: "consent" | "private"; save?: { text: string; reference?: ChatMessageReference } };
 const scheduleViews = [{ id: "calendar", label: "공동 캘린더", icon: CalendarDays }, { id: "timetable", label: "타임테이블", icon: CalendarClock }] as const;
 
-export function EventWorkspace({ room, profile, seedMessages, notice, noticeError, darkMode, onToggleTheme, onSignOut, onBackToRooms, onOpenSettings, onOpenPrivacySettings, onAddExtractedEvent, onAddExtractedChecklist, onAddChatEvent, canAddChatEvent, onAddChatChecklist, onScopeChange, renderTools, renderProposals, overview }: {
+export function EventWorkspace({ room, profile, seedMessages, notice, noticeError, darkMode, onToggleTheme, onSignOut, onBackToRooms, onOpenSettings, onOpenPrivacySettings, onAddExtractedEvent, onAddExtractedChecklist, onAddChatEvent, canAddChatEvent, onAddChatChecklist, onScopeChange, renderTools, renderProposals, renderWorkProposal, overview }: {
   room: EventRoom; profile: UserProfile; seedMessages: ChatMessage[]; notice: string; noticeError?: boolean;
   darkMode: boolean; onToggleTheme: () => void; onSignOut: () => void; onBackToRooms: () => void;
   onOpenSettings?: () => void;
@@ -52,6 +53,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   onScopeChange?: (scope: ConversationScope | null) => void;
   renderTools: (mode: "calendar" | "prepare", scope?: ConversationScope, onOpenTimetable?: () => void) => ReactNode;
   renderProposals?: (scope: ConversationScope, messages: readonly ChatMessage[]) => ReactNode;
+  renderWorkProposal?: (scope: ConversationScope, message: ChatMessage) => ReactNode;
   overview?: () => WorkspaceOverviewData;
 }) {
   const [history, setHistory] = useState<ConversationHistory | null>(null);
@@ -113,7 +115,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   const canReviewRetreat = isRetreat &&
     retreatReviewPermissions.every(permission => profile.permissions.includes(permission));
   const isLocalQuestion = (text: string, reference?: ChatMessageReference, beforeId?: string) => {
-    if (isEventVenueRouteQuestion(text) || classifyContinuation(text) === "cancel" || isPreparationChat(text) || isPreparationStatusChat(text) || isRetreat && isVenueHistoryChat(text)) return true;
+    if (localWorkIntent(text) || isEventVenueRouteQuestion(text) || classifyContinuation(text) === "cancel" || isPreparationChat(text) || isPreparationStatusChat(text) || isRetreat && isVenueHistoryChat(text)) return true;
     if (!active || !venueRouteArrivalMatch(text)) return false;
     const index = beforeId ? active.messages.findIndex(item => item.id === beforeId) : -1;
     return Boolean(venueTravelAnchor(index < 0 ? active.messages : active.messages.slice(0, index), reference));
@@ -363,6 +365,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     return "added" as const;
   };
   const chat = <>{(error || notice) && <div className={`workspace-notice ${error || noticeError ? "is-error" : ""}`} role={error || noticeError ? "alert" : "status"}>{error || notice}</div>}{canChat ? <ChatPanel conversation={active} visible={chatVisible} shortcuts={shortcuts} onDraftChange={changeDraft} onSendMessage={submitChat} replyStartedAt={replyStartedAt} onRetryReply={retryReply} onNewConversation={() => create()} onOpenDocuments={() => openTool("documents")} onReviewProposals={renderProposals ? replyId => openTool("proposals", replyId) : undefined}
+    renderWorkProposal={readyScope && renderWorkProposal ? message => renderWorkProposal(readyScope, message) : undefined}
         externalAIApproved={consentApproved}
         onSaveNearbyPlace={server && readyScope && canChat ? name => saveNearbyPlace(readyScope, name) : undefined}
         privacyNotice={activePrivacyNotice && <div className="workspace-notice workspace-ai-notice" role="alert">

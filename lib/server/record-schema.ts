@@ -10,6 +10,7 @@ import { isTransportSurvey } from "../transport-survey";
 import { isLodgingPlan } from "../lodging-plan";
 import { isTimetable } from "../timetable";
 import { isAdvisorPresentation } from "../chat-advisor";
+import { isChatWorkProposal } from "../chat-work-proposal";
 import { isDiningRecommendations, isNearbyTask } from "../chat-dining";
 import { isVenueRoute } from "../chat-venue-route";
 import { ApiError } from "./http";
@@ -33,6 +34,7 @@ function validConversationMessages(value: unknown) {
     if (!["user", "assistant"].includes(m.sender) || !text(m.text, 16000) || !text(m.time, 80)) return false;
     if (m.actions !== undefined && (!Array.isArray(m.actions) || m.actions.length > 20 || !m.actions.every((a: unknown) => text(a, 100)))) return false;
     if (m.advisor !== undefined && (m.sender !== "assistant" || !isAdvisorPresentation(m.advisor))) return false;
+    if (m.workProposal !== undefined && (m.sender !== "assistant" || !isChatWorkProposal(m.workProposal))) return false;
     if (m.dining !== undefined && (m.sender !== "assistant" || !isDiningRecommendations(m.dining))) return false;
     if (m.nearbyTask !== undefined && (m.sender !== "assistant" || !isNearbyTask(m.nearbyTask))) return false;
     if (m.venueRoute !== undefined && (m.sender !== "assistant" || !isVenueRoute(m.venueRoute))) return false;

@@ -66,3 +66,35 @@ it("requires an exclusion reason, supports deferral and reopening, and retains f
   expect(within(vehicle).getByRole("alert").textContent).toContain("저장하지 못했");
   expect(within(vehicle).getByRole("button", { name: "반영" })).toBeDefined();
 });
+
+it("shows the calendar draft as a compact approval card with its date, editable title and immediate approval", async () => {
+  backend.connected = true;
+  const scope = { accountId: "test", roomId: room.id, conversationId: "current" };
+  const apply = vi.fn(() => true);
+  render(<ProposalPanel room={room} scope={scope} onApply={apply} messages={[{ id: `prep-${"a".repeat(64)}`, sender: "assistant", text: "일정 초안", time: "",
+    workProposal: { kind: "calendar", title: "가상 임원회의", date: "2026-11-28", time: "", inferredYear: true } }]} />);
+  const card = await screen.findByRole("region", { name: "공동 캘린더 추가 제안" });
+  expect(within(card).getByText("토요일")).toBeDefined();
+  expect(within(card).getByText(/시간 미정/)).toBeDefined();
+  expect(apply).not.toHaveBeenCalled();
+  fireEvent.click(within(card).getByRole("button", { name: "수정" }));
+  fireEvent.change(within(card).getByLabelText("일정 제목"), { target: { value: "검토 완료된 회의" } });
+  fireEvent.click(within(card).getByRole("button", { name: "승인 및 등록" }));
+  expect(apply).toHaveBeenCalledWith(expect.objectContaining({ title: "검토 완료된 회의", date: "2026-11-28" }));
+  expect(await within(card).findByText("반영됨")).toBeDefined();
+});
+
+it("separates confirmed checklist facts from selectable tasks and approves only the selected entries", async () => {
+  backend.connected = true;
+  const scope = { accountId: "test", roomId: room.id, conversationId: "current" };
+  const apply = vi.fn(() => true);
+  render(<ProposalPanel room={room} scope={scope} onApply={apply} messages={[{ id: `prep-${"b".repeat(64)}`, sender: "assistant", text: "준비 점검", time: "",
+    workProposal: { kind: "checklist", confirmed: ["대표 숙소 등록"], items: ["최종 참가 인원 확인", "타임테이블 검토"] } }]} />);
+  const card = await screen.findByRole("region", { name: "준비 체크리스트 추가 제안" });
+  expect(within(card).getByText("대표 숙소 등록")).toBeDefined();
+  expect(within(card).queryByRole("checkbox", { name: "대표 숙소 등록" })).toBeNull();
+  fireEvent.click(within(card).getByRole("checkbox", { name: "최종 참가 인원 확인" }));
+  fireEvent.click(within(card).getByRole("button", { name: "승인 및 반영" }));
+  expect(apply).toHaveBeenCalledWith(expect.objectContaining({ checklistItems: [expect.objectContaining({ title: "타임테이블 검토" })] }));
+  expect(await within(card).findByText("반영됨")).toBeDefined();
+});

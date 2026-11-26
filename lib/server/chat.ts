@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isEventVenueRouteQuestion, venueTravelAnchor } from "../chat-venue-route";
+import { localWorkIntent, requestsChecklistProposal } from "../chat-work-proposal";
 import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
 import { eventPublicVenueUsedAction, hasObviousPrivateData, internalChatAction, openAIChatConsentVersion, openAIReplyContextConsentVersion, openAIPrivacyWarning, requestsPersonalDisclosure } from "../assistant-privacy";
@@ -9,6 +10,7 @@ import { extractChatCalendarFields } from "../chat-calendar";
 import { isVenueHistoryChat, venueHistoryReplyAction } from "../retreat-venue-history";
 import { loadRetreatReview, summarizeRetreatReview } from "./retreat-preparation";
 import { loadPreparationStatus } from "./preparation-status";
+import { loadChatWork } from "./chat-work-proposals";
 import { isRetreatRoom, loadRetreatVenueReview } from "./retreat-venue-history";
 import type { ConversationHistory } from "../conversation-store";
 import type { ConversationScope } from "../conversation-scope";
@@ -192,9 +194,12 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
     const retreatVenueReview = isVenueHistoryChat(data.userMessageText) && isRetreatRoom(db, data.roomId);
     const detailedPreparation = isPreparationChat(data.userMessageText) && isRetreatRoom(db, data.roomId);
     const action = classifyContinuation(data.userMessageText);
-    const venueRouteQuestion = !nearbySearchKind(data.userMessageText) && isEventVenueRouteQuestion(data.userMessageText);
-    const localReview = venueRouteQuestion || action === "cancel" || isPreparationChat(data.userMessageText) || isPreparationStatusChat(data.userMessageText) || retreatVenueReview;
-    if (requestsPersonalDisclosure(data.userMessageText) || (!localReview || venueRouteQuestion) && hasObviousPrivateData(data.userMessageText)) throw new ApiError(422, openAIPrivacyWarning);
+    const nearbyRequest = nearbySearchKind(data.userMessageText);
+    const venueRouteQuestion = !nearbyRequest && isEventVenueRouteQuestion(data.userMessageText);
+    const possibleWork = localWorkIntent(data.userMessageText);
+    const workIntent = possibleWork === "headcount" && nearbyRequest ? null : possibleWork;
+    const localReview = workIntent !== null || venueRouteQuestion || action === "cancel" || isPreparationChat(data.userMessageText) || isPreparationStatusChat(data.userMessageText) || retreatVenueReview;
+    if (requestsPersonalDisclosure(data.userMessageText) || (!localReview || venueRouteQuestion || workIntent === "calendar") && hasObviousPrivateData(data.userMessageText)) throw new ApiError(422, openAIPrivacyWarning);
     const scope = { accountId: actor.id, roomId: data.roomId, conversationId: data.conversationId };
     const currentTurn = () => {
       if (request.signal.aborted) throw new ApiError(408, "답변 요청이 취소되었습니다.");
@@ -233,9 +238,11 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         if (!hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
         if (interpretation?.intent === "unrelated") nearbyKind = null;
       }
-      let reply: Pick<ChatMessage, "text" | "advisor" | "actions" | "dining" | "nearbyTask" | "venueRoute">;
+      let reply: Pick<ChatMessage, "text" | "advisor" | "actions" | "dining" | "nearbyTask" | "venueRoute" | "workProposal">;
       if (action === "cancel") {
         reply = { text: "이 대화에서 이어가던 요청을 중단했어요. 행사방에 저장된 기록은 변경하지 않았습니다.", actions: ["context-cancelled"] };
+      } else if (workIntent) {
+        reply = loadChatWork(db, actor, scope, workIntent, data.userMessageText);
       } else if (venueRouteQuestion || original.travelContinuation) {
         const venue = readPublicEventVenue(db, scope);
         let usedSearch = false;
@@ -255,7 +262,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
       } else if (detailedPreparation) {
         reply = { text: formatAssistantReply(summarizeRetreatReview(loadRetreatReview(db, actor, scope, "available", new Date(), false), false), preferences.emoji) };
       } else if (localReview) {
-        reply = loadPreparationStatus(db, actor, scope);
+        reply = loadPreparationStatus(db, actor, scope, requestsChecklistProposal(data.userMessageText));
       } else if (nearbyKind) {
         const previous = previousNearby?.nearbyTask?.kind === nearbyKind ? previousNearby.nearbyTask : undefined;
         const place = nearbyOrigin(data.userMessageText, previous);
