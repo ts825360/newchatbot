@@ -58,7 +58,7 @@ export function ConversationLocation({ scope }: { scope: ConversationScope }) {
       <Field label="장소 추가"><input className={inputClass} value={input} maxLength={180} placeholder="장소명 또는 주소" disabled={busy || places.length >= maxConversationPlaces} onChange={(event) => { setInput(event.target.value); setSaved(false); }} /></Field>
       <Button type="submit" variant="outline" disabled={busy || !usableLocation(input) || places.includes(input.trim()) || places.length >= maxConversationPlaces}><Plus size={15} />추가</Button>
       {error && <p role="alert" className="documents-error">{error}</p>}
-      {saved && <p role="status" className="text-xs text-muted-foreground">이 대화에 저장됨</p>}
+      {saved && <p role="status" className="text-xs text-muted-foreground">장소가 저장되었습니다.</p>}
       {places.length >= maxConversationPlaces && <p className="text-xs text-muted-foreground">장소는 최대 {maxConversationPlaces}개까지 저장할 수 있습니다.</p>}
     </form>
     {places.length > 0 && <ul className="location-saved-list" aria-label="저장한 장소">{places.map((place, index) => <li key={place}>

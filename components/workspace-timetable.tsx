@@ -106,11 +106,11 @@ export function WorkspaceTimetable({ scope, canEdit }: { scope: ConversationScop
   const edit = (entry: TimetableEntry) => { if (editable) { setError(""); setEditing(entry); } };
   const early = plan.entries.filter(entry => entry.start < timetableMorning).sort((a, b) => a.day - b.day || a.start - b.start);
 
-  return <section className="timetable" aria-label="이 대화의 타임테이블">
+  return <section className="timetable" aria-label="이 행사방의 내 타임테이블">
     <header className="timetable-heading">
       <div className="timetable-identity">
         <CalendarClock aria-hidden="true" size={22} />
-        <div><h3>타임테이블</h3><p>이 대화에만 저장 · 일정 {plan.entries.length}개</p></div>
+        <div><h3>타임테이블</h3><p>일정 {plan.entries.length}개</p></div>
       </div>
       <div className="timetable-actions">
         <label className="timetable-control">기간

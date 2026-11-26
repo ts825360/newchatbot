@@ -9,7 +9,7 @@ import { readTimetable } from "../timetable";
 import { parseTransportSnapshot } from "../transport-snapshot";
 import type { CalendarEvent, ChatMessage, ChecklistItem } from "../types";
 import type { Actor } from "./auth";
-import { canonicalPrivateTool, requireOwnedConversation } from "./conversation-scope";
+import { canonicalWorkspaceTool, inheritWorkspaceRecords, requireOwnedConversation } from "./conversation-scope";
 import { ApiError } from "./http";
 import { object, validateRecord } from "./record-schema";
 
@@ -30,16 +30,17 @@ const shortLine = (text: string) => text.replace(/[\x00-\x1f\x7f\u2028\u2029]+/g
 export function loadPreparationStatus(db: DatabaseSync, actor: Actor, scope: ConversationScope): Pick<ChatMessage, "text" | "advisor"> {
   if (actor.id !== scope.accountId) throw new ApiError(404, "이 대화를 확인할 수 없습니다.");
   requireOwnedConversation(db, scope);
+  inheritWorkspaceRecords(db, scope);
   const source = db.prepare("SELECT data_json FROM records WHERE key=? AND owner_id IS ? AND room_id=? AND kind=?");
   const onRoom = (kind: "events") => source.get(`preparation:${scope.roomId}:events`, null, scope.roomId, kind) as { data_json: unknown } | undefined;
-  const onConversation = (kind: PrivateToolKind) => source.get(canonicalPrivateTool(scope, kind), actor.id, scope.roomId, kind) as { data_json: unknown } | undefined;
+  const onWorkspace = (kind: PrivateToolKind) => source.get(canonicalWorkspaceTool(scope, kind), actor.id, scope.roomId, kind) as { data_json: unknown } | undefined;
   const data: unknown = JSON.parse(String(db.prepare("SELECT data_json FROM rooms WHERE id=?").get(scope.roomId)?.data_json ?? "null"));
   if (!object(data)) throw new ApiError(404, "행사방을 확인할 수 없습니다.");
 
   const date = typeof data.date === "string" && validDate(data.date) ? data.date : "";
   const end = typeof data.endDate === "string" && validDate(data.endDate) && data.endDate !== date ? data.endDate : "";
-  const places = read(onConversation("location"), raw => readConversationPlaces(JSON.parse(raw)));
-  const timetable = read(onConversation("timetable"), readTimetable);
+  const places = read(onWorkspace("location"), raw => readConversationPlaces(JSON.parse(raw)));
+  const timetable = read(onWorkspace("timetable"), readTimetable);
   const calendar = actor.permissions.includes("viewCalendar") ? read(onRoom("events"), raw => savedItems<CalendarEvent>("events", raw)) : null;
   const sharedCount = calendar?.status === "saved" ? calendar.value.filter(event => normalizeCalendarStatus(event.status) === "confirmed").length : 0;
   const place = places.status === "saved" ? places.value[0] : "";
@@ -50,7 +51,7 @@ export function loadPreparationStatus(db: DatabaseSync, actor: Actor, scope: Con
     timelineDetail, place ? `장소 ${place.slice(0, 64)}` : places.status === "unreadable" ? `장소 ${unreadable}` : "장소 미등록"];
 
   const canView = actor.permissions.includes("viewChecklist");
-  const transport = canView ? read(onConversation("transport"), parseTransportSnapshot) : null;
+  const transport = canView ? read(onWorkspace("transport"), parseTransportSnapshot) : null;
   const real = transport?.status === "saved" && !transport.value.demo ? transport.value : null;
   const people = real?.input.people ?? [];
   const rosterConfirmed = !!people.length && real?.rosterConfirmation === rosterFingerprint(people);
@@ -64,7 +65,7 @@ export function loadPreparationStatus(db: DatabaseSync, actor: Actor, scope: Con
   const lodgingDetails = lodging?.active.length
     ? `숙소 ${lodging.active.length}실 · 배정 ${lodging.assigned}/${people.length}명 · 호수 지정 ${lodging.numbered}/${lodging.active.length}실`
     : "숙소 배정 기록 없음";
-  const checklist = canView ? read(onConversation("checklist"), raw => savedItems<ChecklistItem>("checklist", raw)) : null;
+  const checklist = canView ? read(onWorkspace("checklist"), raw => savedItems<ChecklistItem>("checklist", raw)) : null;
   const items = checklist?.status === "saved" ? checklist.value : [];
   const done = items.filter(item => item.status === "done").length;
   const checklistDetail = !checklist ? "조회 권한 없음" : checklist.status === "unreadable" ? unreadable
@@ -80,5 +81,5 @@ export function loadPreparationStatus(db: DatabaseSync, actor: Actor, scope: Con
     { label: "차량·숙소", detail: transportNote || `${vehicle} / ${lodgingDetails}` },
     { label: "준비 체크리스트", detail: checklistDetail },
   ];
-  return { text: `이 행사방과 현재 대화의 저장 기록입니다. ${next}`, advisor: { kind: "plan", title: "저장된 준비 현황", rows, rationale: "", proposals: [] } };
+  return { text: `이 행사방의 공동 일정과 내 준비 기록입니다. ${next}`, advisor: { kind: "plan", title: "저장된 준비 현황", rows, rationale: "", proposals: [] } };
 }

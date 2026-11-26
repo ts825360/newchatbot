@@ -16,7 +16,7 @@ const write = (key: string, kind: string, owner: string | null, items: object[])
   "INSERT INTO records(key,room_id,owner_id,kind,data_json,updated_at) VALUES(?,'room',?,?,?,?) ON CONFLICT(key) DO UPDATE SET data_json=excluded.data_json,revision=revision+1",
 ).run(key, owner, kind, JSON.stringify({ version: 1, items }), date);
 const task = (id: string, title: string, status = "done") => ({ id, title, owner: "PRIVATE_OWNER", due: "", memo: "PRIVATE_MEMO", status });
-const checklist = (...items: object[]) => write("private-v1:alice:room:initial-room:checklist", "checklist", "alice", items);
+const checklist = (...items: object[]) => write("room-work-v1:alice:room:checklist", "checklist", "alice", items);
 const result = async (value = body) => (await handlePreparationProgress(request(value), db)).json();
 const saved = (conversationId = body.conversationId, accountId = "alice", credential = token) =>
   readPreparationProgress(new Request(`http://localhost/api/preparation-progress?roomId=room&conversationId=${conversationId}`, {
@@ -57,7 +57,7 @@ it("does not call the model for missing signoff or unresolved work", async () =>
 });
 
 it("does not report near-completion just because work items are checked when risks remain", async () => {
-  write("private-v1:alice:room:initial-room:risks", "risks", "alice", [{ id: "r", title: "격리된 위험", detail: "detail", action: "action", resolved: false }]);
+  write("room-work-v1:alice:room:risks", "risks", "alice", [{ id: "r", title: "격리된 위험", detail: "detail", action: "action", resolved: false }]);
   expect(await result()).toMatchObject({ state: "remaining", percent: null });
   expect(provider).not.toHaveBeenCalled();
 });
@@ -98,15 +98,15 @@ it("hides stale completion and restores a fresh partial score even without a pro
   expect(provider).toHaveBeenCalledTimes(1);
 });
 
-it("limits restored results to the active account and owned conversation", async () => {
+it("shares the current review across owned conversations only", async () => {
   db.prepare("INSERT INTO records(key,room_id,owner_id,kind,data_json,updated_at) VALUES('conversations:alice:room','room','alice','conversations',?,?)")
     .run(JSON.stringify({ conversations: [{ id: body.conversationId }, { id: "second" }] }), date);
   const bobToken = "y".repeat(43);
   db.prepare("INSERT INTO users(id,name,username,grade,role,permissions_json,salt,password_hash,created_at) SELECT 'bob','Bob','bob',grade,role,permissions_json,salt,password_hash,created_at FROM users WHERE id='alice'").run();
   db.prepare("INSERT INTO sessions(token_hash,user_id,session_version,expires_at,created_at) SELECT ?,'bob',session_version,expires_at,created_at FROM sessions WHERE user_id='alice'")
     .run(createHash("sha256").update(bobToken).digest("hex"));
-  await result();
-  expect(await (await saved("second")).json()).toEqual({ report: null, stale: false });
+  const report = await result();
+  expect(await (await saved("second")).json()).toEqual({ report, stale: false });
   expect(await (await saved(body.conversationId, "bob", bobToken)).json()).toEqual({ report: null, stale: false });
   expect((await saved("second", "bob", bobToken)).status).toBe(404);
   expect((await saved(body.conversationId, "alice", bobToken)).status).toBe(409);

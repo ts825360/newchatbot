@@ -91,7 +91,7 @@ it.each([false, true])("imports only after confirming the same roster snapshot (
   if (concurrent) sessionStorage.setItem(key, original.replace("101호", "102호"));
   fireEvent.click(add);
   if (concurrent) expect((await screen.findByRole("alert")).textContent).toContain("참가자 명단이 바뀌었습니다");
-  else expect(await screen.findByText("이 대화의 참가자 명단에 1명을 추가했습니다.")).toBeTruthy();
+  else expect(await screen.findByText("참가자 명단에 1명을 추가했습니다.")).toBeTruthy();
   expect(JSON.parse(sessionStorage.getItem(key)!).input.people.map((person: { name: string }) => person.name)).toEqual(concurrent ? ["가상 기존"] : ["가상 기존", "가상 신규"]);
   expect(JSON.parse(sessionStorage.getItem(key)!).input.people[0].roomAssignment).toBe(concurrent ? "102호" : "101호");
   expect(sessionStorage.getItem(otherKey)).toBe(original);

@@ -25,21 +25,24 @@ async function readReply(response: Response): Promise<unknown> {
 }
 
 export type OpenAIChatTurn = { role: "user"; content: string };
+type ReadTool = { definition: { type: "function"; name: string; strict: true; description: string; parameters: Record<string, unknown> }; run: () => string };
 
-export async function generateOpenAIText(input: string | OpenAIChatTurn[], signal: AbortSignal, instructions = "", format?: Record<string, unknown>): Promise<string> {
+export async function generateOpenAIText(input: string | OpenAIChatTurn[], signal: AbortSignal, instructions = "", format?: Record<string, unknown>, tool?: ReadTool): Promise<string> {
   const key = process.env.OPENAI_API_KEY?.trim();
   const model = process.env.OPENAI_MODEL?.trim() || "gpt-6-luna";
   if (process.env.AI_PROVIDER !== "openai" || !key || (model !== "gpt-6-luna" && model !== "gpt-6.2-sol")) throw unavailable();
   const timeout = AbortSignal.timeout(45_000);
-  try {
+  async function respond(context: string | readonly unknown[], continuation = false) {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST", redirect: "error", credentials: "omit", cache: "no-store",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       signal: AbortSignal.any([signal, timeout]),
       body: JSON.stringify({
-        model, ...(instructions && { instructions }), input, store: false,
+        model, ...(instructions && { instructions }), input: context, store: false,
         reasoning: { effort: model === "gpt-6-luna" ? "none" : "low" }, max_output_tokens: 1200,
         ...(format && { text: { format } }),
+        ...(tool && { tools: [tool.definition], tool_choice: continuation ? "none" : "auto", parallel_tool_calls: false,
+          ...(model === "gpt-6.2-sol" && { include: ["reasoning.encrypted_content"] }) }),
       }),
     });
     if (!response.ok) {
@@ -60,8 +63,23 @@ export async function generateOpenAIText(input: string | OpenAIChatTurn[], signa
       throw new ApiError(502, "OpenAI 답변이 길이 한도에 도달했습니다. 질문을 짧게 나눠 주세요.");
     }
     if (!object(reply) || reply.status !== "completed" || !Array.isArray(reply.output)) throw invalidReply();
+    return reply.output as unknown[];
+  }
+  try {
+    let items = await respond(input);
+    const calls = items.filter(item => object(item) && item.type === "function_call");
+    if (calls.length) {
+      const [call] = calls;
+      if (!tool || calls.length !== 1 || !object(call) || call.name !== tool.definition.name || typeof call.call_id !== "string"
+        || !/^[a-zA-Z0-9_-]{1,128}$/.test(call.call_id) || typeof call.arguments !== "string" || !/^\{\s*\}$/.test(call.arguments.trim()) || call.arguments.length > 128) throw invalidReply();
+      const reasoning = items.filter(item => object(item) && item.type === "reasoning" && typeof item.encrypted_content === "string");
+      const previous = typeof input === "string" ? [{ role: "user", content: input }] : input;
+      const output = tool.run();
+      items = await respond([...previous, ...reasoning, { type: "function_call", name: tool.definition.name, call_id: call.call_id, arguments: "{}" },
+        { type: "function_call_output", call_id: call.call_id, output }], true);
+    }
     const output: string[] = [];
-    for (const item of reply.output) {
+    for (const item of items) {
       if (object(item) && item.type === "reasoning") continue;
       if (!object(item) || item.type !== "message" || item.role !== "assistant" || !Array.isArray(item.content)) throw invalidReply();
       for (const part of item.content) {

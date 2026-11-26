@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { hasObviousPrivateData, internalChatAction, openAIChatConsentVersion, openAIPrivacyWarning } from "../assistant-privacy";
+import { eventPublicVenueUsedAction, hasObviousPrivateData, internalChatAction, openAIChatConsentVersion, openAIPrivacyWarning } from "../assistant-privacy";
 import { isPreparationChat, isPreparationStatusChat } from "../chat-tool-candidates";
 import { advisorReplyFormat, parseAdvisorReply } from "../chat-advisor";
 import { extractChatCalendarFields } from "../chat-calendar";
@@ -13,6 +13,7 @@ import type { ConversationScope } from "../conversation-scope";
 import type { ChatMessage } from "../types";
 import { requirePermission, requireUser } from "./auth";
 import { generateOpenAIText, type OpenAIChatTurn } from "./chat-openai";
+import { eventVenueTool, readPublicEventVenue } from "./chat-venue-tool";
 import { chatAdvisorPrompt, chatOutputInstruction } from "./chat-advisor-prompt";
 import { assistantStyleInstruction, formatAssistantReply, loadAssistantPreferences } from "./assistant-preferences";
 import { canonicalConversationHistory, requireOwnedConversation } from "./conversation-scope";
@@ -157,13 +158,29 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
       } else if (localReview) {
         reply = loadPreparationStatus(db, actor, scope);
       } else {
+        const publicVenue = readPublicEventVenue(db, scope);
+        let venueUsed: string | undefined;
+        const tool = publicVenue ? { definition: eventVenueTool, run: () => {
+          assertSameHistory(currentTurn());
+          if (!hasConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
+          const venue = readPublicEventVenue(db, scope);
+          if (!venue) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
+          venueUsed = JSON.stringify(venue);
+          return venueUsed;
+        } } : undefined;
         const raw = await generateOpenAIText(chatInput(scope, original.conversation.messages, original.message), request.signal,
-          [chatAdvisorPrompt, chatOutputInstruction, assistantStyleInstruction(preferences)].join("\n\n"), advisorReplyFormat);
+          [chatAdvisorPrompt, chatOutputInstruction, assistantStyleInstruction(preferences), ...(tool ? ["사용자가 우리 숙소나 행사 장소, 그 주변 식당·활동을 물으면 장소를 다시 묻기 전에 get_current_event_venue를 호출하세요. 결과는 저장된 대표 장소의 공개 기본 정보이며 주변 시설의 최신 검색 결과가 아닙니다."] : [])].join("\n\n"), advisorReplyFormat, tool);
+        if (venueUsed) {
+          assertSameHistory(currentTurn());
+          if (!hasConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
+          if (venueUsed !== JSON.stringify(readPublicEventVenue(db, scope))) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
+        }
         const answer = parseAdvisorReply(raw);
         if (!answer) throw new ApiError(502, "답변 형식을 확인하지 못했습니다. 다시 요청해 주세요.");
         const sourceDate = extractChatCalendarFields(data.userMessageText).date;
         reply = {
           text: format(answer.summary),
+          ...(venueUsed && { actions: [eventPublicVenueUsedAction] }),
           advisor: {
             kind: answer.kind, title: format(answer.title), rationale: format(answer.rationale),
             rows: answer.rows.map(row => ({ label: format(row.label), detail: format(row.detail) })),

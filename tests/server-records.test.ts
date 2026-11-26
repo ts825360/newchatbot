@@ -9,6 +9,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { privateToolKey, privateToolKinds } from "@/lib/conversation-scope";
 import { createTransportDraft } from "@/lib/transport";
 import { putFile, getFile } from "@/lib/server/files";
+import { canonicalPrivateTool } from "@/lib/server/conversation-scope";
+import { loadPreparationStatus } from "@/lib/server/preparation-status";
 const databases: DatabaseSync[] = [];
 afterEach(() => databases.splice(0).forEach((db) => db.close()));
 function setup() {
@@ -32,7 +34,7 @@ describe("authoritative shared/private records", () => {
     expect(JSON.parse(readSnapshot(actor, undefined, db).records[0].value!).rooms.map((r: { id: string }) => r.id)).toEqual([room.id, other.id]);
     expect(JSON.parse(readSnapshot({ ...actor, id: "peer", grade: 3 }, undefined, db).records[0].value!).rooms.every((r: { pinned: boolean }) => !r.pinned)).toBe(true);
   });
-  it("isolates all private tools by account and conversation and leaves the calendar shared", () => {
+  it("shares planning work across an account's conversations but not other rooms or accounts", () => {
     const { db, actor, room } = setup();
     const peer = { ...actor, id: "peer", username: "peer" };
     db.prepare("INSERT INTO users SELECT ?,name,?,grade,role,permissions_json,salt,password_hash,access_expires_at,suspended,session_version,invite_id,created_at FROM users WHERE id=?").run(peer.id, peer.username, actor.id);
@@ -61,7 +63,16 @@ describe("authoritative shared/private records", () => {
     const other = readSnapshot(peer, room.id, db, conv);
     const second = readSnapshot(actor, room.id, db, "second");
     expect(other.records.filter((record) => record.key.startsWith("church-private-v1:")).every((record) => record.value === null)).toBe(true);
-    expect(second.records.filter((record) => record.key.startsWith("church-private-v1:")).every((record) => record.value === null)).toBe(true);
+    const secondScope = { ...scope, conversationId: "second" };
+    for (const kind of privateToolKinds) {
+      const record = second.records.find(({ key }) => key === privateToolKey(secondScope, kind));
+      expect(record?.value).toBe(kind === "documents" ? null : JSON.stringify(values[kind]));
+    }
+    expect(loadPreparationStatus(db, actor, secondScope).advisor?.rows[0].detail).toContain("PRIVATE_LOCATION");
+    const anotherRoom = { ...room, id: "another-room" };
+    db.prepare("INSERT INTO rooms(id,data_json) VALUES(?,?)").run(anotherRoom.id, JSON.stringify(anotherRoom));
+    const elsewhere = readSnapshot(actor, anotherRoom.id, db, "initial-another-room");
+    expect(elsewhere.records.filter(({ key }) => key.startsWith("church-private-v1:")).every(({ value }) => value === null)).toBe(true);
     expect(JSON.stringify(other)).not.toContain("PRIVATE_MESSAGE");
     expect(JSON.stringify(readSnapshot(actor, room.id, db))).not.toContain("PRIVATE_LOCATION");
     expect(other.records.find((record) => record.key === calendarKey)?.value).toContain("SHARED_EVENT");
@@ -77,8 +88,24 @@ describe("authoritative shared/private records", () => {
     expect(() => readSnapshot(peer, room.id, db, "second")).toThrow();
     writeBatch(actor, [{ key: historyKey, version: "1", value: JSON.stringify({ conversations: conversations.slice(1), activeId: "second" }) }], room.id, db);
     expect(() => readSnapshot(actor, room.id, db, conv)).toThrow();
+    expect(readSnapshot(actor, room.id, db, "second").records.find(({ key }) => key === privateToolKey(secondScope, "location"))?.value).toBe(JSON.stringify(values.location));
     expect(db.prepare("SELECT COUNT(*) AS n FROM conversation_files").get()?.n).toBe(0);
     expect(db.prepare("SELECT COUNT(*) AS n FROM records WHERE key LIKE 'private-v1:%'").get()?.n).toBe(0);
+  });
+  it("recovers an older nonempty planning record without reviving it after clearing", () => {
+    const { db, actor, room } = setup();
+    const active = { accountId: actor.id, roomId: room.id, conversationId: "initial-room-1" };
+    const legacy = { ...active, conversationId: "older" };
+    const revision = 2;
+    const query = db.prepare("INSERT INTO records(key,owner_id,room_id,kind,data_json,revision,updated_at) VALUES(?,?,?,?,?,?,?)");
+    query.run(canonicalPrivateTool(legacy, "location"), actor.id, room.id, "location", '{"location":"OLD_LOCATION"}', revision, "2026-11-01");
+    query.run(canonicalPrivateTool(active, "location"), actor.id, room.id, "location", '{"location":""}', revision, "2026-11-02");
+    const key = privateToolKey(active, "location");
+    const current = () => readSnapshot(actor, room.id, db, active.conversationId).records.find(record => record.key === key)!;
+    expect(current().value).toBe('{"location":"OLD_LOCATION"}');
+    writeBatch(actor, [{ key, version: current().version, value: '{"location":""}' }], room.id, db);
+    expect(current().value).toBe('{"location":""}');
+    expect(db.prepare("SELECT data_json FROM records WHERE key=?").get(canonicalPrivateTool(legacy, "location"))?.data_json).toBe('{"location":"OLD_LOCATION"}');
   });
   it("preserves legacy room data without returning it in room snapshots", () => {
     const { db, actor, room } = setup();

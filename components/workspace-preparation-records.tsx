@@ -66,8 +66,8 @@ function PreparationRecords({ locationKey, transportKey, timetableKey, room, eve
     ...(result.unassignedCount ? [`미배정 ${result.unassignedCount}건`] : []),
     ...(result.unreservedCount ? [`예상 추가 좌석 ${result.unreservedCount}석 부족`] : []),
   ].join(" · ") : "";
-  return <section className="mb-5" aria-label="이 대화의 준비 기록">
-    <h3 className="mb-2 text-sm font-semibold">이 대화의 준비 기록</h3>
+  return <section className="mb-5" aria-label="이 행사방의 내 준비 기록">
+    <h3 className="mb-2 text-sm font-semibold">이 행사방의 내 준비 기록</h3>
     <div className="workspace-checklist-rows">
       <RecordRow icon={CalendarDays} title="행사 일정" status={period ? "기간 지정" : confirmedEvents ? "확정 일정 있음" : "미정"} positive={!!period || !!confirmedEvents}
         detail={[period, confirmedEvents ? `공동 캘린더 확정 ${confirmedEvents}건` : "", onOpenTimetable && timetableCount !== null ? `내 타임테이블 ${timetableCount}개` : ""].filter(Boolean).join(" · ")}

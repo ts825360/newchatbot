@@ -236,7 +236,6 @@ it.each([
   const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
   writeBatch(requireUser(request(), db), [
     { key: privateToolKey(scope, "location"), version: "0", value: JSON.stringify({ location: "가상 행사장" }) },
-    { key: privateToolKey({ ...scope, conversationId: "other" }, "location"), version: "0", value: JSON.stringify({ location: "PRIVATE_OTHER_VENUE" }) },
     { key: privateToolKey(scope, "transport"), version: "0", value: JSON.stringify({ input, result: null, approved: false,
       rosterConfirmation: rosterFingerprint(input.people), lodgingPlan: initialLodgingPlan(input.people) }) },
   ], "room", db);
@@ -247,6 +246,51 @@ it.each([
   for (const detail of ["2027-03-06", "가상 행사장", "1명", "명단 확정", "차량", "숙소"]) expect(body).toContain(detail);
   expect(body).not.toMatch(/PRIVATE_PARTICIPANT|PRIVATE_OTHER_VENUE|100%/);
   expect(fetchProvider).not.toHaveBeenCalled();
+});
+
+it("looks up the same room's public venue from a new chat without forwarding other records", async () => {
+  const name = "한화리조트 대천 파로스";
+  const question = "우리 숙소 주변에 맛집 추천해줘";
+  const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
+  writeBatch(requireUser(request(), db), [{ key: privateToolKey(scope, "location"), version: "0", value: JSON.stringify({
+    location: name, places: [name], details: [{ name, address: "PRIVATE_ADDRESS", notes: "PRIVATE_NOTES" }],
+  }) }], "room", db);
+  const history = getHistory();
+  history.conversations[1].messages = [{ id: "new", sender: "user", text: question, time: now }];
+  write(history);
+  const call = { type: "function_call", id: "fc_venue", call_id: "call_venue", name: "get_current_event_venue", arguments: "{}" };
+  fetchProvider.mockResolvedValueOnce(Response.json({ status: "completed", output: [call] })).mockResolvedValueOnce(Response.json(reply("숙소를 기준으로 식사를 제안합니다.")));
+  expect((await send({ ...good, conversationId: "other", userMessageId: "new", userMessageText: question })).status).toBe(200);
+  expect(fetchProvider).toHaveBeenCalledTimes(2);
+  const payloads = fetchProvider.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+  expect(payloads[0]).toMatchObject({ input: question, tools: [{ type: "function", name: call.name, strict: true }], parallel_tool_calls: false });
+  expect(payloads[1]).toMatchObject({ store: false, tool_choice: "none", input: expect.arrayContaining([expect.objectContaining({
+    type: "function_call_output", call_id: "call_venue", output: expect.stringContaining(name),
+  })]) });
+  expect(JSON.stringify(payloads[1])).toContain("해수욕장3길 11-10");
+  expect(JSON.stringify(payloads)).not.toMatch(/PRIVATE_|\balice\b|\bthread\b|previous_response_id/);
+  const saved = getHistory().conversations[1].messages.at(-1);
+  expect(saved?.actions).toContain("event-public-venue-used");
+});
+
+it.each([
+  ["get_current_event_venue", '{"roomId":"other-room"}'],
+  ["read_unlisted_tool", "{}"],
+])("rejects unexpected venue calls or input without a second provider request (%s)", async (name, args) => {
+  const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
+  writeBatch(requireUser(request(), db), [{ key: privateToolKey(scope, "location"), version: "0", value: JSON.stringify({ location: "한화리조트 대천 파로스" }) }], "room", db);
+  fetchProvider.mockResolvedValueOnce(Response.json({ status: "completed", output: [{ type: "function_call", call_id: "call_bad", name, arguments: args }] }));
+  expect((await send()).status).toBe(502);
+  expect(fetchProvider).toHaveBeenCalledTimes(1);
+  expect(getHistory().conversations[0].messages.at(-1)?.sender).toBe("user");
+});
+
+it("does not publish an unverified saved venue or even offer the venue tool", async () => {
+  const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
+  writeBatch(requireUser(request(), db), [{ key: privateToolKey(scope, "location"), version: "0", value: '{"location":"PRIVATE_HOME"}' }], "room", db);
+  expect((await send()).status).toBe(200);
+  expect(providerBody()).not.toHaveProperty("tools");
+  expect(JSON.stringify(providerBody())).not.toContain("PRIVATE_HOME");
 });
 
 it("sends the church advisor rules separately from pasted meeting text and applies presentation preferences", async () => {

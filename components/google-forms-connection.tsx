@@ -136,7 +136,7 @@ export function AccountFormsPreview({ disabled, allowConversationImport = false 
       if (!hasTarget()) return;
       clearGoogleFormsRosterTarget(); setTarget(undefined); setRoster(undefined); setPreview(undefined);
       const added = input.people.length - roster.snapshot.input.people.length;
-      setNotice(added ? `이 대화의 참가자 명단에 ${added}명을 추가했습니다.` : "이 대화에 설문 응답을 저장했습니다. 새로 추가한 참가자는 없습니다.");
+      setNotice(added ? `참가자 명단에 ${added}명을 추가했습니다.` : "설문 응답을 저장했습니다. 새로 추가한 참가자는 없습니다.");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "명단에 저장하지 못했습니다."); }
     finally { setReading(false); }
   };

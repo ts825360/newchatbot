@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDatabase } from "@/lib/server/database";
-import { canonicalPrivateTool } from "@/lib/server/conversation-scope";
+import { canonicalWorkspaceTool } from "@/lib/server/conversation-scope";
 import { handleTransportComparison } from "@/lib/server/transport-comparison";
 import { createTransportComparisonFacts, type TransportPlan } from "@/lib/transport-comparison";
 
@@ -36,7 +36,7 @@ const run = (req: Request) => handleTransportComparison(req, db);
 
 function store(comparison = pair) {
   db.prepare("INSERT OR REPLACE INTO records(key,owner_id,room_id,kind,data_json,updated_at) VALUES(?,?,?,'transport',?,?)")
-    .run(canonicalPrivateTool({ accountId: "alice", roomId, conversationId }, "transport"), "alice", roomId,
+    .run(canonicalWorkspaceTool({ accountId: "alice", roomId, conversationId }, "transport"), "alice", roomId,
       JSON.stringify({ comparison, input: { people: [{ name: "PRIVATE_MEMBER" }] } }), new Date().toISOString());
 }
 
