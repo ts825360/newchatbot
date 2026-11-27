@@ -32,6 +32,16 @@ docker compose --env-file .env.local -p nowchatbot -f compose.yaml -f compose.op
 
 `keySet: true`는 전달만 확인한다. 실제 권한·잔액은 개인정보 없는 질문을 앱에서 한 번 보내야 확인된다. `docker compose config`나 전체 `docker inspect` 출력에는 실제 키가 포함될 수 있으니 공유하지 않는다. 설정 변경은 `restart`가 아니라 같은 옵션으로 `up`을 실행해 반영한다. OpenAI 연결을 끄려면 `docker compose -p nowchatbot -f compose.yaml up -d --no-deps app`으로 기본 구성을 다시 적용한다.
 
+### Google 연결 설정
+
+로컬 전용 `.env.local`에 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, `APP_BASE_URL`을 설정한다. 콜백 경로는 `/api/integrations/google/callback`이며 앱 주소와 같은 출처여야 한다. Google OAuth 웹 애플리케이션의 승인된 리디렉션 URI에도 실제 콜백 전체 주소를 등록한다. 로컬과 운영 호스트는 각각의 설정을 사용한다. 아래는 OpenAI와 Google 연결을 함께 켜는 예시이며 OpenAI를 사용하지 않으면 `-f compose.openai.yaml`을 뺀다.
+
+```powershell
+docker compose --env-file .env.local -p nowchatbot -f compose.yaml -f compose.openai.yaml -f compose.google.yaml up -d --no-deps app
+```
+
+환경설정의 보안 및 개인정보에서 Google 계정을 연결한 뒤 **연결 테스트**를 실행한다. 이 테스트는 OAuth 갱신과 세부 권한만 확인하므로, 일정 전송·설문 읽기·초안 생성은 승인된 테스트 계정과 자료로 따로 확인한다. OAuth 키와 실제 토큰은 공개하거나 커밋하지 않는다.
+
 ## 버전 업데이트와 백업
 
 1. **백업:** 현재 앱이 켜진 상태에서 `docker compose -p nowchatbot exec -T app node scripts/backup-server.mjs --backup`을 실행한다. SQLite 백업은 볼륨 내부의 `/data/backups`에 생긴다. 같은 디스크 장애에 대비해 접근 권한을 제한한 별도 저장소에도 백업을 보관한다. 이 파일에는 계정과 첨부파일이 들어 있으니 배포용 TAR과 섞지 않는다.

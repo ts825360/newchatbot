@@ -1,11 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { CodeChallengeMethod, type Credentials } from "google-auth-library";
-import { googleConnectionFeatures, type GoogleAccountStatus, type GoogleConnectionFeature } from "../google-settings";
+import { googleConnectionFeatures, type GoogleAccountStatus, type GoogleConnectionFeature, type GoogleDiagnostics } from "../google-settings";
 import type { Actor } from "./auth";
 import { getDatabase, transaction } from "./database";
-import { clearGoogleExportCredentials, GOOGLE_EXPORT_SCOPE, googleOAuthClient, googleStatus, openGoogleData, saveGoogleExportCredentials, sealGoogleData } from "./google-calendar";
-import { disconnectGoogleForms, googleFormsReadScopes, googleFormsStatus, saveGoogleFormsCredentials } from "./google-forms";
-import { disconnectGoogleFormDraftAuth, googleFormDraftStatus, googleFormsCreateScope, saveGoogleFormDraftCredentials } from "./google-form-drafts-auth";
+import { clearGoogleExportCredentials, getGoogleExportConnection, GOOGLE_EXPORT_SCOPE, googleOAuthClient, googleOAuthSetup, googleStatus, openGoogleData, saveGoogleExportCredentials, sealGoogleData } from "./google-calendar";
+import { disconnectGoogleForms, googleFormsReadScopes, googleFormsStatus, readGoogleFormsGrant, saveGoogleFormsCredentials } from "./google-forms";
+import { disconnectGoogleFormDraftAuth, getGoogleFormDraftConnection, googleFormDraftStatus, googleFormsCreateScope, saveGoogleFormDraftCredentials } from "./google-form-drafts-auth";
 import { ApiError } from "./http";
 
 const context = "church-google-account-v1";
@@ -37,7 +38,79 @@ export function googleAccountStatus(actor: Actor, db = getDatabase()): GoogleAcc
     statuses.formsRead = googleFormsStatus(actor, db);
     statuses.formsCreate = googleFormDraftStatus(actor, db);
   }
+  if ((actor.grade === 1 || actor.grade === 2) && allowedFeatures(actor).length) {
+    const setup = googleOAuthSetup();
+    if (setup.missing.length || setup.invalidRedirect) statuses.setup = setup;
+  }
   return statuses;
+}
+
+type ScopeProbe = string[] | "expired" | "error" | "server_setup";
+const checking = new WeakMap<Db, Set<string>>();
+let checksInFlight = 0;
+const diagnosticRows: Record<GoogleConnectionFeature, string> = {
+  calendar: "SELECT g.generation, c.credentials FROM google_connections c LEFT JOIN google_connection_generations g ON c.user_id=g.user_id WHERE c.user_id=?",
+  formsRead: "SELECT generation, credentials FROM google_forms_auth WHERE user_id=?",
+  formsCreate: "SELECT generation, credentials, revoked FROM google_form_draft_auth WHERE user_id=?",
+};
+
+function diagnosticRefreshToken(actor: Actor, feature: GoogleConnectionFeature, db: Db) {
+  if (feature === "calendar") return getGoogleExportConnection(actor, db).refreshToken;
+  if (feature === "formsRead") return readGoogleFormsGrant(actor, db).tokens.refresh_token;
+  return getGoogleFormDraftConnection(actor, db).refreshToken;
+}
+
+const probeFailure = (error: unknown): ScopeProbe => {
+  const response = (error as { response?: { status?: number; data?: { error?: string } } } | undefined)?.response;
+  const code = response?.data?.error;
+  if (code === "invalid_client" || code === "unauthorized_client") return "server_setup";
+  return response?.status === 401 || code === "invalid_grant" || code === "invalid_token" ? "expired" : "error";
+};
+
+async function probeScopes(refreshToken: string, assertCurrent: () => void): Promise<ScopeProbe> {
+  const client = googleOAuthClient(true);
+  client.setCredentials({ refresh_token: refreshToken });
+  let token: string | null | undefined;
+  try { token = (await client.getAccessToken()).token; } catch (error) { return probeFailure(error); }
+  if (!token) return "error";
+  assertCurrent();
+  try { return (await client.getTokenInfo(token)).scopes; } catch (error) { return probeFailure(error); }
+}
+
+export async function testGoogleAccount(actor: Actor, recheck: () => Actor, db = getDatabase()): Promise<GoogleDiagnostics> {
+  const features = allowedFeatures(actor);
+  if (!features.length) throw new ApiError(403, "Google 연동 권한이 없습니다.");
+  const inFlight = checking.get(db) ?? new Set<string>();
+  if (inFlight.has(actor.id) || checksInFlight >= 4) throw new ApiError(429, "다른 Google 연결 테스트가 실행 중입니다. 잠시 후 다시 시도해 주세요.");
+  checking.set(db, inFlight); inFlight.add(actor.id); checksInFlight++;
+  try {
+    // Older callbacks and revocation can change a grant without changing its generation.
+    const grants = () => features.map(feature => db.prepare(diagnosticRows[feature]).get(actor.id));
+    const before = grants();
+    const assertCurrent = () => {
+      const current = recheck();
+      if (current.id !== actor.id || current.sessionVersion !== actor.sessionVersion || !isDeepStrictEqual(features, allowedFeatures(current)) || !isDeepStrictEqual(before, grants())) throw changed();
+    };
+    const status = googleAccountStatus(actor, db);
+    const probes = new Map<string, Promise<ScopeProbe>>();
+    const results: GoogleDiagnostics = {};
+    const settled = await Promise.allSettled(features.map(async feature => {
+      const item = status[feature];
+      if (!item?.configured) { results[feature] = "server_setup"; return; }
+      if (item.needsReconnect) { results[feature] = "reconnect"; return; }
+      if (!item.connected) { results[feature] = "unconnected"; return; }
+      const token = diagnosticRefreshToken(actor, feature, db);
+      if (!token) { results[feature] = "reconnect"; return; }
+      let probe = probes.get(token);
+      if (!probe) { probe = probeScopes(token, assertCurrent); probes.set(token, probe); }
+      const scopes = await probe;
+      results[feature] = Array.isArray(scopes) ? featureScopes[feature].every(scope => scopes.includes(scope)) ? "verified" : "insufficient_scope" : scopes;
+    }));
+    assertCurrent();
+    const failure = settled.find(result => result.status === "rejected");
+    if (failure) throw failure.reason;
+    return results;
+  } finally { inFlight.delete(actor.id); checksInFlight--; }
 }
 
 export async function startGoogleAccount(actor: Actor, session: string, requested: unknown, db = getDatabase()) {

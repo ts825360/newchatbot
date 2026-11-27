@@ -9,7 +9,7 @@ import type { Actor } from "@/lib/server/auth";
 import { disconnectGoogleAccount, finishGoogleAccount, googleAccountStatus, startGoogleAccount } from "@/lib/server/google-account";
 import { getGoogleFormDraftConnection } from "@/lib/server/google-form-drafts-auth";
 
-const provider = vi.hoisted(() => ({ consent: vi.fn(), exchange: vi.fn(), identity: vi.fn(), refresh: vi.fn() }));
+const provider = vi.hoisted(() => ({ consent: vi.fn(), exchange: vi.fn(), identity: vi.fn(), refresh: vi.fn(), tokenInfo: vi.fn() }));
 vi.mock("next/server", () => ({ after: vi.fn() }));
 vi.mock("@/lib/server/database", async (original) => ({ ...await original<typeof import("@/lib/server/database")>(), getDatabase: vi.fn() }));
 vi.mock("google-auth-library", () => ({
@@ -24,6 +24,7 @@ vi.mock("google-auth-library", () => ({
     verifyIdToken = provider.identity;
     setCredentials() {}
     getAccessToken = provider.refresh;
+    getTokenInfo = provider.tokenInfo;
   },
 }));
 
@@ -52,7 +53,78 @@ async function start(account = actor, requested = [...features]) {
 }
 const finish = (state: string, account = actor, session = "session-a") => finishGoogleAccount(account, session, state, "fake-code", () => account, db);
 const grant = (scope = allScopes) => ({ tokens: { access_token: "access", refresh_token: "refresh", id_token: "id", scope: scope.join(" ") } });
-const statuses = (account = actor) => Object.fromEntries(Object.entries(googleAccountStatus(account, db)).map(([key, value]) => [key, value.connected && !value.needsReconnect]));
+const statuses = (account = actor) => {
+  const status = googleAccountStatus(account, db);
+  return Object.fromEntries(features.flatMap(feature => status[feature] ? [[feature, status[feature].connected && !status[feature].needsReconnect]] : []));
+};
+
+function accountRequest(action: string, account = actor, method = "GET", origin = "http://localhost:3012") {
+  const session = createHash("sha256").update(`test-session-${account.id}`).digest("base64url");
+  db.prepare("INSERT OR IGNORE INTO sessions(token_hash,user_id,session_version,expires_at,created_at) VALUES(?,?,0,?,?)")
+    .run(createHash("sha256").update(session).digest("hex"), account.id, new Date(Date.now() + 60_000).toISOString(), new Date().toISOString());
+  return [new Request(`http://localhost:3012/api/integrations/google/${action}`, { method, headers: { cookie: `church_session=${session}`, origin } }),
+    { params: Promise.resolve({ action }) }] as const;
+}
+
+it("shows configuration field names only to administrators and never returns their values", async () => {
+  vi.stubEnv("GOOGLE_CLIENT_SECRET", "");
+  vi.stubEnv("GOOGLE_OAUTH_REDIRECT_URI", "");
+  const regular = await GET(...accountRequest("account-status"));
+  expect(await regular.json()).not.toHaveProperty("setup");
+  db.prepare("UPDATE users SET grade=2 WHERE id=?").run(actor.id);
+  const admin = await GET(...accountRequest("account-status"));
+  const body = await admin.json();
+  expect(body.setup).toEqual({ missing: ["GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_REDIRECT_URI"], invalidRedirect: false });
+  expect(JSON.stringify(body)).not.toMatch(/fixture-client|localhost:3012/);
+});
+
+it("probes only the signed-in account, deduplicates grants and distinguishes verified and missing Google scopes", async () => {
+  const { state } = await start();
+  provider.exchange.mockResolvedValue(grant());
+  await finish(state);
+  expect((await POST(...accountRequest("account-test", other, "POST"))).status).toBe(200);
+  expect(provider.refresh).not.toHaveBeenCalled();
+  provider.refresh.mockResolvedValue({ token: "synthetic-access-token" });
+  provider.tokenInfo.mockResolvedValue({ scopes: [allScopes[1], allScopes[2], allScopes[3]] });
+  const result = await POST(...accountRequest("account-test", actor, "POST"));
+  expect(result.status).toBe(200);
+  expect(await result.json()).toEqual({ calendar: "verified", formsRead: "verified", formsCreate: "insufficient_scope" });
+  expect(provider.refresh).toHaveBeenCalledOnce();
+  expect(provider.tokenInfo).toHaveBeenCalledOnce();
+  expect(statuses()).toEqual({ calendar: true, formsRead: true, formsCreate: true });
+});
+
+it.each([["invalid_grant", "expired"], ["temporarily_unavailable", "error"], ["invalid_client", "server_setup"]])("does not expose the provider error when a diagnostic gets %s", async (error, expected) => {
+  const { state } = await start(actor, ["calendar"]);
+  provider.exchange.mockResolvedValue(grant(["openid", allScopes[1]]));
+  await finish(state);
+  provider.refresh.mockRejectedValue({ response: { status: error === "invalid_client" ? 401 : 400, data: { error, description: "PRIVATE_PROVIDER_DETAILS" } } });
+  const result = await POST(...accountRequest("account-test", actor, "POST"));
+  expect(await result.json()).toEqual({ calendar: expected, formsRead: "unconnected", formsCreate: "unconnected" });
+  expect((await POST(...accountRequest("account-test", actor, "POST", "https://elsewhere.example"))).status).toBe(403);
+});
+
+it("rejects stale results when the account disconnects during a diagnostic", async () => {
+  const { state } = await start(actor, ["calendar"]);
+  provider.exchange.mockResolvedValue(grant(["openid", allScopes[1]]));
+  await finish(state);
+  provider.refresh.mockImplementationOnce(async () => { disconnectGoogleAccount(actor, db); return { token: "synthetic-access-token" }; });
+  provider.tokenInfo.mockResolvedValue({ scopes: [allScopes[1]] });
+  expect((await POST(...accountRequest("account-test", actor, "POST"))).status).toBe(409);
+  expect(provider.tokenInfo).not.toHaveBeenCalled();
+});
+
+it("rejects stale verification when draft authorization is marked revoked without a new generation", async () => {
+  const { state } = await start();
+  provider.exchange.mockResolvedValue(grant());
+  await finish(state);
+  provider.refresh.mockResolvedValue({ token: "synthetic-access-token" });
+  provider.tokenInfo.mockImplementationOnce(async () => {
+    db.prepare("UPDATE google_form_draft_auth SET revoked=1 WHERE user_id=?").run(actor.id);
+    return { scopes: allScopes };
+  });
+  expect((await POST(...accountRequest("account-test", actor, "POST"))).status).toBe(409);
+});
 
 it("uses one consent and one exchange to connect all three features for just the current account", async () => {
   const { state, options } = await start();

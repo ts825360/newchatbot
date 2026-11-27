@@ -14,6 +14,7 @@ ChatGPT나 다른 개발 도구에서 최신 개발 소스를 검토할 때는 �
 | --- | --- |
 | AI 판단 원칙, 현재 연결 범위, 다음 개선 작업 | [AI 개선 로드맵](docs/assistant-improvement-roadmap.md) |
 | 구현·검토할 때 유지할 프로젝트 규칙 | [AGENTS.md](AGENTS.md) |
+| 사용자 요구사항 ID, 검증 범위와 다음 작업 | [요구사항 추적](docs/requirements/traceability.md) |
 | AI 요청 처리, 도구 조회 및 응답 형식 | [채팅 서버](lib/server/chat.ts), [공통 프롬프트](lib/server/chat-advisor-prompt.ts), [응답 스키마](lib/chat-advisor.ts) |
 | 채팅 UI와 제안 승인 | [채팅 화면](components/chat-panel.tsx), [승인 카드](components/chat-work-card.tsx), [제안 반영](lib/proposal-application.ts) |
 | 회귀 테스트와 가상 질문 평가 | [테스트](tests), [이전 파일럿 평가](docs/assistant-pilot-evaluation.md) |

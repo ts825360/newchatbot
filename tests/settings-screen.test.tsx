@@ -170,6 +170,54 @@ describe("settings access", () => {
     expect(flushBackendWrites).toHaveBeenCalledOnce();
   });
 
+  it("shows the server-setup notice rather than connect choices when OAuth is not configured", async () => {
+    getBackendProfile.mockReturnValue(profile(2, [...calendarPermissions, ...formsPermissions]));
+    window.history.replaceState(null, "", "/settings?section=connections");
+    const unavailable = { configured: false, connected: false };
+    backendFetch.mockResolvedValue({ calendar: unavailable, formsRead: unavailable, formsCreate: unavailable,
+      setup: { missing: ["GOOGLE_CLIENT_ID"], invalidRedirect: true } });
+    render(<SettingsScreen />);
+    expect(await screen.findByText("관리자의 서버 설정이 필요합니다.")).toBeDefined();
+    expect(screen.getByText("서비스별 연결 상태")).toBeDefined();
+    expect(screen.getByText("GOOGLE_CLIENT_ID")).toBeDefined();
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Google 계정 연결" }).disabled).toBe(true);
+    expect(screen.queryByRole("checkbox", { name: "캘린더 전송" })).toBeNull();
+  });
+
+  it("runs an explicit connection test and does not conflate expired authorization with a service failure", async () => {
+    getBackendProfile.mockReturnValue(profile(3, [...calendarPermissions, ...formsPermissions]));
+    window.history.replaceState(null, "", "/settings?section=connections");
+    const connected = { configured: true, connected: true };
+    backendFetch.mockImplementation(async path => path.endsWith("/account-test")
+      ? { calendar: "verified", formsRead: "expired", formsCreate: "error" }
+      : { calendar: connected, formsRead: connected, formsCreate: connected });
+    render(<SettingsScreen />);
+    const test = await screen.findByRole("button", { name: "연결 테스트" });
+    expect(backendFetch.mock.calls.some(([path]) => path.endsWith("/account-test"))).toBe(false);
+    fireEvent.click(test);
+    expect(await screen.findByText("인증 확인됨")).toBeDefined();
+    expect(screen.getByText("인증 만료·철회")).toBeDefined();
+    expect(screen.getByText("연결 오류")).toBeDefined();
+    expect(screen.getByText("1 / 3 연결됨")).toBeDefined();
+  });
+
+  it("keeps the last expiry visible if a connection retest fails", async () => {
+    getBackendProfile.mockReturnValue(profile(3, calendarPermissions));
+    window.history.replaceState(null, "", "/settings?section=connections");
+    let checks = 0;
+    backendFetch.mockImplementation(async path => {
+      if (!path.endsWith("/account-test")) return { calendar: { configured: true, connected: true } };
+      if (!checks++) return { calendar: "expired" };
+      throw new Error("잠시 후 다시 시도해 주세요.");
+    });
+    render(<SettingsScreen />);
+    fireEvent.click(await screen.findByRole("button", { name: "연결 테스트" }));
+    expect(await screen.findByText("인증 만료·철회")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "연결 테스트" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("잠시 후");
+    expect(screen.getByText("인증 만료·철회")).toBeDefined();
+  });
+
   it("keeps current service status distinct from the next consent selection", async () => {
     getBackendProfile.mockReturnValue(profile(3, [...calendarPermissions, ...formsPermissions]));
     window.history.replaceState(null, "", "/settings?section=connections");
