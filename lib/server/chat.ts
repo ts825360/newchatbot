@@ -395,7 +395,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
           return venueUsed;
         } } : undefined;
         const continuityInstruction = "후속 요청에서는 사용자가 바꾼 조건만 바꾸고 나머지는 유지하세요. 이전 AI 답변은 대화의 후보나 판단이며 저장 또는 확정된 사실이 아닙니다. 임시 가정, 이어가는 조건, 확인된 행사 기록을 구분하세요. 새 요청에는 관련 없는 이전 조건을 적용하지 마세요. 후보나 결정의 근거가 전달되지 않으면 추측하지 마세요. 본인·관리자의 요청에도 생년월일, 연락처, 개인 주소, 이메일, 참가자 명단 원문은 조회하거나 답변에 넣지 마세요.";
-        const surveyInstruction = `현재 대화에서 참조 가능한 설문 작업: ${work.hasPrevious ? "있음" : "없음"}. 참석 조사나 참가 신청용 양식을 만들라는 의미라면 create_survey_draft를 사용하세요. 이전 초안의 재생성·재출력에는 get_work_draft를 먼저 사용하고 부분 수정에는 해당 조회 버전을 사용하세요. 행사명은 서버가 적용합니다. 일상 대화에는 도구를 호출하지 마세요. 도구를 호출해도 게시, 승인 또는 Google Forms 작성을 완료했다고 답하지 마세요.`;
+        const surveyInstruction = `현재 대화에서 참조 가능한 설문 작업: ${work.hasPrevious ? "있음" : "없음"}. 참석 조사나 참가 신청용 양식을 실제로 제작하라는 의미이고 지원되는 참가 설문 범위라면 create_survey_draft를 사용하세요. 사용법 질문, 가상 예시, 익명 만족도 조사 등 지원 범위 밖의 요청에 기본 참가 양식을 강제로 생성하지 마세요. 목적과 현재 행사 조건을 고려하고 도구가 지원하지 않는 문항이나 분기를 생성했다고 주장하지 마세요. 이전 초안의 재생성·재출력에는 get_work_draft를 먼저 사용하고 부분 수정에는 해당 조회 버전을 사용하세요. 행사명은 서버가 적용합니다. 일상 대화에는 도구를 호출하지 마세요. 도구를 호출해도 게시, 승인 또는 Google Forms 작성을 완료했다고 답하지 마세요.`;
         const planning = { definition: preparationFactsTool, run: (args: unknown) => {
           checkExternal();
           if (!object(args) || Object.keys(args).length) throw new ApiError(502, "준비 현황 조회 도구 입력을 확인하지 못했습니다.");
