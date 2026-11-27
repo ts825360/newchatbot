@@ -21,9 +21,54 @@ const cases = [
   ["activity-01", "가상 강릉 행사 8명, 3시간, 1인 3만원. 색다른 활동 아이디어를 줘. 검색 결과는 제공되지 않았어.", "조건 유지; 아이디어와 검증된 장소 구분"],
   ["presentation-04", "가상 수련회 준비에서 확인할 항목 10가지를 빠짐없이 번호를 붙여 정리해줘.", "10개 구별 가능한 항목; 형식 제약 기록"],
 ] as const;
+const revision = process.env.RC25_PILOT_REVISION || "baseline";
 const enabled = process.env.RC25_PILOT_APPROVED === "12";
 const instructions = [chatAdvisorPrompt, chatOutputInstruction].join("\n\n");
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+
+function diagnose(raw: string, valid: boolean): string[] {
+  if (valid) return [];
+  let value: any;
+  try { value = JSON.parse(raw); } catch { return ["invalid JSON"]; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return ["expected object"];
+  const errors: string[] = [];
+  const keys = (v: any, expected: string[], path: string) => {
+    if (!v || typeof v !== "object" || Array.isArray(v) || Object.keys(v).sort().join(",") !== [...expected].sort().join(",")) errors.push(path + ": invalid fields");
+  };
+  const line = (v: any, max: number, path: string, empty = false) => {
+    if (typeof v !== "string") errors.push(path + ": not string");
+    else {
+      if (v.length > max) errors.push(path + ": length " + v.length + " > " + max);
+      if (!empty && !v.trim()) errors.push(path + ": empty");
+      if (/[\x00-\x1f\x7f]/.test(v)) errors.push(path + ": control character");
+    }
+  };
+  keys(value, ["kind","summary","title","rows","rationale","proposals"], "root");
+  if (!["chat","plan"].includes(value.kind)) errors.push("kind: invalid");
+  line(value.summary, value.kind === "plan" ? 240 : 1200, "summary");
+  line(value.title, 100, "title", value.kind === "chat");
+  line(value.rationale, 480, "rationale", true);
+  for (const field of ["rows","proposals"]) {
+    const items = value[field];
+    if (!Array.isArray(items)) { errors.push(field + ": not array"); continue; }
+    if (items.length > 4) errors.push(field + ": count " + items.length + " > 4");
+    items.forEach((item: any, i: number) => {
+      const p = field + "[" + i + "]";
+      if (field === "rows") {
+        keys(item, ["label","detail"], p);
+        line(item?.label,36,p+".label"); line(item?.detail,180,p+".detail");
+      } else {
+        keys(item, ["kind","title","date"], p);
+        line(item?.title,120,p+".title");
+        if (item?.kind === "checklist" && item?.date !== "") errors.push(p+": checklist date must be empty");
+        else if (item?.kind === "calendar" && (typeof item?.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(item.date))) errors.push(p+": calendar date format");
+        else if (!["calendar","checklist"].includes(item?.kind)) errors.push(p+": invalid kind");
+      }
+    });
+  }
+  if (value.kind === "chat" && (value.title !== "" || value.rationale !== "" || value.rows?.length || value.proposals?.length)) errors.push("chat: nonempty presentation fields");
+  return errors.length ? errors : ["production parser rejected; inspect raw (diagnostic not exhaustive)"];
+}
 
 it("pilot catalog has 12 distinct synthetic cases", () => {
   expect(cases.length).toBe(12);
@@ -43,7 +88,7 @@ it.skipIf(!enabled)("runs approved prompt-only pilot with at most 12 provider re
   const folder = ".local/backend-evidence";
   const output = folder + "/rc25-prompt-pilot-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
   const persist = () => writeFile(output, JSON.stringify({
-    track: "prompt-only", baseline: "cb43d27c758877a3cdef090beb4eff128b79cd98",
+    track: "prompt-only", revision, baseline: "cb43d27c758877a3cdef090beb4eff128b79cd98",
     requestedModel: "gpt-6-luna", reasoning: "none", maxOutputTokens: 1200,
     promptHash: hash(instructions), schemaHash: hash(JSON.stringify(advisorReplyFormat)),
     calls, results, semanticReview: "pending"
@@ -66,7 +111,8 @@ it.skipIf(!enabled)("runs approved prompt-only pilot with at most 12 provider re
       try {
         const raw = await generateOpenAIText(input, new AbortController().signal, instructions, advisorReplyFormat);
         const reply = parseAdvisorReply(raw);
-        results.push({ id, input, rubric, elapsedMs: Math.round(performance.now()-start), ...metadata, schemaValid: !!reply, reply });
+        const validation = diagnose(raw, !!reply);
+        results.push({ id, input, rubric, elapsedMs: Math.round(performance.now()-start), ...metadata, schemaValid: !!reply, reply, validation, invalidRaw: reply ? undefined : raw });
       } catch {
         results.push({ id, input, rubric, elapsedMs: Math.round(performance.now()-start), ...metadata, error: "provider_or_local_failure" });
         await persist();
