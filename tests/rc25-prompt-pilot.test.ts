@@ -40,7 +40,7 @@ function diagnose(raw: string, valid: boolean): string[] {
     else {
       if (v.length > max) errors.push(path + ": length " + v.length + " > " + max);
       if (!empty && !v.trim()) errors.push(path + ": empty");
-      if (/[\x00-\x1f\x7f]/.test(v)) errors.push(path + ": control character");
+      if (Array.from(v).some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)) errors.push(path + ": control character");
     }
   };
   keys(value, ["kind","summary","title","rows","rationale","proposals"], "root");
