@@ -132,5 +132,5 @@ export function getGoogleFormDraftConnection(actor: Actor, db: ReturnType<typeof
     if (!token || (returnedScope !== undefined && !allowedScopes(returnedScope, false, grantedScopes))) throw requireReconnect();
     return token;
   };
-  return { subjectHash, assertCurrent, requireReconnect, accessToken };
+  return { subjectHash, refreshToken, assertCurrent, requireReconnect, accessToken };
 }

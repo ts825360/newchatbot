@@ -96,13 +96,19 @@ export async function previewConversationGoogleForm(actor: Actor, input: ScopedF
   return previewOwnGoogleForm(actor, input.url, () => { recheck(); requireOwnedConversation(db, scope); }, db);
 }
 
-export async function previewOwnGoogleForm(actor: Actor, url: string, recheck: () => void, db = getDatabase()): Promise<GoogleFormsPreview> {
+export function readGoogleFormsGrant(actor: Actor, db: ReturnType<typeof getDatabase>) {
   assertFormsPermission(actor);
-  const formId = formIdFromEditorUrl(url);
   const row = db.prepare("SELECT generation,credentials FROM google_forms_auth WHERE user_id=?").get(actor.id);
   if (!row?.credentials) throw new ApiError(409, "먼저 구글폼 읽기 권한을 연결해 주세요.");
   const tokens = openGoogleData(String(row.credentials), context) as Credentials;
   if (!hasScopes(tokens)) throw new ApiError(403, "구글폼 읽기 권한으로 다시 연결해 주세요.");
+  return { tokens, generation: row.generation };
+}
+
+export async function previewOwnGoogleForm(actor: Actor, url: string, recheck: () => void, db = getDatabase()): Promise<GoogleFormsPreview> {
+  assertFormsPermission(actor);
+  const formId = formIdFromEditorUrl(url);
+  const { tokens, generation } = readGoogleFormsGrant(actor, db);
   const client = googleOAuthClient();
   client.setCredentials(tokens);
   const base = "https://forms.googleapis.com/v1/forms/" + encodeURIComponent(formId);
@@ -118,7 +124,7 @@ export async function previewOwnGoogleForm(actor: Actor, url: string, recheck: (
       if (!pageToken || responses.length > 500) break;
     }
     recheck();
-    if (db.prepare("SELECT generation FROM google_forms_auth WHERE user_id=?").get(actor.id)?.generation !== row.generation) {
+    if (db.prepare("SELECT generation FROM google_forms_auth WHERE user_id=?").get(actor.id)?.generation !== generation) {
       throw new ApiError(409, "구글폼 연결이 변경되었습니다. 다시 시도해 주세요.");
     }
     const link = respondentUrl ? { respondentUrl } : {};

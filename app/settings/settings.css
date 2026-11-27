@@ -144,25 +144,42 @@
 
 .settings-connection { min-width: 0; scroll-margin-top: 16px; }
 .settings-google, .settings-google-tools { display: grid; gap: 12px; min-width: 0; }
-.settings-google-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
-.settings-google-heading h2, .settings-google-tools h2 { margin: 0; font-size: 16px; font-weight: 650; }
-.settings-google-count { color: hsl(var(--muted-foreground)); font-size: 12px; font-variant-numeric: tabular-nums; }
+.settings-google { padding: 16px; border: 1px solid hsl(var(--border)); border-radius: 8px; background: hsl(var(--panel)); }
+.settings-google-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; }
+.settings-google-heading h4, .settings-google-services h4, .settings-google-tools h2 { margin: 0; font-size: 16px; font-weight: 700; }
+.settings-google-brand { background: hsl(var(--border) / .25); border: 1px solid hsl(var(--border)); color: #4285f4; font-size: 25px; font-weight: 800; }
+.settings-google-setup { padding: 12px 14px; display: grid; gap: 7px; border-radius: 8px; background: hsl(var(--border) / .2); font-size: 13px; line-height: 1.5; }
+.settings-google-setup > strong { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+.settings-google-setup svg { color: hsl(var(--warning)); flex: none; }
+.settings-google-setup p, .settings-google-setup ul { margin: 0; }
+.settings-google-setup ul { padding-inline-start: 20px; overflow-wrap: anywhere; }
+.settings-google-setup code { font-size: 12px; overflow-wrap: anywhere; }
+.settings-google-services { padding-top: 13px; border-top: 1px solid hsl(var(--border)); }
 .settings-google-list { min-width: 0; margin: 0; padding: 0; border: 0; }
-.settings-google-columns, .settings-google-row { display: grid; grid-template-columns: minmax(0, 1fr) 6.25rem 5rem; align-items: center; gap: 0 12px; padding-inline: 10px; }
-.settings-google-columns { min-height: 30px; border-bottom: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); font-size: 12px; }
+.settings-google-columns, .settings-google-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(105px, 23%) 4.75rem; align-items: center; gap: 0 12px; }
+.settings-google-list[data-configurable="false"] .settings-google-row { grid-template-columns: minmax(0, 1fr) auto; }
+.settings-google-columns { min-height: 24px; color: hsl(var(--muted-foreground)); font-size: 12px; }
 .settings-google-columns > :last-child { text-align: center; }
-.settings-google-row { min-height: 67px; border-bottom: 1px solid hsl(var(--border)); }
+.settings-google-row { min-height: 63px; }
 .settings-google-label { grid-column: 1; display: flex; align-items: center; gap: 12px; min-width: 0; font-size: 15px; word-break: keep-all; overflow-wrap: anywhere; }
 .settings-google-label small { display: block; font-size: 13px; color: hsl(var(--muted-foreground)); }
 .settings-google-symbol { width: 39px; height: 39px; }
-.settings-google-status { justify-self: start; white-space: nowrap; }
+.settings-google-status { min-width: 0; justify-self: end; text-align: end; font-size: 13px; color: hsl(var(--muted-foreground)); }
+.settings-google-status > span { display: flex; align-items: center; justify-content: flex-end; gap: 5px; font-weight: 600; overflow-wrap: anywhere; }
+.settings-google-status svg { flex: none; }
+.settings-google-status small { font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+.settings-google-status[data-state="good"] > span { color: hsl(var(--primary)); }
+.settings-google-status[data-state="warning"] > span { color: hsl(var(--warning)); }
 .settings-google-choice { display: grid; place-items: center; min-height: 44px; cursor: pointer; }
 .settings-google-choice:has(input:disabled) { cursor: default; }
 .settings-google-choice input { width: 16px; height: 16px; margin: 0; accent-color: hsl(var(--primary)); cursor: inherit; }
 .settings-google-choice input:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 3px; }
-.settings-google-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
+.settings-google-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; padding-top: 12px; border-top: 1px solid hsl(var(--border)); }
 .settings-google-actions:empty { display: none; }
 .settings-google-actions button { max-width: 100%; height: auto; min-height: 36px; padding-block: 6px; text-align: start; }
+.settings-google-actions[data-setup="true"] button:disabled { flex: 1; justify-content: center; background: hsl(var(--border) / .35); color: hsl(var(--muted-foreground)); border-color: transparent; opacity: 1; }
+.settings-google-footnote { margin: 0; color: hsl(var(--muted-foreground)); font-size: 13px; line-height: 1.5; }
+.settings-google-actions[data-setup="true"] + .settings-google-footnote { text-align: center; }
 .settings-google-actions svg, .settings-google-tools a svg, .settings-google-tools button svg { flex-shrink: 0; }
 .settings-google-tools { margin-block-start: 26px; padding-block-start: 16px; border-top: 1px solid hsl(var(--border)); }
 .settings-google-create { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; min-width: 0; }
@@ -179,10 +196,13 @@
 }
 
 @media (max-width: 600px) {
-  .settings-google-columns, .settings-google-row { grid-template-columns: minmax(0, 1fr) 4.375rem; padding-inline: 6px; column-gap: 6px; }
+  .settings-google { padding: 12px; }
+  .settings-google-columns, .settings-google-row { grid-template-columns: minmax(0, 1fr) 4.375rem; column-gap: 6px; }
   .settings-google-columns > :nth-child(2) { display: none; }
   .settings-google-row { padding-block: 8px; row-gap: 3px; }
-  .settings-google-status { grid-column: 1; grid-row: 2; }
+  .settings-google-status { grid-column: 1; grid-row: 2; justify-self: start; padding-left: 51px; text-align: start; }
+  .settings-google-status > span { justify-content: flex-start; }
+  .settings-google-list[data-configurable="false"] .settings-google-status { grid-column: 2; grid-row: 1; justify-self: end; padding-left: 0; text-align: end; }
   .settings-google-choice { grid-column: 2; grid-row: 1 / span 2; }
 }
 

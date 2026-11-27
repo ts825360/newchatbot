@@ -1,7 +1,7 @@
 import { requireUser } from "@/lib/server/auth";
 import { disconnectGoogle, googleSession, googleStatus, readGoogleEvents, startGoogle } from "@/lib/server/google-calendar";
 import { ApiError, assertSameOrigin, errorResponse, json, readJson } from "@/lib/server/http";
-import { disconnectGoogleAccount, googleAccountStatus, startGoogleAccount } from "@/lib/server/google-account";
+import { disconnectGoogleAccount, googleAccountStatus, startGoogleAccount, testGoogleAccount } from "@/lib/server/google-account";
 import { eventExportStatus, exportStatus, syncGoogleExports } from "@/lib/server/google-export";
 import { id } from "@/lib/server/record-schema";
 
@@ -30,6 +30,7 @@ export async function POST(request:Request,context:Context) {
       const url=await startGoogleAccount(requireUser(request),googleSession(request),body?.features); requireUser(request); return json({url});
     }
     if(action==="account-disconnect") return json(disconnectGoogleAccount(actor));
+    if(action==="account-test") return json(await testGoogleAccount(actor, () => requireUser(request)));
     if(action==="connect") {
       const url=await startGoogle(actor,googleSession(request)); requireUser(request); return json({url});
     }

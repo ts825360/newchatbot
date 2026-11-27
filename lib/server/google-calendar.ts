@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
 import { OAuth2Client, CodeChallengeMethod, type Credentials } from "google-auth-library";
+import { googleRequiredSettings, type GoogleSetupStatus } from "../google-settings";
 import { requirePermission, type Actor } from "./auth";
 import { getDatabase, transaction } from "./database";
 import { ApiError } from "./http";
@@ -9,18 +10,27 @@ const SCOPE = GOOGLE_EXPORT_SCOPE;
 function allowed(actor: Actor) {
   requirePermission(actor, "viewCalendar");
 }
-function config() {
-  const clientId=process.env.GOOGLE_CLIENT_ID, secret=process.env.GOOGLE_CLIENT_SECRET;
-  const calendarId=process.env.GOOGLE_CALENDAR_ID, redirect=process.env.GOOGLE_OAUTH_REDIRECT_URI;
-  const base=process.env.APP_BASE_URL;
-  if (!clientId || !secret || !redirect || !base) throw new ApiError(503,"구글 캘린더 환경설정을 확인해 주세요.");
+export function googleOAuthSetup(): GoogleSetupStatus {
+  const missing = googleRequiredSettings.filter(key => !process.env[key]?.trim());
+  if (missing.length) return { missing, invalidRedirect: false };
   try {
-    const url=new URL(redirect), origin=new URL(base);
+    const url=new URL(process.env.GOOGLE_OAUTH_REDIRECT_URI!), origin=new URL(process.env.APP_BASE_URL!);
     if (url.origin!==origin.origin || url.pathname!=="/api/integrations/google/callback" || url.search || url.hash || url.username || url.password || origin.username || origin.password || !["http:","https:"].includes(url.protocol) || url.protocol!=="https:" && !["localhost","127.0.0.1","[::1]"].includes(url.hostname)) throw Error();
-  } catch { throw new ApiError(503,"구글 콜백 주소와 사이트 주소 설정을 확인해 주세요."); }
-  return {clientId,secret,calendarId,redirect,base};
+    return { missing, invalidRedirect: false };
+  } catch { return { missing, invalidRedirect: true }; }
 }
-function oauth() { const c=config(); return new OAuth2Client({clientId:c.clientId,clientSecret:c.secret,redirectUri:c.redirect,transporterOptions:{timeout:15000,retry:false}}); }
+function config() {
+  const setup = googleOAuthSetup();
+  if (setup.missing.length) throw new ApiError(503,"구글 캘린더 환경설정을 확인해 주세요.");
+  if (setup.invalidRedirect) throw new ApiError(503,"구글 콜백 주소와 사이트 주소 설정을 확인해 주세요.");
+  return { clientId: process.env.GOOGLE_CLIENT_ID!, secret: process.env.GOOGLE_CLIENT_SECRET!, redirect: process.env.GOOGLE_OAUTH_REDIRECT_URI! };
+}
+function oauth(diagnostic = false) {
+  const c=config();
+  const timeout = diagnostic ? 6000 : 15000;
+  return new OAuth2Client({ clientId: c.clientId, clientSecret: c.secret, redirectUri: c.redirect,
+    transporterOptions: { timeout, retry: false, ...(diagnostic && { retryConfig: { retry: 0, totalTimeout: timeout } }) } });
+}
 function seal(value: unknown, context = "church-google-readonly-v1") {
   const salt=randomBytes(32), iv=randomBytes(12);
   const key=Buffer.from(hkdfSync("sha256",config().secret,salt,context,32));
@@ -127,7 +137,7 @@ export function getGoogleExportConnection(actor:Actor,db=getDatabase()) {
     try{permissions=JSON.parse(String(user.permissions_json));}catch{ /* An invalid account never exports. */ }
     if(!Array.isArray(permissions) || !permissions.includes("viewCalendar")) throw new ApiError(403,"구글 전송 권한이 없습니다.");
   };
-  return {client,accountHash:saved.accountHash,assertCurrent,save:()=>{
+  return {client,refreshToken:saved.tokens.refresh_token,accountHash:saved.accountHash,assertCurrent,save:()=>{
     assertCurrent();db.prepare("UPDATE google_connections SET credentials=?,updated_at=? WHERE user_id=? AND credentials=?").run(seal({...saved,tokens:{...saved.tokens,...client.credentials}}),new Date().toISOString(),actor.id,row.credentials);
   }};
 }

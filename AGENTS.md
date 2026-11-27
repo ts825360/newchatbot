@@ -5,6 +5,7 @@
 ## 시작할 곳
 
 - 실행과 저장소 안내: [README](README.md)
+- 사용자 지침 원문·미완료 항목·재개 지점: [요구사항 추적](docs/requirements/traceability.md)
 - AI 판단 원칙과 구현 현황: [AI 개선 로드맵](docs/assistant-improvement-roadmap.md)
 - 채팅·프롬프트: [채팅 서버](lib/server/chat.ts), [공통 프롬프트](lib/server/chat-advisor-prompt.ts), [응답 형식](lib/chat-advisor.ts)
 - 채팅 UI·도구 승인: [채팅 화면](components/chat-panel.tsx), [제안 카드](components/chat-work-card.tsx), [제안 반영](lib/proposal-application.ts)
