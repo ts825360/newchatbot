@@ -14,6 +14,8 @@ import { object, validateRecord } from "./record-schema";
 import { readWorkspacePlaces } from "./workspace-primary-place";
 import { readPreparationSurveyCounts } from "./preparation-surveys";
 import type { ConversationPlaceCategory } from "../conversation-places";
+import { readCurrentSurveyTask } from "./chat-work-store";
+import { publicSurveyWorkState } from "./chat-survey-work-state";
 
 type Evidence<T> = { state: "saved"; facts: T } | { state: "not_recorded" | "unreadable" | "not_authorized" };
 const denied = { state: "not_authorized" } as const;
@@ -27,7 +29,7 @@ const stateOnly = <T>(evidence: Evidence<T>) => ({ state: evidence.state });
 export const preparationFactsAction = "preparation-facts-used";
 export const preparationFactsTool = {
   type: "function", name: "get_preparation_status", strict: true,
-  description: "Read the current event's safe preparation facts and evidence status, including saved place category counts and survey status. Use for priorities, task dependencies, and to check saved records. Does not expose private notes or search Google Maps, historical records or private documents.",
+  description: "Read safe preparation evidence: shared calendar, your current workspace's aggregates, and the private survey work status in this conversation. Indicators are not confirmations of publication or completion. Does not expose notes or search external services, historical records or documents.",
   parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
 } as const;
 
@@ -58,6 +60,7 @@ export function readPreparationFacts(db: DatabaseSync, actor: Actor, scope: Conv
   const venue = places.state === "saved" ? { state: "saved", count: places.names.length, categories, privateNotesIncluded: false }
     : { state: places.state === "absent" ? "not_recorded" : places.state };
   const survey = readPreparationSurveyCounts(db, actor, scope);
+  const surveyTask = readCurrentSurveyTask(db, scope);
   const timetable = read(local("timetable"), raw => {
     const { days, entries } = readTimetable(raw);
     return { days, program: entries.filter(entry => entry.kind === "program").length,
@@ -79,7 +82,8 @@ export function readPreparationFacts(db: DatabaseSync, actor: Actor, scope: Conv
   return {
     event: { category: typeof room.category === "string" && Object.hasOwn(ROOM_CATEGORIES, room.category) ? ROOM_CATEGORIES[room.category as RoomCategory] : null,
       startDate: validDate(room.date) ? room.date : null, endDate: validDate(room.endDate) ? room.endDate : null },
-    venue, survey, participants: snapshot?.participants ?? stateOnly(transport), vehicles: snapshot?.vehicles ?? stateOnly(transport),
+    venue, survey, surveyWork: surveyTask ? publicSurveyWorkState(surveyTask) : { found: false },
+    participants: snapshot?.participants ?? stateOnly(transport), vehicles: snapshot?.vehicles ?? stateOnly(transport),
     lodging: snapshot?.lodging ?? stateOnly(transport), timetable, calendar, checklist,
     documents: { available: Number(documents?.count ?? 0), contentsRead: false },
     pastRecords: "not_searched", mealReservations: "not_checked", budget: "not_checked",

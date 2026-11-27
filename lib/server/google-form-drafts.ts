@@ -6,6 +6,7 @@ import { getDatabase, transaction } from "./database";
 import { assertGoogleFormDraftPermission, getGoogleFormDraftConnection } from "./google-form-drafts-auth";
 import { ApiError } from "./http";
 import { readSurveyWorkVersion, requireSurveyWorkVersion } from "./chat-work-store";
+import { surveyVersionKey, surveyWorkspaceKey } from "./chat-survey-work-state";
 
 const formsUrl = "https://forms.googleapis.com/v1/forms";
 const editorUrl = (id: string) => `https://docs.google.com/forms/d/${id}/edit`;
@@ -105,8 +106,8 @@ export async function createGoogleFormDraft(actor: Actor, value: unknown, scope:
   const connection = getGoogleFormDraftConnection(actor, db);
   const assertCurrent = () => { assertScope(); connection.assertCurrent(); };
   const assertLatest = () => { if (work && workScope) requireSurveyWorkVersion(db, workScope, work.id, work.version); };
-  const key = [actor.id, connection.subjectHash, scope ? JSON.stringify([scope.roomId, scope.conversationId]) : "",
-    createHash("sha256").update(work ? JSON.stringify(["survey-work", work.id, work.version]) : title).digest("hex")] as const;
+  const key = [actor.id, connection.subjectHash, scope ? surveyWorkspaceKey(scope) : "",
+    work ? surveyVersionKey(work) : createHash("sha256").update(title).digest("hex")] as const;
   const where = "user_id=? AND google_subject_hash=? AND scope_key=? AND title_hash=?";
   const existingDraft = () => {
     const row = db.prepare(`SELECT form_id,completed FROM google_form_drafts WHERE ${where}`).get(...key);

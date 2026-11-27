@@ -45,6 +45,12 @@ export function localWorkIntent(raw: string): "calendar" | "survey" | "timetable
   return null;
 }
 
+export function localSurveyRead(raw: string): "show" | "status" | undefined {
+  const question = raw.normalize("NFKC").trim();
+  if (/^(?:우리\s*)?(?:참가\s*)?설문\s*초안(?:을)?\s*(?:다시\s*)?(?:보여|열어)\s*(?:줘|주세요|줘요)[.!?]*$/.test(question)) return "show";
+  if (/^(?:우리\s*)?(?:참가\s*)?설문(?:\s*(?:초안|작업))?\s*(?:진행\s*)?(?:상태|현황)(?:를|을)?\s*(?:알려|보여|확인해)\s*(?:줘|주세요|줘요)[.!?]*$/.test(question)) return "status";
+}
+
 export const requestsChecklistProposal = (raw: string) => /체크\s*리스트|점검표/.test(raw) && /나타내|추가|만들|작성|정리|넣어|보여|반영/.test(raw)
   && !/(?:추가|반영|작성)(?:하)?지\s*(?:말|마|않)/.test(raw);
 

@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import { isEventVenueRouteQuestion, venueTravelAnchor } from "../chat-venue-route";
-import { localWorkIntent, requestsChecklistProposal } from "../chat-work-proposal";
+import { localSurveyRead, localWorkIntent, requestsChecklistProposal } from "../chat-work-proposal";
 import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
 import { eventPublicVenueUsedAction, hasObviousPrivateData, internalChatAction, openAIChatConsentVersion, openAIReplyContextConsentVersion, openAIPrivacyWarning, requestsPersonalDisclosure } from "../assistant-privacy";
 import { isPreparationChat, isPreparationStatusChat } from "../chat-tool-candidates";
-import { advisorReplyFormat, parseAdvisorReply } from "../chat-advisor";
+import { advisorReplyFormatV2, parseAdvisorReply } from "../chat-advisor";
 import { extractChatCalendarFields } from "../chat-calendar";
 import { isVenueHistoryChat, venueHistoryReplyAction } from "../retreat-venue-history";
 import { loadRetreatReview, summarizeRetreatReview } from "./retreat-preparation";
@@ -25,11 +25,12 @@ import { classifyContinuation, contextOrdinal, requestOnlyConditions, type Event
 import { resolveWorkConditions, type WorkCondition } from "../chat-work-state";
 import { readParticipantCount } from "./chat-work-reads";
 import { createWorkSession } from "./chat-work-store";
+import { surveyStatusText } from "./chat-survey-work-state";
 import { interpretNearbyFollowUp, type NearbyIntent } from "./chat-interpretation";
 import type { NearbyTask } from "../chat-dining";
 import { verifiedPublicPlace } from "../conversation-places";
 import { validDate } from "../room-timing";
-import { chatAdvisorPrompt, chatOutputInstruction } from "./chat-advisor-prompt";
+import { chatAdvisorPrompt, chatOutputInstructionV2 } from "./chat-advisor-prompt";
 import { assistantStyleInstruction, formatAssistantReply, loadAssistantPreferences } from "./assistant-preferences";
 import { canonicalConversationHistory, requireOwnedConversation } from "./conversation-scope";
 import { bumpRevision, getDatabase, transaction } from "./database";
@@ -201,7 +202,8 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
     const venueRouteQuestion = !nearbyRequest && isEventVenueRouteQuestion(data.userMessageText);
     const possibleWork = localWorkIntent(data.userMessageText);
     const workIntent = possibleWork === "headcount" && nearbyRequest ? null : possibleWork;
-    const localReview = workIntent !== null || venueRouteQuestion || action === "cancel" || isPreparationChat(data.userMessageText) || isPreparationStatusChat(data.userMessageText) || retreatVenueReview;
+    const surveyRead = localSurveyRead(data.userMessageText);
+    const localReview = workIntent !== null || !!surveyRead || venueRouteQuestion || action === "cancel" || isPreparationChat(data.userMessageText) || isPreparationStatusChat(data.userMessageText) || retreatVenueReview;
     if (requestsPersonalDisclosure(data.userMessageText) || (!localReview || venueRouteQuestion || workIntent === "calendar") && hasObviousPrivateData(data.userMessageText)) throw new ApiError(422, openAIPrivacyWarning);
     const scope = { accountId: actor.id, roomId: data.roomId, conversationId: data.conversationId };
     const currentTurn = () => {
@@ -240,7 +242,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
       let assertSourcesStillCurrent = () => {};
       let interpretation: NearbyIntent | null | undefined;
       const savePlace = Boolean(previousNearby && wantsPlaceSave(data.userMessageText));
-      if (nearbyKind && previousNearby && action === "unknown" && !savePlace && !original.message.reference && !nearbySearchKind(data.userMessageText) && !wantsSavedHeadcount(data.userMessageText)) {
+      if (!useLocalReply && nearbyKind && previousNearby && action === "unknown" && !savePlace && !original.message.reference && !nearbySearchKind(data.userMessageText) && !wantsSavedHeadcount(data.userMessageText)) {
         const root = original.conversation.messages.find(message => message.id === previousNearby.nearbyTask?.candidateMessageId);
         interpretation = await interpretNearbyFollowUp(data.userMessageText, nearbyKind, (root ?? previousNearby).dining?.restaurants.length ?? 0, request.signal);
         assertSameHistory(currentTurn());
@@ -250,6 +252,8 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
       let reply: Pick<ChatMessage, "text" | "advisor" | "actions" | "dining" | "nearbyTask" | "venueRoute" | "workProposal">;
       if (action === "cancel") {
         reply = { text: "이 대화에서 이어가던 요청을 중단했어요. 행사방에 저장된 기록은 변경하지 않았습니다.", actions: ["context-cancelled"] };
+      } else if (surveyRead) {
+        reply = { text: surveyStatusText(work.localRead(surveyRead)) };
       } else if (workIntent) {
         reply = loadChatWork(db, actor, scope, workIntent, data.userMessageText);
         if (reply.workProposal?.kind === "survey") work.createLocal();
@@ -395,7 +399,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
           return venueUsed;
         } } : undefined;
         const continuityInstruction = "후속 요청에서는 사용자가 바꾼 조건만 바꾸고 나머지는 유지하세요. 이전 AI 답변은 대화의 후보나 판단이며 저장 또는 확정된 사실이 아닙니다. 임시 가정, 이어가는 조건, 확인된 행사 기록을 구분하세요. 새 요청에는 관련 없는 이전 조건을 적용하지 마세요. 후보나 결정의 근거가 전달되지 않으면 추측하지 마세요. 본인·관리자의 요청에도 생년월일, 연락처, 개인 주소, 이메일, 참가자 명단 원문은 조회하거나 답변에 넣지 마세요.";
-        const surveyInstruction = `현재 대화에서 참조 가능한 설문 작업: ${work.hasPrevious ? "있음" : "없음"}. 참석 조사나 참가 신청용 양식을 실제로 제작하라는 의미이고 지원되는 참가 설문 범위라면 create_survey_draft를 사용하세요. 사용법 질문, 가상 예시, 익명 만족도 조사 등 지원 범위 밖의 요청에 기본 참가 양식을 강제로 생성하지 마세요. 목적과 현재 행사 조건을 고려하고 도구가 지원하지 않는 문항이나 분기를 생성했다고 주장하지 마세요. 이전 초안의 재생성·재출력에는 get_work_draft를 먼저 사용하고 부분 수정에는 해당 조회 버전을 사용하세요. 행사명은 서버가 적용합니다. 일상 대화에는 도구를 호출하지 마세요. 도구를 호출해도 게시, 승인 또는 Google Forms 작성을 완료했다고 답하지 마세요.`;
+        const surveyInstruction = `현재 대화에서 바로 이어갈 수 있는 설문 작업: ${work.hasPrevious ? "있음" : "없음"}. 참석 조사나 참가 신청용 양식을 실제로 제작하라는 의미이고 지원되는 참가 설문 범위라면 create_survey_draft를 사용하세요. 준비 조회와 설문 제작을 함께 명시한 경우 준비 현황을 조회한 다음 초안을 만들 수 있습니다. 조언만 요청한 경우 초안을 만들지 마세요. 사용법 질문, 가상 예시, 익명 만족도 조사 등 지원 범위 밖의 요청에 기본 참가 양식을 강제로 생성하지 마세요. 목적과 행사 조건을 고려하고 도구가 지원하지 않는 문항이나 분기를 생성했다고 주장하지 마세요. 특정 설문의 진행 상태나 다른 작업 이전에 만든 설문은 get_survey_work_status로 확인하세요. 이전 초안의 재생성·재출력에는 get_work_draft를 사용하고 부분 수정에는 해당 조회 버전을 사용하세요. 명시한 필드만 바꾸고 미지정 필드는 null로 보내세요. 행사명은 서버가 적용합니다. 일상 대화에는 도구를 호출하지 마세요. Google Forms 생성 기록은 게시나 응답 접수를 뜻하지 않습니다.`;
         const planning = { definition: preparationFactsTool, run: (args: unknown) => {
           checkExternal();
           if (!object(args) || Object.keys(args).length) throw new ApiError(502, "준비 현황 조회 도구 입력을 확인하지 못했습니다.");
@@ -403,7 +407,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
           return JSON.stringify(preparationUsed);
         } };
         const raw = await generateOpenAIText(chatInput(scope, original.conversation.messages, original.message, memory), request.signal,
-          [chatAdvisorPrompt, continuityInstruction, surveyInstruction, chatOutputInstruction, assistantStyleInstruction(preferences), ...(tool ? ["사용자가 우리 숙소나 행사 장소, 그 주변 식당·활동을 물으면 장소를 다시 묻기 전에 get_current_event_venue를 호출하세요. 결과는 저장된 대표 장소의 공개 기본 정보이며 주변 시설의 최신 검색 결과가 아닙니다."] : [])].join("\n\n"), advisorReplyFormat, [...work.tools, planning, ...(tool ? [tool] : [])], () => {
+          [chatAdvisorPrompt, continuityInstruction, surveyInstruction, chatOutputInstructionV2, assistantStyleInstruction(preferences), ...(tool ? ["사용자가 우리 숙소나 행사 장소, 그 주변 식당·활동을 물으면 장소를 다시 묻기 전에 get_current_event_venue를 호출하세요. 결과는 저장된 대표 장소의 공개 기본 정보이며 주변 시설의 최신 검색 결과가 아닙니다."] : [])].join("\n\n"), advisorReplyFormatV2, [...work.tools, planning, ...(tool ? [tool] : [])], () => {
           checkExternal();
           if (memory && !hasReplyContextConsent(db, actor.id)) throw new ApiError(423, "이전 AI 답변 사용 동의가 변경되었습니다.");
         });
@@ -420,22 +424,29 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
           throw new ApiError(502, "AI 답변에 공개할 수 없는 정보가 포함되어 표시하지 않았습니다. 작성한 질문은 그대로 있으니 ‘답변 다시 요청’을 눌러 주세요.");
         }
         const sourceDate = extractChatCalendarFields(data.userMessageText).date;
+        const status = work.observedStatus();
         reply = {
-          text: format(answer.summary),
+          text: status !== undefined && !preparationUsed ? surveyStatusText(status) : format(answer.summary),
           ...((venueUsed || preparationUsed) && { actions: [...(venueUsed ? [eventPublicVenueUsedAction] : []), ...(preparationUsed ? [preparationFactsAction] : [])] }),
-          advisor: {
+          ...((status === undefined || preparationUsed) && { advisor: {
+            ...("version" in answer && { version: answer.version }),
             kind: answer.kind, title: format(answer.title), rationale: format(answer.rationale),
             rows: answer.rows.map(row => ({ label: format(row.label), detail: format(row.detail) })),
             proposals: (preparationUsed ? [] : answer.proposals).filter(proposal => proposal.kind === "checklist" || proposal.date === sourceDate)
               .map(proposal => ({ ...proposal, title: format(proposal.title) })),
-          },
+          } }),
         };
       }
-      const pendingWork = preparationUsed ? undefined : work.pending();
+      const pendingWork = work.pending();
       if (pendingWork) {
         const { draft, operation } = pendingWork;
-        const workText = { create: "현재 행사의 참가 설문 초안을 만들었어요.", edit: "요청한 문항만 바꿔 새 검토 버전으로 저장했어요.", show: "현재 대화에 저장된 최신 설문 초안이에요.", regenerate: "기존 문항과 조건을 유지해 검토할 새 버전을 만들었어요." };
-        reply = { text: `${workText[operation]} Google Forms에는 아직 생성하지 않았습니다.`, workProposal: { kind: "survey", title: draft.title, draft } };
+        const workText = { create: "현재 행사의 참가 설문 초안을 만들었어요.", edit: "요청한 문항을 바꿔 새 검토 버전으로 저장했어요.", show: "현재 대화의 참가 설문 초안이에요.", regenerate: "기존 문항과 조건을 유지해 검토할 새 버전을 만들었어요." };
+        const status = work.observedStatus();
+        const surveyText = operation === "show" && status ? surveyStatusText(status)
+          : `${workText[operation]} 이 버전을 Google Forms에 생성하려면 별도 승인이 필요합니다.`;
+        reply = { text: preparationUsed ? `${reply.text} ${surveyText}` : surveyText,
+          ...(preparationUsed && { advisor: reply.advisor, actions: reply.actions }),
+          workProposal: { kind: "survey", title: draft.title, draft } };
       }
       transaction(db, () => {
         const latest = currentTurn();
@@ -444,7 +455,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         if (!useLocalReply && !hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
         assertSourcesStillCurrent();
         const replyId = original.nearbyKind && !nearbyKind ? replyIdFor(scope, latest.message, false, false) : latest.replyId;
-        if (!preparationUsed) work.commit(replyId);
+        work.commit(replyId);
         latest.conversation.messages.push({ id: replyId, sender: "assistant", ...reply, time: "방금 전", replyElapsedMs: Math.round(performance.now() - startedAt) });
         const updatedAt = new Date().toISOString();
         latest.conversation.updatedAt = updatedAt;

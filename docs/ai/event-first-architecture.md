@@ -25,4 +25,4 @@ User asks current event progress or continues a survey. Retrieve authorized curr
 - Manual user evaluates actual AI replies; Codex reports actual context/tool/parser evidence; ChatGPT improves generalized prompts. No automatic paid API runs without approval.
 
 ## Current state
-This document is a design contract, not implemented infrastructure. Current branch only changes shared/event prompt text and existing output guidance. No new memory, routing, tool registry, RAG, UI, provider or DB schema is implemented here. Existing master-prompt branch and main are preserved. Coordinate with local Codex before integration.
+The design above is directional. The first implemented slice and its boundaries are recorded in [Phase 1 implementation](event-first-phase1.md). No personal-assistant features, new provider, or RAG are included.

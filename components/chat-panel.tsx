@@ -4,7 +4,7 @@ import { internalChatAction, replyPrivacyNotice } from "@/lib/assistant-privacy"
 
 import { CalendarDays, CalendarPlus, ChevronDown, ClipboardCheck, Copy, Ellipsis, ExternalLink, ListPlus, LoaderCircle, LockKeyhole, MapPin, Paperclip, Pencil, RefreshCw, Reply, Send, UserRound, UsersRound, Utensils, X } from "lucide-react";
 import { chatProposalCandidates, type ChatRosterSource } from "@/lib/chat-tool-candidates";
-import { isAdvisorPresentation } from "@/lib/chat-advisor";
+import { isAdvisorPresentation, type AdvisorPresentation } from "@/lib/chat-advisor";
 import { diningMapUrl, isDiningRecommendations, nearbyDirectionsUrl } from "@/lib/chat-dining";
 import { venueDirectionsUrl } from "@/lib/chat-venue-route";
 import { venueHistoryReplyAction } from "@/lib/retreat-venue-history";
@@ -83,7 +83,7 @@ function MessageTurn({ message, previous, source, server, actions, busy, onRefer
   const { onReviewProposals, retreatVenueScope } = actions;
   const assistant = message.sender === "assistant";
   const count = server && assistant && onReviewProposals ? chatProposalCandidates(previous ? [previous, message] : [message]).length : 0;
-  const review = assistant && onReviewProposals && (!server || count > 0)
+  const review = assistant && onReviewProposals && (count > 0 || !server && message.advisor?.kind !== "list")
     ? <button type="button" className="workspace-review-link" aria-controls="workspace-tools" onClick={() => onReviewProposals(server ? message.id : undefined)}><ClipboardCheck size={15} aria-hidden="true" />{server ? `제안 검토 ${count}건` : "샘플 제안 검토"}</button>
     : null;
   return <article className={`workspace-message ${assistant ? "from-assistant" : "from-user"}`}>
@@ -100,7 +100,7 @@ function MessageTurn({ message, previous, source, server, actions, busy, onRefer
       </p>}
       {assistant && message.workProposal && actions.renderWorkProposal ? <div className="chat-work-answer">
         <p className="workspace-message-text">{message.text}</p>
-        {message.advisor?.rows.length ? <dl className="workspace-plan-rows">{message.advisor.rows.map(row => <div key={row.label}><dt>{row.label}</dt><dd>{row.detail}</dd></div>)}</dl> : null}
+        {isAdvisorPresentation(message.advisor) && <AdvisorRows presentation={message.advisor} />}
         {actions.renderWorkProposal(message)}
       </div> : <MessageBody message={message} review={review} saveNearbyPlace={actions.onSaveNearbyPlace} busy={busy} />}
       {assistant && message.actions?.includes(eventPublicVenueUsedAction) && <p className="workspace-reply-elapsed workspace-reply-completed">행사방 대표 장소 참고</p>}
@@ -109,6 +109,15 @@ function MessageTurn({ message, previous, source, server, actions, busy, onRefer
         <RetreatVenueHistory scope={retreatVenueScope} question={previous?.sender === "user" ? previous.text : ""} />}
     </div>
   </article>;
+}
+
+function AdvisorRows({ presentation }: { presentation: AdvisorPresentation }) {
+  if (!presentation.rows.length) return null;
+  return presentation.kind === "list" ? <ol className="workspace-plan-rows workspace-plan-list">
+    {presentation.rows.map(({ label, detail }) => <li key={label}><strong>{label}</strong><p>{detail}</p></li>)}
+  </ol> : <dl className="workspace-plan-rows">
+    {presentation.rows.map(({ label, detail }, index) => <div key={index}><dt>{label}</dt><dd>{detail}</dd></div>)}
+  </dl>;
 }
 
 function MessageActions({ message, actions, busy, onReference }: { message: ChatMessage; actions: TurnActions; busy: boolean; onReference: (kind: ChatMessageReference["kind"], message: ChatMessage) => void }) {
@@ -251,7 +260,7 @@ function MessageBody({ message, review, saveNearbyPlace, busy }: { message: Chat
     </section>;
   }
   const plan = message.advisor;
-  if (message.sender !== "assistant" || !isAdvisorPresentation(plan) || plan.kind !== "plan") {
+  if (message.sender !== "assistant" || !isAdvisorPresentation(plan) || plan.kind === "chat") {
     const route = message.sender === "assistant" ? message.venueRoute : undefined;
     const href = route ? venueDirectionsUrl(route) : null;
     return <><p className="workspace-message-text workspace-message-bubble">{message.text}</p>
@@ -261,11 +270,9 @@ function MessageBody({ message, review, saveNearbyPlace, busy }: { message: Chat
       </div>}{review}</>;
   }
   return <div className="workspace-plan">
-    <div className="workspace-plan-heading"><span className="workspace-plan-icon"><CalendarDays size={18} aria-hidden="true" /></span><h3>{plan.title}</h3><span className="workspace-plan-state">검토용</span></div>
+    <div className="workspace-plan-heading"><span className="workspace-plan-icon"><CalendarDays size={18} aria-hidden="true" /></span><h3>{plan.title}</h3>{plan.kind === "plan" && <span className="workspace-plan-state">검토용</span>}</div>
     <p className="workspace-message-text">{message.text}</p>
-    {plan.rows.length > 0 && <dl className="workspace-plan-rows">{plan.rows.map((row, index) => <div key={index}>
-      <dt>{row.label}</dt><dd>{row.detail}</dd>
-    </div>)}</dl>}
+    <AdvisorRows presentation={plan} />
     {(plan.rationale || review) && <div className="workspace-plan-footer">{plan.rationale && <details className="workspace-plan-rationale">
       <summary><ChevronDown size={14} aria-hidden="true" />추천 근거</summary>
       <p>{plan.rationale}</p>

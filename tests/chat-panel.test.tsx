@@ -62,6 +62,20 @@ it("renders the recorded duration above the matching assistant reply only", () =
   expect(duration.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
+it("renders ten persisted display-only rows in an ordered list without exposing approval actions or markup", () => {
+  const rows = Array.from({ length: 10 }, (_, index) => ({ label: `준비 ${index + 1}`, detail: "<em>일반 텍스트</em>" }));
+  const message = { ...conversation.messages[1], id: `openai-${"a".repeat(64)}`,
+    advisor: { version: 2 as const, kind: "list" as const, title: "준비 항목", rationale: "", rows, proposals: [] } };
+  const persisted: Conversation = JSON.parse(JSON.stringify({ ...conversation, messages: [conversation.messages[0], message] }));
+  render(<ChatPanel {...props} conversation={persisted} onReviewProposals={vi.fn()} />);
+  const region = within(screen.getByText("예시 답변").closest("article")!);
+  expect(region.getByRole("list").tagName).toBe("OL");
+  expect(region.getAllByRole("listitem")).toHaveLength(10);
+  expect(region.getByText("준비 10")).toBeDefined();
+  expect(region.getAllByText("<em>일반 텍스트</em>")).toHaveLength(10);
+  expect(region.queryByRole("button", { name: /제안 검토/ })).toBeNull();
+});
+
 it("opens message actions and sends a reply to the selected assistant message", () => {
   render(<ChatPanel {...props} conversation={{ ...conversation, draft: "이 답변을 이어서 알려줘" }} />);
   const answer = within(screen.getByText("예시 답변").closest("article")!);

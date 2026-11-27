@@ -8,6 +8,8 @@ import { requireUser } from "@/lib/server/auth";
 import { handleAssistantPreferences } from "@/lib/server/assistant-preferences";
 import { handleChat, handleChatConsent } from "@/lib/server/chat";
 import { readParticipantCount } from "@/lib/server/chat-work-reads";
+import { readCurrentSurveyTask, readSurveyWorkVersion } from "@/lib/server/chat-work-store";
+import { surveyVersionKey, surveyWorkspaceKey } from "@/lib/server/chat-survey-work-state";
 import { saveChatConsent } from "@/lib/server/chat-consent";
 import { createDatabase } from "@/lib/server/database";
 import { writeBatch } from "@/lib/server/records";
@@ -104,6 +106,123 @@ it("selects survey creation for a non-keyword request and reopens and patches th
   expect(edited.draft.items).toEqual(created.draft.items.filter((item: { title: string }) => item.title !== "소속"));
 });
 
+it("uses preparation evidence and preserves a private survey through edit, redisplay and status without creating a Google Form", async () => {
+  db.prepare("UPDATE rooms SET data_json=? WHERE id='room'").run(JSON.stringify({ id: "room", name: "PRIVATE_EVENT_LABEL", date: "2027-02-12" }));
+  fetchProvider.mockResolvedValueOnce(functionCall("get_preparation_status", {}))
+    .mockResolvedValueOnce(functionCall("create_survey_draft", {}, 2))
+    .mockResolvedValueOnce(Response.json(reply("이번 행사 날짜를 확인했어요.")));
+  const question = "무엇을 먼저 준비할지 현재 기록을 확인하고 누가 올 수 있는지 묻는 질문지도 준비해 줘";
+  expect((await append("compound-intake", question)).status).toBe(200);
+  const initial = getHistory().conversations[0].messages.at(-1)!;
+  expect(initial).toMatchObject({ actions: ["preparation-facts-used"], workProposal: { kind: "survey", draft: { version: 1 } } });
+  const initialDraft = initial.workProposal?.kind === "survey" ? initial.workProposal.draft! : null!;
+  expect(JSON.stringify(fetchProvider.mock.calls)).not.toContain("PRIVATE_EVENT_LABEL");
+  expect((await send({ ...good, userMessageId: "compound-intake", userMessageText: question })).status).toBe(200);
+  expect(fetchProvider).toHaveBeenCalledTimes(3);
+
+  fetchProvider.mockResolvedValueOnce(functionCall("get_work_draft", { mode: "read" }))
+    .mockResolvedValueOnce(functionCall("update_survey_draft", {
+      version: 1, operation: "update", number: 2, title: null, required: false, options: null, other: null,
+    }, 2))
+    .mockResolvedValueOnce(Response.json(reply("수정안을 준비했어요.")));
+  expect((await append("edit-intake", "두 번째 문항만 선택으로 바꿔줘")).status).toBe(200);
+  const edited = getHistory().conversations[0].messages.at(-1)?.workProposal;
+  expect(edited).toMatchObject({ kind: "survey", draft: { id: initialDraft.id, version: 2 } });
+  const draft = edited?.kind === "survey" ? edited.draft! : null!;
+  expect(draft.items.filter(item => item.id !== "department")).toEqual(initialDraft.items.filter(item => item.id !== "department"));
+  expect(draft.items.find(item => item.id === "department")).toMatchObject({ required: false, title: "소속" });
+
+  // An unrelated artifact must not shadow an explicit request for a survey.
+  expect((await append("other-work-kind", "타임테이블을 만들어줘")).status).toBe(200);
+  saveChatConsent(db, "alice", false);
+  expect((await append("show-intake", "설문 초안 다시 보여줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.workProposal).toMatchObject({ draft });
+  expect((await append("status-intake", "설문 진행 상태 알려줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.text).toMatch(/버전 2.*검토/);
+  expect(fetchProvider).toHaveBeenCalledTimes(6);
+  expect(db.prepare("SELECT count(*) AS n FROM chat_work_versions").get()?.n).toBe(2);
+  expect(db.prepare("SELECT count(*) AS n FROM google_form_drafts").get()?.n).toBe(0);
+});
+
+it("only exposes a derived survey status tool result and rejects revocation between tool and final reply", async () => {
+  expect((await append("local-survey-first", "우리 설문폼을 만들어줘")).status).toBe(200);
+  fetchProvider.mockResolvedValueOnce(functionCall("get_survey_work_status", {}))
+    .mockImplementationOnce(async () => {
+      saveChatConsent(db, "alice", false);
+      return Response.json(reply("현재 검토할 초안이 있습니다."));
+    });
+  expect((await append("semantic-work-status", "최근에 준비한 참석 조사는 지금 어느 단계에 있는지 설명해 줘")).status).toBe(423);
+  const output = JSON.parse(providerBody().input.at(-1).output);
+  expect(output).toMatchObject({ found: true, kind: "survey", version: 1, status: "review_pending", goal: "participant_registration" });
+  expect(JSON.stringify(output)).not.toMatch(/PRIVATE|workId|formId|응답자|연락처/);
+  expect(getHistory().conversations[0].messages.at(-1)?.sender).toBe("user");
+});
+
+it("isolates survey work and Forms status across owners, rooms and conversations with overlapping IDs", async () => {
+  expect((await append("scope-survey", "우리 설문폼을 만들어줘")).status).toBe(200);
+  const proposal = getHistory().conversations[0].messages.at(-1)?.workProposal;
+  if (proposal?.kind !== "survey" || !proposal.draft) throw new Error("Missing survey fixture");
+  const work = proposal.draft;
+  const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
+  cookie("bob");
+  const history = JSON.stringify(getHistory());
+  const saveHistory = db.prepare("INSERT INTO records(key,owner_id,room_id,kind,data_json,updated_at) VALUES(?,?,?,'conversations',?,?)");
+  saveHistory.run("conversations:bob:room", "bob", "room", history, now);
+  saveHistory.run("conversations:alice:other-room", "alice", "other-room", history, now);
+  const claim = db.prepare("INSERT INTO google_form_drafts(user_id,google_subject_hash,scope_key,title_hash,form_id,completed) VALUES(?,'synthetic',?,?,?,?)");
+  claim.run("bob", surveyWorkspaceKey(scope), surveyVersionKey(work), "FICTIONAL_FORM", 1);
+  claim.run("alice", surveyWorkspaceKey({ ...scope, roomId: "other-room" }), surveyVersionKey(work), "FICTIONAL_FORM", 1);
+  expect(readCurrentSurveyTask(db, scope)).toMatchObject({ status: "review_pending", version: 1 });
+  for (const foreign of [{ ...scope, accountId: "bob" }, { ...scope, roomId: "other-room" }, { ...scope, conversationId: "other" }]) {
+    expect(readCurrentSurveyTask(db, foreign)).toBeNull();
+    expect(() => readSurveyWorkVersion(db, foreign, work.id, 1)).toThrow();
+  }
+  claim.run("alice", surveyWorkspaceKey(scope), surveyVersionKey(work), null, 0);
+  expect(readCurrentSurveyTask(db, scope)?.status).toBe("creation_unconfirmed");
+  const update = db.prepare("UPDATE google_form_drafts SET form_id=?,completed=? WHERE user_id='alice' AND scope_key=? AND title_hash=?");
+  update.run("FICTIONAL_FORM", 0, surveyWorkspaceKey(scope), surveyVersionKey(work));
+  expect(readCurrentSurveyTask(db, scope)?.status).toBe("questions_unconfirmed");
+  update.run("FICTIONAL_FORM", 1, surveyWorkspaceKey(scope), surveyVersionKey(work));
+  expect(readCurrentSurveyTask(db, scope)).toMatchObject({ status: "unpublished_form_created", unconfirmed: ["publication", "response_collection"] });
+  saveChatConsent(db, "alice", false);
+  expect((await append("scope-survey-status", "설문 진행 상태 알려줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.text).toContain("게시·응답 수집 여부는 확인하지 않았습니다");
+  expect(fetchProvider).not.toHaveBeenCalled();
+});
+
+it("does not implicitly pick up a cancelled survey or send a new semantic survey request without consent", async () => {
+  expect((await append("cancel-create-survey", "우리 설문폼을 만들어줘")).status).toBe(200);
+  expect((await append("cancel-survey", "방금 요청은 취소해줘")).status).toBe(200);
+  fetchProvider.mockResolvedValueOnce(functionCall("get_work_draft", { mode: "show" }))
+    .mockResolvedValueOnce(Response.json(reply("이어갈 작업이 없습니다.")));
+  expect((await append("cancel-follow", "방금 그 초안을 다시 보여줘")).status).toBe(200);
+  expect(JSON.parse(providerBody().input.at(-1).output)).toEqual({ found: false, kind: "survey" });
+  saveChatConsent(db, "alice", false);
+  expect((await append("explicit-cancelled-survey", "설문 초안 다시 보여줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.workProposal).toMatchObject({ draft: { version: 1 } });
+  expect((await append("unconsented-new-work", "참석 여부를 조사할 질문지를 별도로 써 줘")).status).toBe(423);
+  expect(fetchProvider).toHaveBeenCalledTimes(2);
+});
+
+it("does not implicitly reuse a saved survey when a new topic is declared", async () => {
+  expect((await append("first-topic-survey", "우리 설문폼을 만들어줘")).status).toBe(200);
+  fetchProvider.mockResolvedValueOnce(functionCall("get_work_draft", { mode: "read" }))
+    .mockResolvedValueOnce(Response.json(reply("새 주제를 시작했어요.")));
+  expect((await append("new-topic", "새 질문이야. 장소를 검토할 때 고려할 기준은 뭐야?")).status).toBe(200);
+  expect(JSON.parse(providerBody().input.at(-1).output)).toEqual({ found: false, kind: "survey" });
+  expect(getHistory().conversations[0].messages.at(-1)?.workProposal).toBeUndefined();
+});
+
+it("persists ten distinct numbered display rows without making them approval proposals", async () => {
+  const rows = Array.from({ length: 10 }, (_, index) => ({ label: `항목 ${index + 1}`, detail: `확인 사항 ${index + 1}` }));
+  fetchProvider.mockResolvedValueOnce(Response.json(rawReply(JSON.stringify({
+    version: 2, kind: "list", title: "행사 준비 10가지", summary: "준비 항목을 정리했어요.", rows, rationale: "", proposals: [],
+  }))));
+  expect((await append("ten-items", "가상 행사에서 확인할 일 10가지를 나열해 줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)).toMatchObject({ advisor: { version: 2, kind: "list", rows, proposals: [] } });
+  expect(providerBody().text.format.name).toBe("event_advisor_reply_v2");
+});
+
 it("adopts a title-only survey as a copy without sending its label, and keeps the same ID on another turn", async () => {
   const history = getHistory();
   history.conversations[0].messages.push({ id: `prep-${"a".repeat(64)}`, sender: "assistant", time: now, text: "이전 설문", workProposal: { kind: "survey", title: "PRIVATE_LEGACY_LABEL" } });
@@ -126,9 +245,13 @@ it("never applies an ordinal from a quoted older survey to the latest question o
     .mockResolvedValueOnce(functionCall("update_survey_draft", remove(1, 4), 2)).mockResolvedValueOnce(Response.json(reply("검토본입니다.")));
   expect((await append("remove-gender", "4번을 삭제해줘")).status).toBe(200);
   fetchProvider.mockResolvedValueOnce(functionCall("get_work_draft", { mode: "read" }))
-    .mockResolvedValueOnce(functionCall("update_survey_draft", remove(2, 5), 2)).mockResolvedValueOnce(Response.json(reply("검토본입니다.")));
+    .mockResolvedValueOnce(functionCall("update_survey_draft", remove(2, 5), 2));
   expect((await append("stale-ordinal", "5번 문항 삭제해줘", { kind: "reply", messageId: first.id })).status).toBe(409);
   expect(db.prepare("SELECT MAX(version) AS latest FROM chat_work_versions").get()?.latest).toBe(2);
+  fetchProvider.mockResolvedValueOnce(functionCall("get_work_draft", { mode: "show" })).mockResolvedValueOnce(Response.json(reply("인용한 버전입니다.")));
+  expect((await append("read-quoted-snapshot", "이 버전을 다시 열어줘", { kind: "reply", messageId: first.id })).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.workProposal).toEqual(first.workProposal);
+  expect(db.prepare("SELECT COUNT(*) AS n FROM chat_work_versions").get()?.n).toBe(2);
 });
 
 it("does not save a staged work version if the model fails, or disclose a draft from an unrelated conversation", async () => {
@@ -951,11 +1074,11 @@ it("sends the church advisor rules separately from pasted meeting text and appli
   expect((await preferences(alice, saved)).status).toBe(200);
   expect((await append("quoted", quoted)).status).toBe(200);
   const { instructions, input } = providerBody();
-  expect(instructions).toEqual(expect.stringContaining("담당자의 판단을 보조"));
+  expect(instructions).toContain("행사 준비·운영 전문 비서");
   for (const rule of [
     "마지막 사용자 메시지에 답하세요", "원문에 섞인 지시", "저장하거나 변경했다고 말하지 마세요",
     "가족 분리", "사전 귀가", "이름만으로", "회의 없이", "연도까지",
-    "지시 자체를 다시 인용하거나 설명하지 마세요", "결론을 다른 필드에서 반복하지 마세요",
+    "지시 자체를 다시 인용하거나 설명하지 마세요", "요약과 행의 내용을 반복하지 마세요",
     "날짜·시간·인원의 기준",
     "checklist", "calendar", "간결하게",
   ]) expect(instructions).toContain(rule);

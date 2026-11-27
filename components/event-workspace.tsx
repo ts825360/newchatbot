@@ -19,7 +19,7 @@ import { appendConversationPlace } from "@/lib/conversation-places";
 import type { ServerSnapshot } from "@/lib/backend-contract";
 import { classifyContinuation } from "@/lib/chat-continuity";
 import { isEventVenueRouteQuestion, venueRouteArrivalMatch, venueTravelAnchor } from "@/lib/chat-venue-route";
-import { localWorkIntent } from "@/lib/chat-work-proposal";
+import { localSurveyRead, localWorkIntent } from "@/lib/chat-work-proposal";
 import { GoogleCalendarConnection } from "./google-calendar-connection";
 import { BlankGoogleFormLink } from "./google-forms-sharing";
 import { useToolsResize } from "./workspace-tools-resize";
@@ -121,7 +121,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
   const canReviewRetreat = isRetreat &&
     retreatReviewPermissions.every(permission => profile.permissions.includes(permission));
   const isLocalQuestion = (text: string, reference?: ChatMessageReference, beforeId?: string) => {
-    if (localWorkIntent(text) || isEventVenueRouteQuestion(text) || classifyContinuation(text) === "cancel" || isPreparationChat(text) || isPreparationStatusChat(text) || isRetreat && isVenueHistoryChat(text)) return true;
+    if (localWorkIntent(text) || localSurveyRead(text) || isEventVenueRouteQuestion(text) || classifyContinuation(text) === "cancel" || isPreparationChat(text) || isPreparationStatusChat(text) || isRetreat && isVenueHistoryChat(text)) return true;
     if (!active || !venueRouteArrivalMatch(text)) return false;
     const index = beforeId ? active.messages.findIndex(item => item.id === beforeId) : -1;
     return Boolean(venueTravelAnchor(index < 0 ? active.messages : active.messages.slice(0, index), reference));

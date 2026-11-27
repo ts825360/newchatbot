@@ -220,6 +220,9 @@
 .workspace-dining-links a { display: inline-flex; align-items: center; min-height: 28px; gap: 5px; font-size: 12px; }
 .workspace-dining-checked { margin: 0; font-size: 12px; line-height: 1.5; }
 .workspace-plan-rows { margin: 13px 0 0; border-radius: 7px; padding: 0 12px; background: hsl(var(--surface-input)); }
+.workspace-plan-list { padding-inline-start: 32px; list-style: decimal; overflow-wrap: anywhere; }
+.workspace-plan-list > li { padding-block: 7px; }
+.workspace-plan-list > li + li { border-top: 1px solid hsl(var(--border)); }
 .workspace-plan-rows > div { display: grid; grid-template-columns: minmax(54px, 16%) minmax(0, 1fr); align-items: baseline; gap: 10px; padding: 9px 0; }
 .workspace-plan-rows > div + div { border-top: 1px solid hsl(var(--border)); }
 .workspace-plan-rows dt { font-size: 13px; font-weight: 700; color: hsl(var(--muted-foreground)); }
