@@ -72,33 +72,60 @@ function newSurvey(db: DatabaseSync, scope: ConversationScope): SurveyDraft {
     title: `${name && name.isWellFormed() && !hasObviousPrivateData(name) ? name : "행사"} 참가 설문`, description: "", items: defaultSurveyItems() };
 }
 
-function applySurveyPatch(draft: SurveyDraft, args: Record<string, unknown>): SurveyDraft {
-  const { operation, number, title, required, options, other } = args;
-  if (!Number.isSafeInteger(number) || Number(number) < 1 || operation !== "remove" && operation !== "update" && operation !== "add"
-    || !(title === null || typeof title === "string") || !(required === null || typeof required === "boolean")
-    || !(options === null || Array.isArray(options) && options.every(option => typeof option === "string")) || !(other === null || typeof other === "boolean")) throw toolError();
+const patchFields = {
+  operation: { type: "string", enum: ["update", "remove", "add"] },
+  title: { type: ["string", "null"] }, required: { type: ["boolean", "null"] },
+  options: { type: ["array", "null"], items: { type: "string" } }, other: { type: ["boolean", "null"] },
+};
+const batchFields = { ...patchFields, number: { type: ["integer", "null"] }, field: { type: ["string", "null"] } };
+
+function applySurveyChanges(draft: SurveyDraft, changes: readonly unknown[]): SurveyDraft {
   const questions = draft.items.filter(item => item.kind !== "section");
-  const target = questions[Number(number) - 1];
+  const keys = new Map(surveyDraftOutline(draft).questions.flatMap(item => item.key ? [[item.key, item.number] as const] : []));
   const choices = (values: string[], freeEntry: boolean) => [...values.map(value => ({ value: value.trim() })), ...(freeEntry ? [{ value: "기타", isOther: true as const }] : [])];
-  let items: SurveyDraftItem[];
-  if (operation === "add") {
-    if (!title || Number(number) < 3 || Number(number) > questions.length + 1) throw invalid();
-    const base = { id: randomUUID(), title: title.trim(), required: required ?? false };
-    const item: SurveyDraftItem = options === null && !other ? { ...base, kind: "text", paragraph: false }
-      : { ...base, kind: "choice", options: choices(options ?? [], other ?? false) };
-    const index = target ? draft.items.indexOf(target) : draft.items.length;
-    items = [...draft.items.slice(0, index), item, ...draft.items.slice(index)];
-  } else {
-    if (!target || target.id === "attendance" || target.id === "name") throw invalid();
-    items = operation === "remove" ? draft.items.filter(item => item.id !== target.id) : draft.items.map(item => {
-      if (item.id !== target.id || item.kind === "section") return item;
-      const changed = { ...item, ...(title !== null && { title: title.trim() }), ...(required !== null && { required }) };
-      if (changed.kind === "choice") return options !== null || other !== null ? { ...changed,
-        options: choices(options ?? changed.options.filter(option => !option.isOther).map(option => option.value), other ?? changed.options.some(option => option.isOther)) } : changed;
-      if (options !== null || other !== null) throw invalid();
-      return changed;
-    });
+  const replacements = new Map<string, SurveyDraftItem | null>();
+  const insertions = new Map<number, SurveyDraftItem[]>();
+  // Resolve every target against the same snapshot so deleting a question cannot shift another edit.
+  for (const patch of changes) {
+    if (!object(patch) || Object.keys(patch).length !== Object.keys(batchFields).length
+      || Object.keys(patch).some(key => !Object.hasOwn(batchFields, key))) throw toolError();
+    const { operation, number, field, title, required, options, other } = patch;
+    if (!(field === null && typeof number === "number" && Number.isSafeInteger(number) || typeof field === "string" && number === null)
+      || operation !== "remove" && operation !== "update" && operation !== "add"
+      || !(title === null || typeof title === "string") || !(required === null || typeof required === "boolean")
+      || !(options === null || Array.isArray(options) && options.every(option => typeof option === "string")) || !(other === null || typeof other === "boolean")) throw toolError();
+    const index = field === null ? Number(number) : keys.get(field);
+    if (index === undefined || index < 1 || index > questions.length + 1) throw invalid();
+    const target = questions[index - 1];
+    if (operation === "add") {
+      if (!title || index < 3) throw invalid();
+      const base = { id: randomUUID(), title: title.trim(), required: required ?? false };
+      const item: SurveyDraftItem = options === null && !other ? { ...base, kind: "text", paragraph: false }
+        : { ...base, kind: "choice", options: choices(options ?? [], other ?? false) };
+      const at = target ? draft.items.indexOf(target) : draft.items.length;
+      insertions.set(at, [...(insertions.get(at) ?? []), item]);
+      continue;
+    }
+    if (!target || target.id === "attendance" || target.id === "name" || replacements.has(target.id)) throw invalid();
+    if (operation === "remove") {
+      if ([title, required, options, other].some(value => value !== null)) throw invalid();
+      replacements.set(target.id, null);
+      continue;
+    }
+    const changed = { ...target, ...(title !== null && { title: title.trim() }), ...(required !== null && { required }) };
+    if (changed.kind === "choice" && (options !== null || other !== null)) {
+      replacements.set(target.id, { ...changed,
+        options: choices(options ?? changed.options.filter(option => !option.isOther).map(option => option.value), other ?? changed.options.some(option => option.isOther)) });
+    } else {
+      if (changed.kind === "text" && (options !== null || other !== null)) throw invalid();
+      replacements.set(target.id, changed);
+    }
   }
+  const items = draft.items.flatMap((item, index) => {
+    const changed = replacements.has(item.id) ? replacements.get(item.id) : item;
+    return [...(insertions.get(index) ?? []), ...(changed ? [changed] : [])];
+  });
+  items.push(...(insertions.get(draft.items.length) ?? []));
   const next = { ...draft, version: draft.version + 1, items };
   if (!isSurveyDraft(next)) throw invalid();
   return next;
@@ -162,8 +189,9 @@ export function createWorkSession(db: DatabaseSync, scope: ConversationScope, me
     operation = action;
     return result(draft);
   };
-  const tool = (name: string, description: string, properties: Record<string, object>, run: (args: Record<string, unknown>) => string): ChatTool => ({
+  const tool = (name: string, description: string, properties: Record<string, object>, run: (args: Record<string, unknown>) => string, policy?: ChatTool["policy"]): ChatTool => ({
     definition: { type: "function", name, description, strict: true, parameters: { type: "object", properties, required: Object.keys(properties), additionalProperties: false } },
+    policy,
     run(args) {
       recheck();
       if (!object(args) || Object.keys(args).length !== Object.keys(properties).length || Object.keys(args).some(key => !Object.hasOwn(properties, key))) throw toolError();
@@ -171,15 +199,31 @@ export function createWorkSession(db: DatabaseSync, scope: ConversationScope, me
     },
   });
   const create = () => stage(newSurvey(db, scope), "create");
+  const edit = (version: unknown, changes: readonly unknown[]) => {
+    if (!readVersion) throw invalid();
+    if (quoted && selected()?.version !== readVersion.version) throw stale();
+    assertQuotedVersion(readVersion);
+    if (version !== readVersion.version || selected()?.version !== version) throw stale();
+    const next = applySurveyChanges(readVersion, changes);
+    if (!isDeepStrictEqual(readVersion.items, next.items)) return stage(next, "edit");
+    show(readVersion);
+    observe(readVersion, quoted);
+    return result(readVersion);
+  };
+  const editPolicy = { requires: ["get_work_draft"], effect: () => "draft" as const };
+  const draftContextKey = () => write ? "staged" : surveySelected ? "explicit" : "implicit";
+  const stagedOutline = (draft: SurveyDraft) => JSON.stringify({ found: true, ...surveyDraftOutline(draft), status: "staged_for_review" });
   const tools: ChatTool[] = [
-    tool("create_survey_draft", "현재 행사의 기본 참가 신청·참석 조사 양식 복사본을 새로 만듭니다. 참가 신청, 참석 여부 수집 의도를 표현에 상관없이 판단하세요. 새 작업일 때만 호출합니다. Google에 생성하거나 게시하지 않습니다.", {}, () => create()),
+    tool("create_survey_draft", "현재 행사의 기본 참가 신청·참석 조사 양식 복사본을 새로 만듭니다. 참가 신청, 참석 여부 수집 의도를 표현에 상관없이 판단하세요. 새 작업일 때만 호출합니다. Google에 생성하거나 게시하지 않습니다.", {}, () => create(), { effect: () => "draft" }),
     tool("get_survey_work_status", "이 개인 대화의 이전 참가 설문을 명시적으로 참조하거나 진행 상태를 확인할 때만 사용합니다. 최신 버전의 조건과 검토·Google 미게시 생성 기록을 확인합니다. 결과의 게시·응답 상태는 미확인입니다. 다른 작업 이후 특정 설문을 다시 조회·수정할 때 이 도구로 대상을 먼저 선택하세요.", {}, () => {
+      if (write) return stagedOutline(write);
       const state = status();
       return JSON.stringify(state ? publicSurveyWorkState(state) : { found: false, kind: "survey" });
-    }),
+    }, { stateKey: () => write ? "staged" : "saved" }),
     tool("get_work_draft", "현재 대화에서 답장한 초안 또는 직전 작업을 조회합니다. 문항 번호 확인은 read, 기존안 재표시는 show, 기존 조건 그대로 새 검토 버전을 만드는 재생성은 regenerate를 사용합니다.",
       { mode: { type: "string", enum: ["read", "show", "regenerate"] } }, ({ mode }) => {
         if (mode !== "read" && mode !== "show" && mode !== "regenerate") throw toolError();
+        if (write) return stagedOutline(write);
         const snapshot = mode !== "regenerate" && quotedSnapshot();
         const current = snapshot || selected();
         if (!current) return result(null);
@@ -194,21 +238,18 @@ export function createWorkSession(db: DatabaseSync, scope: ConversationScope, me
           if (!write) observe(current, !!snapshot);
         }
         return result(current);
-      }),
-    tool("update_survey_draft", "get_work_draft의 버전과 문항 번호로 한 문항을 부분 수정합니다. null인 필드는 보존하고 add는 해당 번호 앞에 삽입합니다. 기타 직접입력은 other로만 지정합니다. 삭제 시 다른 필드는 null로 둡니다.", {
-      version: { type: "integer" }, operation: { type: "string", enum: ["update", "remove", "add"] }, number: { type: "integer" },
-      title: { type: ["string", "null"] }, required: { type: ["boolean", "null"] },
-      options: { type: ["array", "null"], items: { type: "string" } }, other: { type: ["boolean", "null"] },
-    }, args => {
-      if (!readVersion) throw invalid();
-      if (quoted && selected()?.version !== readVersion.version) throw stale();
-      assertQuotedVersion(readVersion);
-      if (args.version !== readVersion.version || selected()?.version !== args.version) throw stale();
-      const next = applySurveyPatch(readVersion, args);
-      if (!isDeepStrictEqual(readVersion.items, next.items)) return stage(next, "edit");
-      show(readVersion);
-      return result(readVersion);
-    }),
+      }, { effect: args => args.mode === "regenerate" ? "draft" : "read",
+        satisfies: args => args.mode === "read" && readVersion !== undefined, stateKey: draftContextKey }),
+    tool("update_survey_draft", "get_work_draft(mode=read)의 버전과 번호로 한 문항을 수정합니다. null 필드는 보존합니다. 의미로 지정하거나 여러 문항을 바꿀 때는 patch_survey_draft를 사용하세요.", {
+      version: { type: "integer" }, number: { type: "integer" }, ...patchFields,
+    }, ({ version, ...patch }) => edit(version, [{ ...patch, field: null }]), editPolicy),
+    tool("patch_survey_draft", "get_work_draft(mode=read)의 같은 버전에서 1~6개 문항을 한 번에 수정합니다. 목적에 해당하는 질문의 key를 field로 쓰거나 번호를 쓰고, 둘 중 하나는 null로 둡니다. add는 해당 질문 앞에 추가합니다. null 필드는 보존하고 삭제의 변경 필드는 null입니다. editable=false, 출발·귀가 분기, 내부 가족 ID를 건드리지 마세요.", {
+      version: { type: "integer" },
+      changes: { type: "array", items: { type: "object", properties: batchFields, required: Object.keys(batchFields), additionalProperties: false } },
+    }, ({ version, changes }) => {
+      if (!Array.isArray(changes) || !changes.length || changes.length > 6) throw toolError();
+      return edit(version, changes);
+    }, editPolicy),
   ];
   return {
     tools,

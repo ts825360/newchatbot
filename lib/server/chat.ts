@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { isEventVenueRouteQuestion, venueTravelAnchor } from "../chat-venue-route";
-import { localSurveyRead, localWorkIntent, requestsChecklistProposal } from "../chat-work-proposal";
+import { localSurveyRead, localWorkIntent, requestsAnonymousSurvey, requestsChecklistProposal } from "../chat-work-proposal";
 import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
 import { eventPublicVenueUsedAction, hasObviousPrivateData, internalChatAction, openAIChatConsentVersion, openAIReplyContextConsentVersion, openAIPrivacyWarning, requestsPersonalDisclosure } from "../assistant-privacy";
-import { isPreparationChat, isPreparationStatusChat } from "../chat-tool-candidates";
+import { hasMultipleChatActions, isPreparationChat, isPreparationStatusChat } from "../chat-tool-candidates";
+import { toolWorkflowLimited } from "../chat-work-result";
 import { advisorReplyFormatV2, parseAdvisorReply } from "../chat-advisor";
 import { extractChatCalendarFields } from "../chat-calendar";
 import { isVenueHistoryChat, venueHistoryReplyAction } from "../retreat-venue-history";
@@ -83,7 +84,7 @@ function replyIdFor(scope: ConversationScope, turn: ChatMessage, internal: boole
 
 function confirmedOpenAITurn(scope: ConversationScope, question?: ChatMessage, reply?: ChatMessage) {
   return question?.sender === "user" && !question.actions?.includes(internalChatAction) && !requestsPersonalDisclosure(question.text) && reply?.sender === "assistant"
-    && !reply.workProposal && reply.id === replyIdFor(scope, question, false, false);
+    && !reply.workProposal && !reply.workResult && reply.id === replyIdFor(scope, question, false, false);
 }
 
 function chatInput(scope: ConversationScope, messages: readonly ChatMessage[], current: ChatMessage, includeReplies: boolean): string | OpenAIChatTurn[] {
@@ -191,7 +192,8 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
     requirePermission(actor, "viewRoom");
     requirePermission(actor, "chat");
     const data = await readJson(request, 64 * 1024);
-    if (!object(data) || Object.keys(data).some((key) => !["roomId", "conversationId", "userMessageId", "userMessageText", "consent"].includes(key)) ||
+    if (!object(data) || Object.keys(data).some((key) => !["roomId", "conversationId", "userMessageId", "userMessageText", "consent", "analyzeCompound"].includes(key)) ||
+      data.analyzeCompound !== undefined && typeof data.analyzeCompound !== "boolean" ||
       !id(data.roomId) || !id(data.conversationId) || !id(data.userMessageId) || !text(data.userMessageText, 8000)) {
       throw new ApiError(400, "대화와 메시지 식별자를 확인해 주세요.");
     }
@@ -203,7 +205,11 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
     const possibleWork = localWorkIntent(data.userMessageText);
     const workIntent = possibleWork === "headcount" && nearbyRequest ? null : possibleWork;
     const surveyRead = localSurveyRead(data.userMessageText);
-    const localReview = workIntent !== null || !!surveyRead || venueRouteQuestion || action === "cancel" || isPreparationChat(data.userMessageText) || isPreparationStatusChat(data.userMessageText) || retreatVenueReview;
+    const preparationStatus = isPreparationStatusChat(data.userMessageText);
+    const preparationChecklist = preparationStatus && requestsChecklistProposal(data.userMessageText);
+    const compound = (workIntent === "headcount" || preparationStatus && !preparationChecklist)
+      && !venueRouteQuestion && !retreatVenueReview && hasMultipleChatActions(data.userMessageText);
+    const localReview = !compound && (workIntent !== null || !!surveyRead || venueRouteQuestion || action === "cancel" || isPreparationChat(data.userMessageText) || preparationStatus || retreatVenueReview);
     if (requestsPersonalDisclosure(data.userMessageText) || (!localReview || venueRouteQuestion || workIntent === "calendar") && hasObviousPrivateData(data.userMessageText)) throw new ApiError(422, openAIPrivacyWarning);
     const scope = { accountId: actor.id, roomId: data.roomId, conversationId: data.conversationId };
     const currentTurn = () => {
@@ -215,16 +221,19 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
       return findTurn(db, scope, data.userMessageId, data.userMessageText, localReview, retreatVenueReview);
     };
     const original = currentTurn();
-    const useLocalReply = localReview || Boolean(original.travelContinuation);
+    const useLocalReply = !compound && (localReview || Boolean(original.travelContinuation));
+    if (compound && data.analyzeCompound !== true) {
+      throw new ApiError(428, "여러 요청을 함께 처리하려면 외부 AI 분석을 확인해 주세요. 외부로 전송하지 않았습니다.");
+    }
     if (!useLocalReply && (!hasChatConsent(db, actor.id) || data.consent !== undefined && data.consent !== openAIChatConsentVersion)) {
       throw new ApiError(423, "환경설정의 보안 및 개인정보에서 외부 AI 이용을 허용해 주세요.");
     }
+    if (original.complete) return json({ ok: true });
     let { nearbyKind } = original;
     const { previousNearby } = original;
     const assertSameHistory = (turn: typeof original) => {
       if (turn.row.revision !== original.row.revision || turn.row.data_json !== original.row.data_json) throw changed();
     };
-    if (original.complete) return json({ ok: true });
     const pending = pendingHistories.get(db) ?? new Set<string>();
     pendingHistories.set(db, pending);
     // All conversations in the same account and room share one optimistic history revision.
@@ -242,22 +251,22 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
       let assertSourcesStillCurrent = () => {};
       let interpretation: NearbyIntent | null | undefined;
       const savePlace = Boolean(previousNearby && wantsPlaceSave(data.userMessageText));
-      if (!useLocalReply && nearbyKind && previousNearby && action === "unknown" && !savePlace && !original.message.reference && !nearbySearchKind(data.userMessageText) && !wantsSavedHeadcount(data.userMessageText)) {
+      if (!compound && !useLocalReply && nearbyKind && previousNearby && action === "unknown" && !savePlace && !original.message.reference && !nearbySearchKind(data.userMessageText) && !wantsSavedHeadcount(data.userMessageText)) {
         const root = original.conversation.messages.find(message => message.id === previousNearby.nearbyTask?.candidateMessageId);
         interpretation = await interpretNearbyFollowUp(data.userMessageText, nearbyKind, (root ?? previousNearby).dining?.restaurants.length ?? 0, request.signal);
         assertSameHistory(currentTurn());
         if (!hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
         if (interpretation?.intent === "unrelated") nearbyKind = null;
       }
-      let reply: Pick<ChatMessage, "text" | "advisor" | "actions" | "dining" | "nearbyTask" | "venueRoute" | "workProposal">;
+      let reply: Pick<ChatMessage, "text" | "advisor" | "actions" | "dining" | "nearbyTask" | "venueRoute" | "workProposal" | "workResult">;
       if (action === "cancel") {
         reply = { text: "이 대화에서 이어가던 요청을 중단했어요. 행사방에 저장된 기록은 변경하지 않았습니다.", actions: ["context-cancelled"] };
       } else if (surveyRead) {
         reply = { text: surveyStatusText(work.localRead(surveyRead)) };
-      } else if (workIntent) {
+      } else if (workIntent && !compound) {
         reply = loadChatWork(db, actor, scope, workIntent, data.userMessageText);
         if (reply.workProposal?.kind === "survey") work.createLocal();
-      } else if (venueRouteQuestion || original.travelContinuation) {
+      } else if (venueRouteQuestion || !compound && original.travelContinuation) {
         const venue = readPublicEventVenue(db, scope);
         let usedSearch = false;
         assertSourcesStillCurrent = () => {
@@ -277,7 +286,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         reply = { text: formatAssistantReply(summarizeRetreatReview(loadRetreatReview(db, actor, scope, "available", new Date(), false), false), preferences.emoji) };
       } else if (localReview) {
         reply = loadPreparationStatus(db, actor, scope, requestsChecklistProposal(data.userMessageText));
-      } else if (nearbyKind) {
+      } else if (nearbyKind && !compound) {
         const previous = previousNearby?.nearbyTask?.kind === nearbyKind ? previousNearby.nearbyTask : undefined;
         const place = nearbyOrigin(data.userMessageText, previous);
         const readVenue = () => place.origin === "hypothetical" && place.venueName ? verifiedPublicPlace(place.venueName)
@@ -386,6 +395,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
             ...(candidateMessageId && { candidateMessageId, ...(selectedCandidateRank && { selectedCandidateRank }) }), ...(venueFingerprint && { venueFingerprint }) };
         }
       } else {
+        if (compound) nearbyKind = null;
         const publicVenue = readPublicEventVenue(db, scope);
         const memory = (action !== "new" || original.message.reference != null) && hasReplyContextConsent(db, actor.id);
         let venueUsed: string | undefined;
@@ -406,11 +416,14 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
           preparationUsed = readPreparationFacts(db, requireUser(request, db), scope);
           return JSON.stringify(preparationUsed);
         } };
+        const orchestration = "복합 요청은 논의할 내용과 실제 초안 작업을 구분하세요. 필요한 근거를 각 도구에서 한 번만 읽고, 수정은 get_work_draft의 read 이후 해당 버전에 대해 의미 key 또는 번호로 지정하세요. 변경이 여러 개면 patch_survey_draft 한 번에 전달하세요. 서버가 초안 저장·검토·게시 상태를 별도로 표시합니다. 실행 상태를 되풀이하거나 단정하지 말고 사용자가 함께 요청한 설명, 근거, 비교, 다음 행동을 답변에 남기세요. 해결하지 못한 요청은 명시하세요.";
+        let workflowStopped = false;
+        const permittedWork = requestsAnonymousSurvey(data.userMessageText) ? work.tools.filter(entry => entry.definition.name !== "create_survey_draft") : work.tools;
         const raw = await generateOpenAIText(chatInput(scope, original.conversation.messages, original.message, memory), request.signal,
-          [chatAdvisorPrompt, continuityInstruction, surveyInstruction, chatOutputInstructionV2, assistantStyleInstruction(preferences), ...(tool ? ["사용자가 우리 숙소나 행사 장소, 그 주변 식당·활동을 물으면 장소를 다시 묻기 전에 get_current_event_venue를 호출하세요. 결과는 저장된 대표 장소의 공개 기본 정보이며 주변 시설의 최신 검색 결과가 아닙니다."] : [])].join("\n\n"), advisorReplyFormatV2, [...work.tools, planning, ...(tool ? [tool] : [])], () => {
+          [chatAdvisorPrompt, continuityInstruction, surveyInstruction, orchestration, chatOutputInstructionV2, assistantStyleInstruction(preferences), ...(tool ? ["사용자가 우리 숙소나 행사 장소, 그 주변 식당·활동을 물으면 장소를 다시 묻기 전에 get_current_event_venue를 호출하세요. 결과는 저장된 대표 장소의 공개 기본 정보이며 주변 시설의 최신 검색 결과가 아닙니다."] : [])].join("\n\n"), advisorReplyFormatV2, [...permittedWork, planning, ...(tool ? [tool] : [])], () => {
           checkExternal();
           if (memory && !hasReplyContextConsent(db, actor.id)) throw new ApiError(423, "이전 AI 답변 사용 동의가 변경되었습니다.");
-        });
+        }, { adaptiveOutput: true, onStopped: () => { workflowStopped = true; } });
         assertSourcesStillCurrent = () => {
           if (memory && !hasReplyContextConsent(db, actor.id)) throw new ApiError(423, "이전 AI 답변 사용 동의가 변경되었습니다.");
           if (venueUsed && venueUsed !== JSON.stringify(readPublicEventVenue(db, scope))) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
@@ -426,15 +439,19 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         const sourceDate = extractChatCalendarFields(data.userMessageText).date;
         const status = work.observedStatus();
         reply = {
-          text: status !== undefined && !preparationUsed ? surveyStatusText(status) : format(answer.summary),
-          ...((venueUsed || preparationUsed) && { actions: [...(venueUsed ? [eventPublicVenueUsedAction] : []), ...(preparationUsed ? [preparationFactsAction] : [])] }),
-          ...((status === undefined || preparationUsed) && { advisor: {
+          text: format(answer.summary),
+          ...(status !== undefined && { workResult: status
+            ? { kind: "survey", operation: "status", version: status.version, status: status.status }
+            : { kind: "survey", operation: "status", version: null, status: "not_found" } }),
+          ...((venueUsed || preparationUsed || workflowStopped) && { actions: [...(venueUsed ? [eventPublicVenueUsedAction] : []),
+            ...(preparationUsed ? [preparationFactsAction] : []), ...(workflowStopped ? [toolWorkflowLimited] : [])] }),
+          advisor: {
             ...("version" in answer && { version: answer.version }),
             kind: answer.kind, title: format(answer.title), rationale: format(answer.rationale),
             rows: answer.rows.map(row => ({ label: format(row.label), detail: format(row.detail) })),
-            proposals: (preparationUsed ? [] : answer.proposals).filter(proposal => proposal.kind === "checklist" || proposal.date === sourceDate)
+            proposals: (preparationUsed || status !== undefined || work.pending() ? [] : answer.proposals).filter(proposal => proposal.kind === "checklist" || proposal.date === sourceDate)
               .map(proposal => ({ ...proposal, title: format(proposal.title) })),
-          } }),
+          },
         };
       }
       const pendingWork = work.pending();
@@ -444,9 +461,13 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         const status = work.observedStatus();
         const surveyText = operation === "show" && status ? surveyStatusText(status)
           : `${workText[operation]} 이 버전을 Google Forms에 생성하려면 별도 승인이 필요합니다.`;
-        reply = { text: preparationUsed ? `${reply.text} ${surveyText}` : surveyText,
-          ...(preparationUsed && { advisor: reply.advisor, actions: reply.actions }),
-          workProposal: { kind: "survey", title: draft.title, draft } };
+        reply = {
+          ...reply,
+          ...(useLocalReply ? { text: surveyText } : { workResult: operation === "show"
+            ? { kind: "survey", operation, version: draft.version, status: status?.status ?? "review_pending" }
+            : { kind: "survey", operation, version: draft.version, status: "review_pending" } }),
+          workProposal: { kind: "survey", title: draft.title, draft },
+        };
       }
       transaction(db, () => {
         const latest = currentTurn();

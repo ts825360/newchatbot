@@ -42,7 +42,7 @@ describe("retreat survey draft formats", () => {
     const current = draft();
     current.items.push({ id: "private-label", kind: "text", title: "비공개 문항", required: false, paragraph: false });
     const outline = surveyDraftOutline(current);
-    expect(outline.questions).toContainEqual({ number: 6, field: "출발 이동수단", type: "choice", editable: false });
+    expect(outline.questions).toContainEqual({ number: 6, field: "출발 이동수단", key: "outbound-method", required: true, type: "choice", editable: false });
     expect(outline.questions.at(-1)).toMatchObject({ field: "사용자 문항" });
     expect(JSON.stringify(outline)).not.toContain("비공개 문항");
   });

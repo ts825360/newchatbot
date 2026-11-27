@@ -36,6 +36,14 @@ export function isPreparationStatusChat(value: string) {
     || /(?:웹사이트|사이트|행사방)(?:의)?\s*(?:저장된\s*)?상태/.test(question);
 }
 
+// This only detects multiple actionable clauses; their meaning is left to the advisor.
+export function hasMultipleChatActions(value: string) {
+  const message = value.normalize("NFKC").replace(/"[^"\n]*"|'[^'\n]*'|“[^”\n]*”|‘[^’\n]*’/g, " ");
+  const actions = message.match(/(?:줘(?:요)?|주(?:세요|십시오)|부탁합니다|(?:해|봐)\s*(?:주고|주면서|주되)|(?:확인|조회|정리|비교|분석|검토|작성|설명|준비|수정|생성|추천)하고|알려주고|보여주고|만들고)(?=[\s,.!?。]|$)|\?/g) ?? [];
+  // "알려줘?" is one action.
+  return actions.length - (message.match(/(?:줘(?:요)?|주(?:세요|십시오)|부탁합니다)\?/g)?.length ?? 0) >= 2;
+}
+
 export function chatProposalCandidates(messages: readonly ChatMessage[]): ProposalDraft[] {
   const result: ProposalDraft[] = [];
   for (let index = messages.length - 1; index >= 0; index--) {

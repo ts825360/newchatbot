@@ -89,6 +89,7 @@ export type ChatMessage = {
   actions?: string[];
   advisor?: import("./chat-advisor").AdvisorPresentation;
   workProposal?: import("./chat-work-proposal").ChatWorkProposal;
+  workResult?: import("./chat-work-result").ChatWorkResult;
   dining?: import("./chat-dining").DiningRecommendations;
   nearbyTask?: import("./chat-dining").NearbyTask;
   venueRoute?: import("./chat-venue-route").VenueRoute;

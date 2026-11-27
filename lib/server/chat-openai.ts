@@ -26,7 +26,23 @@ async function readReply(response: Response): Promise<unknown> {
 }
 
 export type OpenAIChatTurn = { role: "user" | "assistant"; content: string };
-export type ChatTool = { definition: { type: "function"; name: string; strict: true; description: string; parameters: Record<string, unknown> }; run: (argumentsValue: unknown) => string };
+export type ChatTool = {
+  definition: { type: "function"; name: string; strict: true; description: string; parameters: Record<string, unknown> };
+  policy?: { requires?: readonly string[]; effect?: (args: Record<string, unknown>) => "read" | "draft";
+    satisfies?: (args: Record<string, unknown>) => boolean; stateKey?: () => string };
+  run: (argumentsValue: unknown) => string;
+};
+type StopReason = "duplicate" | "draft_already_staged" | "budget";
+type ToolRunOptions = { adaptiveOutput?: boolean; onStopped?: (reason: StopReason) => void };
+const maxToolSteps = 5;
+const defaultOutputTokens = 1200;
+const complexOutputTokens = 1800;
+
+function canonicalArguments(value: unknown): string {
+  if (Array.isArray(value)) return "[" + value.map(canonicalArguments).join(",") + "]";
+  if (!object(value)) return JSON.stringify(value);
+  return "{" + Object.keys(value).sort().map(key => JSON.stringify(key) + ":" + canonicalArguments(value[key])).join(",") + "}";
+}
 const maxInFlight = 4;
 let inFlight = 0;
 
@@ -82,29 +98,36 @@ export function searchOpenAIWeb(input: string, signal: AbortSignal, instructions
   }));
 }
 
-export async function generateOpenAIText(input: string | OpenAIChatTurn[], signal: AbortSignal, instructions = "", format?: Record<string, unknown>, tools: readonly ChatTool[] = [], beforeRequest = () => {}): Promise<string> {
+export async function generateOpenAIText(input: string | OpenAIChatTurn[], signal: AbortSignal, instructions = "", format?: Record<string, unknown>, tools: readonly ChatTool[] = [], beforeRequest = () => {}, options: ToolRunOptions = {}): Promise<string> {
   if ((typeof input === "string" ? [input] : input.map(turn => turn.content)).some(hasObviousPrivateData)) {
     throw new ApiError(422, "개인정보가 포함된 문맥은 외부 AI에 보낼 수 없습니다.");
   }
   return withOpenAI(signal, 45_000, async (request, model) => {
-    const maxCalls = 3;
-    const respond = (context: string | readonly unknown[], finished = false) => {
+    const used = new Set<string>();
+    const completed = new Set<string>();
+    const executed = new Set<string>();
+    const blocked = new Set<string>();
+    let draftStaged = false;
+    const respond = (context: string | readonly unknown[], stopped?: StopReason) => {
       beforeRequest();
+      const nextInstructions = stopped ? [instructions,
+        "Tool execution stopped for this turn. Use only the results already returned. Explain any work left unverified; do not claim a missing step ran."].filter(Boolean).join("\n\n") : instructions;
       return request({
-        ...(instructions && { instructions }), input: context, reasoning: { effort: model === "gpt-6-luna" ? "none" : "low" }, max_output_tokens: 1200,
+        ...(nextInstructions && { instructions: nextInstructions }), input: context, reasoning: { effort: model === "gpt-6-luna" ? "none" : "low" },
+        max_output_tokens: options.adaptiveOutput && executed.size >= 2 ? complexOutputTokens : defaultOutputTokens,
         ...(format && { text: { format } }),
-        ...(tools.length && { tools: tools.map(tool => tool.definition), tool_choice: finished ? "none" : "auto", parallel_tool_calls: false,
+        ...(tools.length && { tools: tools.map(tool => tool.definition), tool_choice: stopped ? "none" : "auto", parallel_tool_calls: false,
           ...(model === "gpt-6.2-sol" && { include: ["reasoning.encrypted_content"] }) }),
       });
     };
     let items = await respond(input);
     const previous: unknown[] = typeof input === "string" ? [{ role: "user", content: input }] : [...input];
-    const used = new Set<string>();
+    let stopped: StopReason | undefined;
     for (;;) {
       const calls = items.filter(item => object(item) && item.type === "function_call");
       if (!calls.length) break;
       const [call] = calls;
-      if (used.size >= maxCalls || calls.length !== 1 || !object(call) || typeof call.call_id !== "string" || used.has(call.call_id)
+      if (stopped || calls.length !== 1 || !object(call) || typeof call.call_id !== "string" || used.has(call.call_id)
         || !/^[a-zA-Z0-9_-]{1,128}$/.test(call.call_id) || typeof call.arguments !== "string" || call.arguments.length > 3200 || hasObviousPrivateData(call.arguments)) throw invalidReply();
       const tool = tools.find(item => item.definition.name === call.name);
       if (!tool) throw invalidReply();
@@ -112,12 +135,33 @@ export async function generateOpenAIText(input: string | OpenAIChatTurn[], signa
       try { args = JSON.parse(call.arguments); } catch { throw invalidReply(); }
       if (!object(args)) throw invalidReply();
       const reasoning = items.filter(item => object(item) && item.type === "reasoning" && typeof item.encrypted_content === "string");
-      const output = tool.run(args);
-      if (output.length > 8000 || hasObviousPrivateData(output)) throw invalidReply();
       used.add(call.call_id);
+      const signature = JSON.stringify([tool.definition.name, tool.policy?.stateKey?.() ?? "", canonicalArguments(args)]);
+      const requires = tool.policy?.requires?.filter(name => !completed.has(name)) ?? [];
+      const blockedSignature = JSON.stringify([signature, requires]);
+      const drafts = tool.policy?.effect?.(args) === "draft";
+      let output: string;
+      if (executed.has(signature) || blocked.has(blockedSignature)) {
+        stopped = "duplicate";
+        output = JSON.stringify({ state: "stopped", reason: stopped });
+      } else if (drafts && draftStaged) {
+        stopped = "draft_already_staged";
+        output = JSON.stringify({ state: "stopped", reason: stopped });
+      } else if (requires.length) {
+        blocked.add(blockedSignature);
+        output = JSON.stringify({ state: "not_ready", requires });
+      } else {
+        output = tool.run(args);
+        executed.add(signature);
+        if (tool.policy?.satisfies?.(args) ?? true) completed.add(tool.definition.name);
+        if (drafts) draftStaged = true;
+      }
+      if (output.length > 8000 || hasObviousPrivateData(output)) throw invalidReply();
       previous.push(...reasoning, { type: "function_call", name: tool.definition.name, call_id: call.call_id, arguments: call.arguments },
         { type: "function_call_output", call_id: call.call_id, output });
-      items = await respond(previous, used.size === maxCalls);
+      stopped ??= used.size >= maxToolSteps ? "budget" : undefined;
+      if (stopped) options.onStopped?.(stopped);
+      items = await respond(previous, stopped);
     }
     const output: string[] = [];
     for (const item of items) {

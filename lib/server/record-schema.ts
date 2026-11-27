@@ -12,6 +12,7 @@ import { isTransportVersionLedger } from "../transport-versions";
 import { isTimetable } from "../timetable";
 import { isAdvisorPresentation } from "../chat-advisor";
 import { isChatWorkProposal } from "../chat-work-proposal";
+import { isChatWorkResult } from "../chat-work-result";
 import { isDiningRecommendations, isNearbyTask } from "../chat-dining";
 import { isVenueRoute } from "../chat-venue-route";
 import { ApiError } from "./http";
@@ -36,6 +37,8 @@ function validConversationMessages(value: unknown) {
     if (m.actions !== undefined && (!Array.isArray(m.actions) || m.actions.length > 20 || !m.actions.every((a: unknown) => text(a, 100)))) return false;
     if (m.advisor !== undefined && (m.sender !== "assistant" || !isAdvisorPresentation(m.advisor))) return false;
     if (m.workProposal !== undefined && (m.sender !== "assistant" || !isChatWorkProposal(m.workProposal))) return false;
+    if (m.workResult !== undefined && (m.sender !== "assistant" || !isChatWorkResult(m.workResult)
+      || m.workResult.operation !== "status" && (m.workProposal?.kind !== "survey" || m.workProposal.draft?.version !== m.workResult.version))) return false;
     if (m.dining !== undefined && (m.sender !== "assistant" || !isDiningRecommendations(m.dining))) return false;
     if (m.nearbyTask !== undefined && (m.sender !== "assistant" || !isNearbyTask(m.nearbyTask))) return false;
     if (m.venueRoute !== undefined && (m.sender !== "assistant" || !isVenueRoute(m.venueRoute))) return false;

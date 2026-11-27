@@ -158,6 +158,81 @@ it("only exposes a derived survey status tool result and rejects revocation betw
   expect(getHistory().conversations[0].messages.at(-1)?.sender).toBe("user");
 });
 
+it("preserves model explanation and rationale separately from a server-verified survey card", async () => {
+  fetchProvider.mockResolvedValueOnce(functionCall("create_survey_draft", {})).mockResolvedValueOnce(Response.json(rawReply(JSON.stringify({
+    kind: "plan", title: "참석 수요 확인", summary: "응답 마감 뒤에 인력을 계산하세요.",
+    rows: [{ label: "활용", detail: "차량과 숙소 수요를 나눠 보세요." }], rationale: "신청과 배정의 기준일을 분리합니다.", proposals: [],
+  }))));
+  expect((await append("survey-and-explanation", "참석 신청 질문지를 준비하고 응답을 어떻게 활용할지도 설명해 줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)).toMatchObject({
+    text: "응답 마감 뒤에 인력을 계산하세요.",
+    advisor: { rationale: "신청과 배정의 기준일을 분리합니다.", rows: [{ label: "활용", detail: "차량과 숙소 수요를 나눠 보세요." }] },
+    workResult: { kind: "survey", operation: "create", version: 1 }, workProposal: { kind: "survey", draft: { version: 1 } },
+  });
+});
+
+it("patches several questions selected by purpose in one new version without shifting original references", async () => {
+  expect((await append("batch-survey", "우리 설문폼을 만들어줘")).status).toBe(200);
+  const first = getHistory().conversations[0].messages.at(-1)?.workProposal;
+  if (first?.kind !== "survey" || !first.draft) throw new Error("Missing draft");
+  const patch = { title: null, required: null, options: null, other: null };
+  fetchProvider.mockResolvedValueOnce(functionCall("get_preparation_status", {}))
+    .mockResolvedValueOnce(functionCall("get_survey_work_status", {}, 2))
+    .mockResolvedValueOnce(functionCall("get_work_draft", { mode: "read" }, 3))
+    .mockResolvedValueOnce(functionCall("patch_survey_draft", { version: 1, changes: [
+      { ...patch, operation: "remove", field: "gender", number: null },
+      { ...patch, operation: "update", field: "lodging", number: null, required: false },
+    ] }, 4)).mockResolvedValueOnce(functionCall("get_survey_work_status", {}, 5))
+    .mockResolvedValueOnce(Response.json(reply("후속 배정과 별개로 문항을 검토하세요.")));
+  expect((await append("batch-survey-edit", "준비 기록을 참고해서 성별은 빼고, 어느 방을 사용하는지는 원할 때만 답하게 해줘")).status).toBe(200);
+  const last = getHistory().conversations[0].messages.at(-1)?.workProposal;
+  if (last?.kind !== "survey" || !last.draft) throw new Error("Missing revised draft");
+  expect(last.draft).toMatchObject({ id: first.draft.id, version: 2 });
+  expect(last.draft.items).toEqual(first.draft.items.flatMap(item => item.id === "gender" ? [] : [item.id === "lodging" ? { ...item, required: false } : item]));
+  expect(db.prepare("SELECT COUNT(*) AS total FROM chat_work_versions").get()?.total).toBe(2);
+  const outline = JSON.parse(providerBody().input.find((item: { call_id?: string; type?: string }) => item.type === "function_call_output" && item.call_id === "call_work_3").output);
+  expect(outline.questions).toEqual(expect.arrayContaining([expect.objectContaining({ key: "gender" }), expect.objectContaining({ key: "lodging" })]));
+  expect(JSON.parse(providerBody().input.at(-1).output)).toMatchObject({ status: "staged_for_review", version: 2 });
+  expect(providerBody()).toMatchObject({ tool_choice: "none", max_output_tokens: 1800 });
+  expect(fetchProvider).toHaveBeenCalledTimes(6);
+});
+
+it.each(["protected", "stale", "duplicate"] as const)("rolls back a survey patch containing a %s target", async failure => {
+  expect((await append("batch-atomic-survey", "우리 설문폼을 만들어줘")).status).toBe(200);
+  const first = String(db.prepare("SELECT data_json FROM chat_work_versions").get()?.data_json);
+  const patch = { title: null, required: null, options: null, other: null };
+  fetchProvider.mockResolvedValueOnce(functionCall("get_work_draft", { mode: "read" }))
+    .mockResolvedValueOnce(functionCall("patch_survey_draft", { version: failure === "stale" ? 9 : 1, changes: [
+      { ...patch, operation: "remove", field: "gender", number: null },
+      { ...patch, operation: "remove", field: failure === "duplicate" ? "gender" : "outbound-method", number: null },
+    ] }, 2));
+  expect((await append("batch-atomic-patch", "설문 내용 두 가지를 바꿔줘")).status).toBe(failure === "stale" ? 409 : 422);
+  expect(db.prepare("SELECT data_json FROM chat_work_versions").all()).toEqual([{ data_json: first }]);
+  expect(getHistory().conversations[0].messages.at(-1)?.sender).toBe("user");
+  expect(fetchProvider).toHaveBeenCalledTimes(2);
+});
+
+it("asks before moving a formerly local compound request to AI and then preserves both requested outputs", async () => {
+  const question = "준비 현황을 확인해 줘. 참가 설문도 만들어 줘.";
+  const stored = getHistory();
+  stored.conversations[0].messages.push({ id: "mixed-local", sender: "user", text: question, time: now });
+  write(stored);
+  const body = { ...good, userMessageId: "mixed-local", userMessageText: question };
+  expect((await send(body)).status).toBe(428);
+  expect(fetchProvider).not.toHaveBeenCalled();
+  saveChatConsent(db, "alice", false);
+  expect((await send({ ...body, analyzeCompound: true })).status).toBe(423);
+  expect(fetchProvider).not.toHaveBeenCalled();
+  saveChatConsent(db, "alice", true);
+  fetchProvider.mockResolvedValueOnce(functionCall("get_preparation_status", {}))
+    .mockResolvedValueOnce(functionCall("create_survey_draft", {}, 2))
+    .mockResolvedValueOnce(Response.json(reply("날짜는 미정입니다.")));
+  expect((await send({ ...body, analyzeCompound: true })).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)).toMatchObject({
+    text: "날짜는 미정입니다.", workResult: { kind: "survey", operation: "create" }, workProposal: { kind: "survey" },
+  });
+});
+
 it("isolates survey work and Forms status across owners, rooms and conversations with overlapping IDs", async () => {
   expect((await append("scope-survey", "우리 설문폼을 만들어줘")).status).toBe(200);
   const proposal = getHistory().conversations[0].messages.at(-1)?.workProposal;

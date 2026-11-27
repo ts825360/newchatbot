@@ -515,6 +515,48 @@ describe("workspace 3-1", () => {
     expect(screen.getByRole("tab", { name: "참가자", selected: true })).toBeDefined();
   });
 
+  it("continues an intercepted compound request only after the explicit analysis action", async () => {
+    const { id: roomId } = props.room;
+    const key = conversationHistoryKey(props.profile.accountId, roomId);
+    let value: string | null = null;
+    let revision = 0;
+    const calls: Record<string, unknown>[] = [];
+    const snapshot = (write = false) => {
+      const record = { key, value, version: String(revision) };
+      return Response.json({ records: [record], written: write ? [record] : undefined, profile: props.profile, activeRoomId: roomId });
+    };
+    vi.stubGlobal("fetch", vi.fn(async (path: string, init: RequestInit) => {
+      if (path === "/api/data" && init.method === "POST") {
+        value = JSON.parse(String(init.body)).writes[0].value;
+        revision++;
+        return snapshot(true);
+      }
+      if (path.startsWith("/api/data")) return snapshot();
+      if (path === "/api/chat" && init.method !== "POST") return Response.json({ approved: true });
+      if (path === "/api/chat") {
+        const request = JSON.parse(String(init.body));
+        calls.push(request);
+        if (request.analyzeCompound !== true) return Response.json({ error: "Confirm analysis" }, { status: 428 });
+        return Response.json({ ok: true });
+      }
+      throw new Error("Unexpected request");
+    }));
+    enableBackendConnection(true);
+    configureBackendUser(props.profile);
+    await refreshBackendData(roomId);
+    render(<EventWorkspace {...props} />);
+    await screen.findByText("외부 AI 허용됨");
+    fireEvent.change(screen.getByRole("textbox", { name: "메시지" }), { target: { value: "준비 현황을 확인해 줘. 참가 설문도 만들어 줘." } });
+    fireEvent.click(screen.getByRole("button", { name: "전송" }));
+    const confirm = await screen.findByRole("button", { name: "외부 AI로 분석" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toHaveProperty("analyzeCompound");
+    await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1]).toEqual({ ...calls[0], analyzeCompound: true });
+  });
+
   it("retains unsaved transport edits across tools and protects navigation", () => {
     render(<EventWorkspace {...props} />);
     openGroupedTool("참가·이동", "차량 배정 열기");

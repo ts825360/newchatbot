@@ -29,7 +29,7 @@ export function isSurveyDraft(v: unknown): v is SurveyDraft {
   const [originalAttendance] = retreatSurveyTemplate;
   if (attendance.id !== "attendance" || JSON.stringify(attendance) !== JSON.stringify(originalAttendance) || section.id !== "attendees" || section.kind !== "section") return false;
   if (!d.items.some(item => item.id === "name" && item.kind === "text" && item.title === surveyFields.name && item.required && !item.paragraph)) return false;
-  // Keep dependent sections contiguous; the existing patch tool edits only one question at a time.
+  // The Forms branches and transport import rely on this contiguous block.
   const transportStart = hasTransport ? d.items.findIndex(item => item.id === retreatTransportBlock[0].id) : -1;
   if (hasTransport && (transportStart < 3 || d.items.findIndex(item => item.id === "name") >= transportStart
     || !transportSnapshot.every((item, i) => JSON.stringify(d.items[transportStart + i]) === item))) return false;
@@ -50,8 +50,9 @@ export function surveyDraftOutline(draft: SurveyDraft) {
   return {
     kind: "survey", version: draft.version, status: "review_only",
     questions: draft.items.filter(item => item.kind !== "section").map((item, index) => ({
-      number: index + 1, field: known.get(item.id) ?? "사용자 문항", type: item.kind,
-      ...(draft.templateVersion === surveyTemplateVersion && transportIds.has(item.id) && { editable: false }),
+      number: index + 1, field: known.get(item.id) ?? "사용자 문항", type: item.kind, required: item.required,
+      ...(known.has(item.id) && { key: item.id }),
+      ...((item.id === "attendance" || item.id === "name" || draft.templateVersion === surveyTemplateVersion && transportIds.has(item.id)) && { editable: false }),
     })),
   };
 }

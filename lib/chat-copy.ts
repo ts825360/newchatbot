@@ -1,4 +1,5 @@
 import { isAdvisorPresentation } from "./chat-advisor";
+import { chatWorkResultText, isChatWorkResult, toolWorkflowLimited, toolWorkflowLimitedText } from "./chat-work-result";
 import { isDiningRecommendations } from "./chat-dining";
 import { retreatSurveyTemplate } from "./retreat-survey-template";
 import { timetableTime } from "./timetable";
@@ -7,10 +8,12 @@ import type { ChatMessage } from "./types";
 export function chatCopyText(message: ChatMessage) {
   if (message.sender !== "assistant") return message.text;
   const lines: string[] = [];
+  if (isChatWorkResult(message.workResult)) lines.push(chatWorkResultText(message.workResult));
+  if (message.actions?.includes(toolWorkflowLimited)) lines.push(toolWorkflowLimitedText);
   const plan = isAdvisorPresentation(message.advisor) && message.advisor.kind !== "chat" ? message.advisor : null;
   const dining = isDiningRecommendations(message.dining) ? message.dining : null;
   if (dining) lines.push(dining.kind === "attraction" ? "주변 관광지 추천" : "주변 식당 추천");
-  else if (plan && !message.workProposal) lines.push(plan.title);
+  else if (plan && (!message.workProposal || message.workResult)) lines.push(plan.title);
   lines.push(message.text);
   if (plan) lines.push(...plan.rows.map((row, index) => `${plan.kind === "list" ? `${index + 1}. ` : ""}${row.label}: ${row.detail}`), plan.rationale);
   if (dining) dining.restaurants.forEach((item, index) => {

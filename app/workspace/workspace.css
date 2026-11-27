@@ -223,6 +223,7 @@
 .workspace-plan-list { padding-inline-start: 32px; list-style: decimal; overflow-wrap: anywhere; }
 .workspace-plan-list > li { padding-block: 7px; }
 .workspace-plan-list > li + li { border-top: 1px solid hsl(var(--border)); }
+.workspace-verified-result { margin: 0 0 8px; padding: 6px 9px; border-inline-start: 2px solid hsl(var(--primary)); color: hsl(var(--foreground)); font-size: 13px; overflow-wrap: anywhere; }
 .workspace-plan-rows > div { display: grid; grid-template-columns: minmax(54px, 16%) minmax(0, 1fr); align-items: baseline; gap: 10px; padding: 9px 0; }
 .workspace-plan-rows > div + div { border-top: 1px solid hsl(var(--border)); }
 .workspace-plan-rows dt { font-size: 13px; font-weight: 700; color: hsl(var(--muted-foreground)); }

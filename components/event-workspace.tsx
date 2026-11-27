@@ -40,7 +40,8 @@ import type { PreparationRecordTarget } from "./workspace-preparation-records";
 const isTransportTool = (tool: Tool) => tool === "transport" || tool === "lodging";
 const narrowWorkspace = 760;
 type PanelContent = Tool | "summary";
-type ChatPrivacyNotice = { identity: string; reason: "consent" | "private"; save?: { text: string; reference?: ChatMessageReference } };
+type ChatPrivacyNotice = { identity: string; reason: "consent" | "private" | "compound"; save?: { text: string; reference?: ChatMessageReference };
+  turn?: { conversationId: string; id: string; text: string; reference?: ChatMessageReference } };
 const scheduleViews = [{ id: "calendar", label: "공동 캘린더", icon: CalendarDays }, { id: "timetable", label: "타임테이블", icon: CalendarClock }] as const;
 
 export function EventWorkspace({ room, profile, seedMessages, notice, noticeError, darkMode, onToggleTheme, onSignOut, onBackToRooms, onOpenSettings, onOpenPrivacySettings, onAddExtractedEvent, onAddExtractedChecklist, onAddChatEvent, canAddChatEvent, onAddChatChecklist, onScopeChange, renderTools, renderProposals, renderWorkProposal, overview }: {
@@ -192,7 +193,7 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
     try { setHistory(store.setDraft(active.id, draft)); setUnsavedDraft(false); setError(""); }
     catch (cause) { setHistory({ ...history, conversations: history.conversations.map((item) => item.id === active.id ? { ...item, draft } : item) }); setUnsavedDraft(true); setError(message(cause)); }
   };
-  const requestReply = async (conversationId: string, userMessageId: string, userMessageText: string, reference?: ChatMessageReference) => {
+  const requestReply = async (conversationId: string, userMessageId: string, userMessageText: string, reference?: ChatMessageReference, analyzeCompound = false) => {
     const controller = new AbortController();
     const stillCurrent = () => !controller.signal.aborted && getBackendProfile()?.accountId === accountId;
     chatRequest.current = controller;
@@ -202,11 +203,15 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
       if (!stillCurrent()) return;
       await backendFetch("/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
-        body: JSON.stringify({ roomId: room.id, conversationId, userMessageId, userMessageText }),
+        body: JSON.stringify({ roomId: room.id, conversationId, userMessageId, userMessageText, ...(analyzeCompound && { analyzeCompound }) }),
       });
       if (stillCurrent()) await refreshBackendData(room.id, null);
     } catch (cause) {
-      if (stillCurrent() && cause instanceof BackendError && cause.status === 423 && !isLocalQuestion(userMessageText, reference, userMessageId)) {
+      if (stillCurrent() && cause instanceof BackendError && cause.status === 428) {
+        setPrivacyNotice({ identity, reason: "compound", turn: { conversationId, id: userMessageId, text: userMessageText, reference } });
+        return;
+      }
+      if (stillCurrent() && cause instanceof BackendError && cause.status === 423 && (analyzeCompound || !isLocalQuestion(userMessageText, reference, userMessageId))) {
         setExternalAI({ account: accountId, approved: false });
         setPrivacyNotice({ identity, reason: "consent" });
         return;
@@ -405,7 +410,14 @@ export function EventWorkspace({ room, profile, seedMessages, notice, noticeErro
         externalAIApproved={consentApproved}
         onSaveNearbyPlace={server && readyScope && canChat ? name => saveNearbyPlace(readyScope, name) : undefined}
         privacyNotice={activePrivacyNotice && <div className="workspace-notice workspace-ai-notice" role="alert">
-          <span>{activePrivacyNotice.reason === "private" ? openAIPrivacyWarning : "외부 AI 이용이 꺼져 있어 전송하지 않았습니다."}</span>
+          <span>{activePrivacyNotice.reason === "private" ? openAIPrivacyWarning : activePrivacyNotice.reason === "compound"
+            ? "여러 요청이 포함되어 있습니다. 외부 AI 분석을 선택하기 전까지는 전송하지 않습니다." : "외부 AI 이용이 꺼져 있어 전송하지 않았습니다."}</span>
+          {activePrivacyNotice.reason === "compound" && activePrivacyNotice.turn && <button type="button" className="workspace-start-button" disabled={chatBusy} onClick={() => {
+            const turn = activePrivacyNotice.turn!;
+            if (active?.id !== turn.conversationId || active.messages.at(-1)?.id !== turn.id) return;
+            setPrivacyNotice(null);
+            void requestReply(turn.conversationId, turn.id, turn.text, turn.reference, true);
+          }}>외부 AI로 분석</button>}
           {activePrivacyNotice.reason === "consent" && <a href={externalAISettingsHref} onClick={event => {
             if (onOpenPrivacySettings && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
               event.preventDefault(); navigate(onOpenPrivacySettings);

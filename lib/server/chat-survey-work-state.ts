@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { SurveyDraft } from "../chat-survey-draft";
 import type { ConversationScope } from "../conversation-scope";
+import { chatWorkResultText } from "../chat-work-result";
 
 export const surveyWorkspaceKey = (scope: Pick<ConversationScope, "roomId" | "conversationId">) =>
   JSON.stringify([scope.roomId, scope.conversationId]);
@@ -40,12 +41,7 @@ export function publicSurveyWorkState(state: SurveyWorkState) {
 }
 
 export function surveyStatusText(state: SurveyWorkState | null) {
-  if (!state) return "이 개인 대화에는 저장된 참가 설문 초안이 없어요.";
-  const details: Record<SurveyWorkState["status"], string> = {
-    review_pending: "검토 대기 중입니다. 문항을 확인하고 승인해야 Google Forms에 미게시 초안이 생성됩니다.",
-    creation_unconfirmed: "Google Forms 생성 결과를 확인하지 못했습니다. 중복 생성을 피하려면 Google Forms에서 먼저 확인해 주세요.",
-    questions_unconfirmed: "Google Forms의 미게시 양식은 생성됐지만 문항 반영은 확인되지 않았습니다. Google Forms에서 확인해 주세요.",
-    unpublished_form_created: "Google Forms에 미게시 초안으로 생성한 기록이 있습니다. 현재 게시·응답 수집 여부는 확인하지 않았습니다.",
-  };
-  return `참가 설문 버전 ${state.version} · ${details[state.status]}`;
+  return chatWorkResultText(state
+    ? { kind: "survey", operation: "status", version: state.version, status: state.status }
+    : { kind: "survey", operation: "status", version: null, status: "not_found" });
 }

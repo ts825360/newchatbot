@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { generateOpenAIText } from "@/lib/server/chat-openai";
+import { generateOpenAIText, type ChatTool } from "@/lib/server/chat-openai";
 
 const upstream = vi.fn<typeof fetch>();
 const signal = new AbortController().signal;
@@ -17,6 +17,71 @@ beforeEach(() => {
   vi.stubGlobal("fetch", upstream.mockReset().mockImplementation(async () => Response.json(reply)));
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+
+const toolCall = (name: string, id: string, args = "{}") => Response.json({
+  status: "completed", output: [{ type: "function_call", name, call_id: id, arguments: args }],
+});
+const capability = (name: string, policy?: ChatTool["policy"]) => ({
+  definition: { type: "function" as const, strict: true as const, name, description: name, parameters: { type: "object" } },
+  run: vi.fn(() => '{"verified":true}'), policy,
+});
+const requestBody = (index: number) => JSON.parse(String(upstream.mock.calls[index][1]?.body));
+
+it("continues four useful dependent steps in one bounded run and expands only the complex final answer budget", async () => {
+  const tools = [capability("prepare"), capability("status"), capability("read"), capability("edit", { requires: ["read"], effect: () => "draft" })];
+  tools.forEach((tool, index) => upstream.mockResolvedValueOnce(toolCall(tool.definition.name, "step_" + index)));
+  await expect(generateOpenAIText("합성 복합 요청", signal, "", undefined, tools, undefined, { adaptiveOutput: true })).resolves.toBe("테스트 답변");
+  expect(upstream).toHaveBeenCalledTimes(5);
+  for (const tool of tools) expect(tool.run).toHaveBeenCalledOnce();
+  expect(requestBody(0).max_output_tokens).toBe(1200);
+  expect(requestBody(4).max_output_tokens).toBe(1800);
+});
+
+it("does not repeat an equivalent tool call with a new call id or reordered args", async () => {
+  const tool = capability("read");
+  const limited = vi.fn();
+  upstream.mockResolvedValueOnce(toolCall("read", "one", '{"a":1,"b":2}'))
+    .mockResolvedValueOnce(toolCall("read", "two", '{"b":2,"a":1}'));
+  await expect(generateOpenAIText("합성 조회", signal, "", undefined, [tool], undefined, { onStopped: limited })).resolves.toBe("테스트 답변");
+  expect(tool.run).toHaveBeenCalledOnce();
+  expect(upstream).toHaveBeenCalledTimes(3);
+  expect(requestBody(2).tool_choice).toBe("none");
+  expect(JSON.parse(requestBody(2).input.at(-1).output)).toMatchObject({ state: "stopped", reason: "duplicate" });
+  expect(limited).toHaveBeenCalledWith("duplicate");
+});
+
+it("reports a missing dependency without running a draft and allows an ordered recovery", async () => {
+  const read = capability("read");
+  const edit = capability("edit", { requires: ["read"], effect: () => "draft" });
+  upstream.mockResolvedValueOnce(toolCall("edit", "one"))
+    .mockResolvedValueOnce(toolCall("read", "two"))
+    .mockResolvedValueOnce(toolCall("edit", "three"));
+  await expect(generateOpenAIText("합성 수정", signal, "", undefined, [read, edit])).resolves.toBe("테스트 답변");
+  expect(JSON.parse(requestBody(1).input.at(-1).output)).toMatchObject({ state: "not_ready", requires: ["read"] });
+  expect(read.run).toHaveBeenCalledOnce();
+  expect(edit.run).toHaveBeenCalledOnce();
+});
+
+it("forces a single final response after the tool budget and rejects a further tool request", async () => {
+  const tool = capability("read");
+  const limited = vi.fn();
+  for (let index = 0; index < 6; index++) upstream.mockResolvedValueOnce(toolCall("read", "step_" + index, JSON.stringify({ index })));
+  await expect(generateOpenAIText("검증용 요청", signal, "", undefined, [tool], undefined, { onStopped: limited })).rejects.toMatchObject({ status: 502 });
+  expect(upstream).toHaveBeenCalledTimes(6);
+  expect(tool.run).toHaveBeenCalledTimes(5);
+  expect(requestBody(5).tool_choice).toBe("none");
+  expect(limited).toHaveBeenCalledWith("budget");
+});
+
+it("leaves a second draft action unexecuted and completes with the first result", async () => {
+  const first = capability("first", { effect: () => "draft" });
+  const other = capability("other", { effect: () => "draft" });
+  upstream.mockResolvedValueOnce(toolCall("first", "one")).mockResolvedValueOnce(toolCall("other", "two"));
+  await expect(generateOpenAIText("합성 초안 요청", signal, "", undefined, [first, other])).resolves.toBe("테스트 답변");
+  expect(first.run).toHaveBeenCalledOnce();
+  expect(other.run).not.toHaveBeenCalled();
+  expect(JSON.parse(requestBody(2).input.at(-1).output)).toMatchObject({ reason: "draft_already_staged" });
+});
 
 it("uses Luna by default, sends one message to the fixed Responses URL without tools or storage, and returns only the answer", async () => {
   await expect(generateOpenAIText("테스트 질문", signal, "테스트 지침")).resolves.toBe("테스트 답변");

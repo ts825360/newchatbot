@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, expect, it, vi } from "vitest";
 import { ChatPanel } from "../components/chat-panel";
 import type { Conversation } from "../lib/conversation-store";
+import { defaultSurveyItems } from "../lib/chat-survey-draft";
 
 const conversation: Conversation = {
   id: "example", title: "예시 대화", draft: "", createdAt: "2026-11-26", updatedAt: "2026-11-26",
@@ -74,6 +75,26 @@ it("renders ten persisted display-only rows in an ordered list without exposing 
   expect(region.getByText("준비 10")).toBeDefined();
   expect(region.getAllByText("<em>일반 텍스트</em>")).toHaveLength(10);
   expect(region.queryByRole("button", { name: /제안 검토/ })).toBeNull();
+});
+
+it("shows verified survey status before the explanation and keeps the rationale next to the artifact", () => {
+  const message: Conversation["messages"][number] = {
+    ...conversation.messages[1],
+    text: "차량 수요는 응답 이후에 계산합니다.",
+    advisor: { kind: "plan", title: "응답 이후 할 일", rows: [{ label: "인원 집계", detail: "회신을 집계합니다." }], rationale: "확정 인원을 기준으로 합니다.", proposals: [] },
+    workResult: { kind: "survey", operation: "create", version: 1, status: "review_pending" },
+    workProposal: { kind: "survey", title: "참가 설문", draft: {
+      id: "cafebabe-0000-0000-0000-000000000001", version: 1, template: "retreat", templateVersion: 2,
+      title: "참가 설문", description: "", items: defaultSurveyItems(),
+    } },
+  };
+  render(<ChatPanel {...props} conversation={{ ...conversation, messages: [message] }} renderWorkProposal={() => <p>설문 검토 카드</p>} />);
+  const verified = screen.getByText("서버 확인");
+  const explanation = screen.getByText("차량 수요는 응답 이후에 계산합니다.");
+  expect(verified.parentElement?.textContent).toContain("별도 승인");
+  expect(verified.compareDocumentPosition(explanation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByText("확정 인원을 기준으로 합니다.").closest("details")).not.toBeNull();
+  expect(screen.getByText("설문 검토 카드")).toBeDefined();
 });
 
 it("opens message actions and sends a reply to the selected assistant message", () => {

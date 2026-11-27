@@ -5,6 +5,7 @@ import { internalChatAction, replyPrivacyNotice } from "@/lib/assistant-privacy"
 import { CalendarDays, CalendarPlus, ChevronDown, ClipboardCheck, Copy, Ellipsis, ExternalLink, ListPlus, LoaderCircle, LockKeyhole, MapPin, Paperclip, Pencil, RefreshCw, Reply, Send, UserRound, UsersRound, Utensils, X } from "lucide-react";
 import { chatProposalCandidates, type ChatRosterSource } from "@/lib/chat-tool-candidates";
 import { isAdvisorPresentation, type AdvisorPresentation } from "@/lib/chat-advisor";
+import { chatWorkResultText, isChatWorkResult, toolWorkflowLimited, toolWorkflowLimitedText } from "@/lib/chat-work-result";
 import { diningMapUrl, isDiningRecommendations, nearbyDirectionsUrl } from "@/lib/chat-dining";
 import { venueDirectionsUrl } from "@/lib/chat-venue-route";
 import { venueHistoryReplyAction } from "@/lib/retreat-venue-history";
@@ -98,9 +99,15 @@ function MessageTurn({ message, previous, source, server, actions, busy, onRefer
       {assistant && message.replyElapsedMs != null && <p className="workspace-reply-elapsed workspace-reply-completed">
         {message.replyElapsedMs < 1000 ? "1초 미만" : `${Math.floor(message.replyElapsedMs / 1000)}초`} 소요
       </p>}
+      {assistant && isChatWorkResult(message.workResult) && <p className="workspace-verified-result"><strong>서버 확인</strong> {chatWorkResultText(message.workResult)}</p>}
+      {assistant && message.actions?.includes(toolWorkflowLimited) && <p className="workspace-verified-result">{toolWorkflowLimitedText}</p>}
       {assistant && message.workProposal && actions.renderWorkProposal ? <div className="chat-work-answer">
         <p className="workspace-message-text">{message.text}</p>
-        {isAdvisorPresentation(message.advisor) && <AdvisorRows presentation={message.advisor} />}
+        {isAdvisorPresentation(message.advisor) && <>
+          {message.workResult && message.advisor.title && <h3>{message.advisor.title}</h3>}
+          <AdvisorRows presentation={message.advisor} />
+          {message.workResult && <AdvisorRationale rationale={message.advisor.rationale} />}
+        </>}
         {actions.renderWorkProposal(message)}
       </div> : <MessageBody message={message} review={review} saveNearbyPlace={actions.onSaveNearbyPlace} busy={busy} />}
       {assistant && message.actions?.includes(eventPublicVenueUsedAction) && <p className="workspace-reply-elapsed workspace-reply-completed">행사방 대표 장소 참고</p>}
@@ -118,6 +125,13 @@ function AdvisorRows({ presentation }: { presentation: AdvisorPresentation }) {
   </ol> : <dl className="workspace-plan-rows">
     {presentation.rows.map(({ label, detail }, index) => <div key={index}><dt>{label}</dt><dd>{detail}</dd></div>)}
   </dl>;
+}
+
+function AdvisorRationale({ rationale }: { rationale: string }) {
+  return rationale ? <details className="workspace-plan-rationale">
+    <summary><ChevronDown size={14} aria-hidden="true" />추천 근거</summary>
+    <p>{rationale}</p>
+  </details> : null;
 }
 
 function MessageActions({ message, actions, busy, onReference }: { message: ChatMessage; actions: TurnActions; busy: boolean; onReference: (kind: ChatMessageReference["kind"], message: ChatMessage) => void }) {
@@ -273,9 +287,6 @@ function MessageBody({ message, review, saveNearbyPlace, busy }: { message: Chat
     <div className="workspace-plan-heading"><span className="workspace-plan-icon"><CalendarDays size={18} aria-hidden="true" /></span><h3>{plan.title}</h3>{plan.kind === "plan" && <span className="workspace-plan-state">검토용</span>}</div>
     <p className="workspace-message-text">{message.text}</p>
     <AdvisorRows presentation={plan} />
-    {(plan.rationale || review) && <div className="workspace-plan-footer">{plan.rationale && <details className="workspace-plan-rationale">
-      <summary><ChevronDown size={14} aria-hidden="true" />추천 근거</summary>
-      <p>{plan.rationale}</p>
-    </details>}{review}</div>}
+    {(plan.rationale || review) && <div className="workspace-plan-footer"><AdvisorRationale rationale={plan.rationale} />{review}</div>}
   </div>;
 }
