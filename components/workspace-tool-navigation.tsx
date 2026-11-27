@@ -1,6 +1,6 @@
 "use client";
 
-import { BedDouble, BusFront, CalendarDays, ChevronDown, ClipboardCheck, Folder, ListChecks, MapPin, MessageSquare, PanelRight, ScanSearch, UsersRound } from "lucide-react";
+import { BedDouble, BusFront, CalendarDays, ChevronDown, ClipboardCheck, Folder, ListChecks, MapPin, MessageSquare, PanelRightClose, PanelRightOpen, ScanSearch, UsersRound } from "lucide-react";
 import { useEffect, useState, type Ref } from "react";
 
 export const workspaceTools = {
@@ -25,20 +25,23 @@ export function workspaceToolTrigger(tool: WorkspaceTool) {
   return group ? `[data-workspace-tool-group="${group.id}"]` : `[data-tool="${tool}"]`;
 }
 
-export function WorkspaceToolNavigation({ navRef, summaryRef, active, showChat, showSummary, hasSummary, canShow, isDisabled, onChat, onSummary, onTool }: {
+export function WorkspaceToolNavigation({ navRef, panelRef, active, showChat, panelOpen, hasPanel, canExpand, expanded, canShow, isDisabled, onChat, onPanel, onTool }: {
   navRef: Ref<HTMLElement>;
-  summaryRef: Ref<HTMLButtonElement>;
+  panelRef: Ref<HTMLButtonElement>;
   active: WorkspaceTool | null;
   showChat: boolean;
-  showSummary: boolean;
-  hasSummary: boolean;
+  panelOpen: boolean;
+  hasPanel: boolean;
+  canExpand: boolean;
+  expanded: boolean;
   canShow: (tool: WorkspaceTool) => boolean;
   isDisabled: (tool: WorkspaceTool) => boolean;
   onChat: () => void;
-  onSummary: () => void;
+  onPanel: () => void;
   onTool: (tool: WorkspaceTool) => void;
 }) {
   const [menu, setMenu] = useState<(typeof groups)[number]["id"] | null>(null);
+  const panelLabel = panelOpen ? "오른쪽 패널 접기" : "오른쪽 패널 열기";
   useEffect(() => {
     if (!menu) return;
     const dismiss = (event: PointerEvent) => {
@@ -51,12 +54,14 @@ export function WorkspaceToolNavigation({ navRef, summaryRef, active, showChat, 
   const toolButton = (tool: WorkspaceTool, inMenu = false) => {
     const { name, Icon } = workspaceTools[tool];
     const selected = active === tool;
+    const action = !selected ? "열기" : !inMenu && canExpand ? expanded ? "축소" : "확대" : "";
+    const label = [name, action].filter(Boolean).join(" ");
     return <button key={tool} type="button" className={inMenu ? "workspace-tool-option" : "workspace-tool-button"}
-      data-tool={tool} aria-label={`${name} ${selected ? "닫기" : "열기"}`} aria-pressed={selected} aria-controls="workspace-tools"
+      data-tool={tool} aria-label={label} title={label} aria-pressed={selected} aria-controls="workspace-tools"
       disabled={isDisabled(tool)} onClick={event => {
         if (inMenu) event.currentTarget.closest("[data-tool-disclosure]")?.querySelector<HTMLButtonElement>("[data-workspace-tool-group]")?.focus();
         setMenu(null);
-        onTool(tool);
+        if (!inMenu || !selected) onTool(tool);
       }}><Icon size={17} aria-hidden="true" /><span>{name}</span></button>;
   };
 
@@ -80,14 +85,14 @@ export function WorkspaceToolNavigation({ navRef, summaryRef, active, showChat, 
           <button type="button" className="workspace-tool-button" data-workspace-tool-group={id} data-active={selected}
             aria-expanded={expanded} aria-controls={`workspace-tool-menu-${id}`}
             aria-description={selected ? `선택한 도구: ${workspaceTools[active].name}` : undefined}
-            onClick={() => setMenu(expanded ? null : id)}><Icon size={17} aria-hidden="true" /><span>{label}</span><ChevronDown size={13} aria-hidden="true" /></button>
+            onClick={() => setMenu(expanded ? null : id)}><Icon size={17} aria-hidden="true" /><span>{label}</span><ChevronDown className="workspace-tool-chevron" size={13} aria-hidden="true" /></button>
           <div className="workspace-tool-options" id={`workspace-tool-menu-${id}`} role="group" aria-label={`${label} 도구`} hidden={!expanded}>{available.map(tool => toolButton(tool, true))}</div>
         </div>;
       })}
       {toolButton("documents")}
     </div>
-    {hasSummary && <button ref={summaryRef} type="button" className="workspace-tool-button workspace-overview-trigger"
-      aria-label={showSummary ? "행사 요약 닫기" : "행사 요약 열기"} aria-expanded={showSummary} aria-controls="workspace-tools"
-      onClick={() => { setMenu(null); onSummary(); }}><PanelRight size={18} aria-hidden="true" /><span>행사 요약</span></button>}
+    <button ref={panelRef} type="button" className="workspace-tool-button workspace-overview-trigger" disabled={!hasPanel}
+      aria-label={panelLabel} title={hasPanel ? panelLabel : "열 수 있는 오른쪽 패널이 없습니다."} aria-expanded={panelOpen} aria-controls="workspace-tools"
+      onClick={() => { setMenu(null); onPanel(); }}>{panelOpen ? <PanelRightClose size={18} aria-hidden="true" /> : <PanelRightOpen size={18} aria-hidden="true" />}</button>
   </nav>;
 }

@@ -3,6 +3,21 @@ import { analyzeSurvey, defaultSurveyMapping, parseSurveyCsv, surveyTransportInp
 import { createTransportDemo, createTransportDraft, driverIdFor, driverOption, transportRosterCsv, validateTransportInput } from "@/lib/transport";
 
 describe("transport survey", () => {
+  it("maps explicit gender and distinguishes group travel, self-driving, and unconfirmed travel", () => {
+    const data = parseSurveyCsv("참석 여부,이름,소속,성별,이동수단,숙소 배정\nO,가상1,청년부,남성,왕복 자차,단체방\nO,가상2,청소년부,여성,단체 이동,단체방\nO,가상3,청년부,응답하지 않음,가족 차량 동승,가족방\nO,가상4,청년부,,금요일에만 가족과 합류,단체방");
+    const review = analyzeSurvey(data, defaultSurveyMapping(data.headers));
+    expect(review.canImport).toBe(true);
+    const input = createTransportDraft();
+    input.vehicles = [{ id: "v", label: "가상 차량", capacity: 5, enabled: true, rental: false, rentalCost: 0, driverId: null, tripIds: ["main", "normal"] }];
+    const next = surveyTransportInput(input, review);
+    expect(next.people[0]).toMatchObject({ gender: "male", outboundTripId: null, returnTripId: null });
+    expect(next.people[1]).toMatchObject({ gender: "female", outboundTripId: "main", returnTripId: "normal" });
+    expect(next.people[2]).toMatchObject({ movement: "가족 차량 동승", outboundEntry: "설문 이동수단 확인 필요", returnEntry: "설문 이동수단 확인 필요" });
+    expect(next.people[2].gender).toBeUndefined();
+    expect(next.people[3]).toMatchObject({ movement: "금요일에만 가족과 합류", outboundEntry: "설문 이동수단 확인 필요" });
+    expect(validateTransportInput(next, { draft: true })).toEqual([]);
+    expect(validateTransportInput(next).join(" ")).toContain("설문 이동수단 확인 필요");
+  });
   it("imports departure teams, return plans and additional answers without guessing unmatched trip text", () => {
     const data = parseSurveyCsv("참석 여부,이름,소속,가족ID,출발,귀가,기타 특이사항\nO,가상1,청년부,F2,후발대,사전 귀가,확인\nO,가상2,청년부,F10,선발대,개별 이동,\nO,가상3,청년부,,오후 7시,정상 귀가,");
     const input = createTransportDraft();

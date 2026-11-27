@@ -20,10 +20,34 @@ function loadDemo() {
   fireEvent.click(screen.getByRole("button", { name: "가상 예시 불러오기" }));
   fireEvent.click(screen.getByRole("button", { name: "예시 불러오기" }));
 }
+const openBoard = () => fireEvent.click(screen.getByRole("tab", { name: "배치" }));
 
 afterEach(() => { cleanup(); sessionStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("vehicle simulation work surface", () => {
+  it("keeps the original draft and current work separate across a move, saving and comparison", async () => {
+    vi.stubGlobal("crypto", webcrypto);
+    storedFixture(); render(<TransportPanel roomId="small" />);
+    fireEvent.click(screen.getByRole("button", { name: "초안" }));
+    fireEvent.click(screen.getByRole("button", { name: "초안 생성" }));
+    expect(screen.getByText("읽기 전용 초안 v1")).toBeTruthy();
+    const initial = JSON.parse(sessionStorage.getItem("church:transport:v1:small")!).versions.drafts[0];
+    fireEvent.click(screen.getByRole("button", { name: "최적화안" }));
+    fireEvent.click(screen.getByRole("button", { name: "가상 A 차량 변경" }));
+    fireEvent.change(screen.getByLabelText("옮길 차량"), { target: { value: "V2" } });
+    fireEvent.click(screen.getByRole("button", { name: "변경 검토" }));
+    fireEvent.click(screen.getByRole("button", { name: "변경 승인" }));
+    fireEvent.click(screen.getByRole("button", { name: "임시저장" }));
+    fireEvent.click(screen.getByRole("button", { name: "비교" }));
+    const value = JSON.parse(sessionStorage.getItem("church:transport:v1:small")!);
+    expect(value.versions.drafts[0]).toEqual(initial);
+    expect(value.versions.saved[0].result.assignments[0].vehicleId).toBe("V2");
+    expect(value.approved).toBe(false);
+    expect(screen.getByRole("tab", { name: "배정안 비교" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(await screen.findByRole("button", { name: "임시저장 v1 배치 보기" }));
+    expect(screen.getByRole("button", { name: "임시저장 v1" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "배치" }).disabled).toBe(true);
+  });
   it("prepends each new participant, focuses the name and offers saved departure teams", () => {
     storedFixture();
     render(<TransportPanel roomId="small" />);
@@ -72,7 +96,7 @@ describe("vehicle simulation work surface", () => {
   });
   it("moves focus and switches vehicle tabs using the arrow keys", () => {
     render(<TransportPanel roomId="vehicle-keyboard" />);
-    const first = screen.getByRole("tab", { name: "팀 구성" });
+    const first = screen.getByRole("tab", { name: "이동 조건" });
     const vehicles = screen.getByRole("tab", { name: "차량" });
     first.focus();
     fireEvent.keyDown(first, { key: "ArrowRight" });
@@ -91,7 +115,7 @@ describe("vehicle simulation work surface", () => {
   });
   it("starts with team configuration and sends the user to vehicle entry before importing", () => {
     render(<TransportPanel roomId="new-survey" />);
-    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["팀 구성", "차량", "참가자", "배치", "배정안 비교"]);
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["이동 조건", "차량", "참가자", "배치", "배정안 비교"]);
     expect(screen.getByRole("heading", { name: "출발 팀 구성" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "후발대", expanded: false })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "폼 불러오기" }));
@@ -111,7 +135,8 @@ describe("vehicle simulation work surface", () => {
     expect(screen.getByText("150명")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "폼 불러오기" }));
     expect(screen.getByRole("alert").textContent).toContain("가상 예시에는 실제 설문을 가져올 수 없습니다");
-    expect((screen.getByRole("button", { name: "확정 CSV 다운로드" }) as HTMLButtonElement).disabled).toBe(true);
+    openBoard();
+    expect((screen.getByRole("button", { name: "최적화안 CSV" }) as HTMLButtonElement).disabled).toBe(true);
   });
   it("can edit vehicle inputs and retain them in the current room", () => {
     const view = render(<TransportPanel roomId="room1" />);
@@ -126,11 +151,12 @@ describe("vehicle simulation work surface", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: "계산 환경 오류" }) }));
     render(<TransportPanel roomId="room1" />);
     loadDemo();
+    openBoard();
     fireEvent.click(screen.getByRole("button", { name: "배정 계산" }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("계산 환경 오류"));
-    expect((screen.getByRole("button", { name: "확정 CSV 다운로드" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "최적화안 CSV" }) as HTMLButtonElement).disabled).toBe(true);
   });
-  it("finds the rider, then drag-and-drop opens review and only approval creates a durable lock", () => {
+  it("finds the rider, then drag-and-drop opens review and only approval creates a durable lock", async () => {
     storedFixture(); render(<TransportPanel roomId="small" />);
     fireEvent.change(screen.getByRole("searchbox", { name: "차량 배정 이름 검색" }), { target: { value: "가상 A" } });
     fireEvent.click(screen.getByRole("button", { name: /가상 A.*본대.*차량 A/ }));
@@ -152,12 +178,12 @@ describe("vehicle simulation work surface", () => {
     const value = JSON.parse(sessionStorage.getItem("church:transport:v1:small")!);
     expect(value.input.locks).toEqual([{ personId: "P1", tripId: "main", vehicleId: "V2" }]);
     expect(value.approved).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "배정안 승인" }));
+    fireEvent.click(screen.getByRole("button", { name: "배치" }));
     fireEvent.click(screen.getByRole("button", { name: "배정안 확정" }));
-    expect((screen.getByRole("button", { name: "확정 CSV 다운로드" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((await screen.findByRole<HTMLButtonElement>("button", { name: "확정 CSV 다운로드" })).disabled).toBe(false);
     fireEvent.change(screen.getByLabelText("추가 인원"), { target: { value: "1" } });
     expect(screen.getByText("재계산 필요")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "확정 CSV 다운로드" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "최적화안 CSV" }) as HTMLButtonElement).disabled).toBe(true);
   });
   it("blocks a capacity-breaking move before approval", () => {
     const value = storedFixture(); value.input.vehicles[1].capacity = 1;
@@ -179,7 +205,7 @@ describe("vehicle simulation work surface", () => {
     sessionStorage.setItem("church:transport:v1:small", JSON.stringify(value));
     render(<TransportPanel roomId="small" />);
     expect(screen.getByText(/예상 추가 좌석 부족: 정상 귀가 1석/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "배정안 승인" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "배치" }) as HTMLButtonElement).disabled).toBe(true);
   });
   it("does not render corrupt reservation rows from stored state", () => {
     const value = storedFixture(); value.result.reservations = [null as never];
@@ -204,8 +230,9 @@ describe("vehicle simulation work surface", () => {
     fireEvent.change(screen.getByRole("spinbutton", { name: "배정안 A 집합 지점 수" }), { target: { value: "2" } });
     expect(JSON.parse(sessionStorage.getItem(key)!).result).toEqual(value.result);
     expect(JSON.parse(sessionStorage.getItem(key)!).approved).toBe(false);
+    openBoard();
     fireEvent.click(screen.getByRole("button", { name: "배정 계산" }));
-    await waitFor(() => expect(screen.getByRole("tab", { name: "배치" }).getAttribute("aria-selected")).toBe("true"));
+    await waitFor(() => expect(JSON.parse(sessionStorage.getItem(key)!).result).toEqual(alternative));
     fireEvent.click(screen.getByRole("tab", { name: "배정안 비교" }));
     fireEvent.click(screen.getByRole("button", { name: "배정안 B에 담기" }));
     await screen.findByRole("spinbutton", { name: "배정안 B 집합 지점 수" });
@@ -249,7 +276,8 @@ describe("vehicle simulation work surface", () => {
     expect(screen.getByText("1명")).toBeTruthy();
     view.rerender(<TransportPanel roomId="another" />);
     expect(screen.getByRole("heading", { name: "출발 팀 구성" })).toBeTruthy();
-    expect((screen.getByRole("button", { name: "배정안 승인" }) as HTMLButtonElement).disabled).toBe(true);
+    openBoard();
+    expect((screen.getByRole("button", { name: "배치" }) as HTMLButtonElement).disabled).toBe(true);
   });
   it("filters obsolete replan hints when travel preferences change", async () => {
     const value = storedFixture(); value.input.previousAssignments = value.result.assignments;
@@ -258,6 +286,7 @@ describe("vehicle simulation work surface", () => {
     render(<TransportPanel roomId="small" />);
     fireEvent.click(screen.getByRole("tab", { name: "참가자" }));
     fireEvent.change(screen.getByLabelText("P1 출발"), { target: { value: "__independent" } });
+    openBoard();
     fireEvent.click(screen.getByRole("button", { name: "배정 계산" }));
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
     const body = JSON.parse(fetcher.mock.calls[0][1].body);
@@ -269,8 +298,9 @@ describe("vehicle simulation work surface", () => {
     fireEvent.change(screen.getByLabelText("차량 A 배정 가능 좌석"), { target: { value: "3" } });
     fireEvent.change(screen.getByLabelText("차량 B 배정 가능 좌석"), { target: { value: "3" } });
     fireEvent.click(screen.getByRole("button", { name: "이전 변경 되돌리기" }));
+    openBoard();
     expect(screen.getByText("재계산 필요")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "배정안 승인" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "배치" }) as HTMLButtonElement).disabled).toBe(true);
   });
   it("can release a lock independently of a fresh or feasible result", () => {
     const value = storedFixture(); value.input.locks = [{ personId: "P1", tripId: "main", vehicleId: "V1" }]; value.input.revision = 2;
@@ -301,6 +331,7 @@ describe("vehicle simulation work surface", () => {
     expect(saved.survey.data.rows[1][5]).toBe("불참 응답");
     const fetcher = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: "검증 호출" }) });
     vi.stubGlobal("fetch", fetcher);
+    openBoard();
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "배정 계산" }).disabled).toBe(true);
     fireEvent.click(screen.getByRole("tab", { name: "차량" }));
     fireEvent.change(screen.getByLabelText("1번 차종"), { target: { value: "car-5" } });
@@ -308,6 +339,7 @@ describe("vehicle simulation work surface", () => {
     fireEvent.click(screen.getByLabelText("승용차 후발대 가용"));
     fireEvent.click(screen.getByLabelText("승용차 정상 귀가 가용"));
     fireEvent.click(screen.getByLabelText("승용차 외부 운전자 확정"));
+    openBoard();
     fireEvent.click(screen.getByRole("button", { name: "배정 계산" }));
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
     const body = JSON.parse(fetcher.mock.calls[0][1].body);

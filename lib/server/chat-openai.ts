@@ -26,7 +26,7 @@ async function readReply(response: Response): Promise<unknown> {
 }
 
 export type OpenAIChatTurn = { role: "user" | "assistant"; content: string };
-type ReadTool = { definition: { type: "function"; name: string; strict: true; description: string; parameters: Record<string, unknown> }; run: () => string };
+export type ChatTool = { definition: { type: "function"; name: string; strict: true; description: string; parameters: Record<string, unknown> }; run: (argumentsValue: unknown) => string };
 const maxInFlight = 4;
 let inFlight = 0;
 
@@ -82,28 +82,42 @@ export function searchOpenAIWeb(input: string, signal: AbortSignal, instructions
   }));
 }
 
-export async function generateOpenAIText(input: string | OpenAIChatTurn[], signal: AbortSignal, instructions = "", format?: Record<string, unknown>, tool?: ReadTool): Promise<string> {
+export async function generateOpenAIText(input: string | OpenAIChatTurn[], signal: AbortSignal, instructions = "", format?: Record<string, unknown>, tools: readonly ChatTool[] = [], beforeRequest = () => {}): Promise<string> {
   if ((typeof input === "string" ? [input] : input.map(turn => turn.content)).some(hasObviousPrivateData)) {
     throw new ApiError(422, "개인정보가 포함된 문맥은 외부 AI에 보낼 수 없습니다.");
   }
   return withOpenAI(signal, 45_000, async (request, model) => {
-    const respond = (context: string | readonly unknown[], continuation = false) => request({
-      ...(instructions && { instructions }), input: context, reasoning: { effort: model === "gpt-6-luna" ? "none" : "low" }, max_output_tokens: 1200,
-      ...(format && { text: { format } }),
-      ...(tool && { tools: [tool.definition], tool_choice: continuation ? "none" : "auto", parallel_tool_calls: false,
-        ...(model === "gpt-6.2-sol" && { include: ["reasoning.encrypted_content"] }) }),
-    });
+    const maxCalls = 3;
+    const respond = (context: string | readonly unknown[], finished = false) => {
+      beforeRequest();
+      return request({
+        ...(instructions && { instructions }), input: context, reasoning: { effort: model === "gpt-6-luna" ? "none" : "low" }, max_output_tokens: 1200,
+        ...(format && { text: { format } }),
+        ...(tools.length && { tools: tools.map(tool => tool.definition), tool_choice: finished ? "none" : "auto", parallel_tool_calls: false,
+          ...(model === "gpt-6.2-sol" && { include: ["reasoning.encrypted_content"] }) }),
+      });
+    };
     let items = await respond(input);
-    const calls = items.filter(item => object(item) && item.type === "function_call");
-    if (calls.length) {
+    const previous: unknown[] = typeof input === "string" ? [{ role: "user", content: input }] : [...input];
+    const used = new Set<string>();
+    for (;;) {
+      const calls = items.filter(item => object(item) && item.type === "function_call");
+      if (!calls.length) break;
       const [call] = calls;
-      if (!tool || calls.length !== 1 || !object(call) || call.name !== tool.definition.name || typeof call.call_id !== "string"
-        || !/^[a-zA-Z0-9_-]{1,128}$/.test(call.call_id) || typeof call.arguments !== "string" || !/^\{\s*\}$/.test(call.arguments.trim()) || call.arguments.length > 128) throw invalidReply();
+      if (used.size >= maxCalls || calls.length !== 1 || !object(call) || typeof call.call_id !== "string" || used.has(call.call_id)
+        || !/^[a-zA-Z0-9_-]{1,128}$/.test(call.call_id) || typeof call.arguments !== "string" || call.arguments.length > 3200 || hasObviousPrivateData(call.arguments)) throw invalidReply();
+      const tool = tools.find(item => item.definition.name === call.name);
+      if (!tool) throw invalidReply();
+      let args: unknown;
+      try { args = JSON.parse(call.arguments); } catch { throw invalidReply(); }
+      if (!object(args)) throw invalidReply();
       const reasoning = items.filter(item => object(item) && item.type === "reasoning" && typeof item.encrypted_content === "string");
-      const previous = typeof input === "string" ? [{ role: "user", content: input }] : input;
-      const output = tool.run();
-      items = await respond([...previous, ...reasoning, { type: "function_call", name: tool.definition.name, call_id: call.call_id, arguments: "{}" },
-        { type: "function_call_output", call_id: call.call_id, output }], true);
+      const output = tool.run(args);
+      if (output.length > 8000 || hasObviousPrivateData(output)) throw invalidReply();
+      used.add(call.call_id);
+      previous.push(...reasoning, { type: "function_call", name: tool.definition.name, call_id: call.call_id, arguments: call.arguments },
+        { type: "function_call_output", call_id: call.call_id, output });
+      items = await respond(previous, used.size === maxCalls);
     }
     const output: string[] = [];
     for (const item of items) {

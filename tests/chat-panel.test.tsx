@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { ChatPanel } from "../components/chat-panel";
 import type { Conversation } from "../lib/conversation-store";
@@ -65,12 +65,32 @@ it("renders the recorded duration above the matching assistant reply only", () =
 it("opens message actions and sends a reply to the selected assistant message", () => {
   render(<ChatPanel {...props} conversation={{ ...conversation, draft: "이 답변을 이어서 알려줘" }} />);
   const answer = within(screen.getByText("예시 답변").closest("article")!);
-  fireEvent.click(answer.getByRole("button", { name: "메시지 작업" }));
+  expect(answer.getByRole("button", { name: "메시지 작업" })).toBeTruthy();
   expect(answer.queryByRole("button", { name: "수정" })).toBeNull();
   fireEvent.click(answer.getByRole("button", { name: "답장" }));
-  expect(screen.getByText("행사비서에게 답장")).toBeDefined();
+  expect(screen.getByText("행사비서에게 답장").closest("form")).toBe(screen.getByRole("textbox", { name: "메시지" }).closest("form"));
   fireEvent.click(screen.getByRole("button", { name: "전송" }));
   expect(props.onSendMessage).toHaveBeenLastCalledWith("이 답변을 이어서 알려줘", { kind: "reply", messageId: "answer" });
+});
+
+it("allows copying both speakers directly and keeps the visible title and rows in a structured reply", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", Object.assign(Object.create(navigator), { clipboard: { writeText } }));
+  try {
+    const messages: Conversation["messages"] = [conversation.messages[0], { ...conversation.messages[1], actions: ["PRIVATE_ACTION"],
+      advisor: { kind: "plan", title: "출발 계획", rows: [{ label: "1. 이동", detail: "단체 차량 후보" }], rationale: "검토 근거", proposals: [] } }];
+    render(<ChatPanel {...props} conversation={{ ...conversation, messages }} />);
+    const question = within(screen.getByText("저장한 장소 알려줘").closest("article")!);
+    const answer = within(screen.getByText("예시 답변").closest("article")!);
+    fireEvent.click(question.getByRole("button", { name: "복사" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("저장한 장소 알려줘"));
+    fireEvent.click(answer.getByRole("button", { name: "복사" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("출발 계획\n예시 답변\n1. 이동: 단체 차량 후보\n검토 근거"));
+    fireEvent.click(question.getByRole("button", { name: "답장" }));
+    expect(screen.getByText("내 메시지에 답장").closest("form")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "답장 취소" }));
+    expect(screen.queryByText("내 메시지에 답장")).toBeNull();
+  } finally { vi.unstubAllGlobals(); }
 });
 
 it("fills the editor with the original text and resends the correction", () => {

@@ -31,7 +31,8 @@ beforeEach(() => {
   localStorage.clear();
   window.history.replaceState(null, "", "/settings");
   getBackendProfile.mockReturnValue(profile(3, ["chat"]));
-  backendFetch.mockImplementation(async (path) => path.endsWith("/account-status") ? connectionStatuses : savedPreferences);
+  backendFetch.mockImplementation(async (path) => path === "/api/auth/account" ? { username: "settings-fixture" } :
+    path.endsWith("/account-status") ? connectionStatuses : savedPreferences);
   flushBackendWrites.mockResolvedValue(undefined);
   logout.mockResolvedValue(undefined);
 });
@@ -103,6 +104,16 @@ describe("settings access", () => {
     expect(backendFetch).not.toHaveBeenCalled();
   });
 
+  it("retries a failed self-account lookup without displaying cached or different-account data", async () => {
+    backendFetch.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce({ username: "self-fixture" });
+    render(<SettingsScreen />);
+    expect((await screen.findByRole("alert")).textContent).toContain("로그인 아이디를 불러오지 못했습니다.");
+    expect(screen.queryByText("준비 담당자", { selector: ".settings-readonly-value" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "로그인 아이디 다시 불러오기" }));
+    expect(await screen.findByText("self-fixture")).toBeDefined();
+    expect(backendFetch).toHaveBeenLastCalledWith("/api/auth/account", expect.objectContaining({ headers: { "x-account-id": "settings-fixture" } }));
+  });
+
   it("previews display changes and applies them only on save", () => {
     window.history.replaceState(null, "", "/settings?from=workspace&section=display");
     const view = render(<SettingsScreen />);
@@ -121,14 +132,33 @@ describe("settings access", () => {
     expect(screen.getByRole<HTMLInputElement>("radio", { name: "촘촘하게" }).checked).toBe(true);
   });
 
-  it("separates actual alert channels and settings from unsupported delivery controls", () => {
-    getBackendProfile.mockReturnValue(profile(3, ["viewCalendar"]));
+  it("disables individual alert controls without erasing their selection, and restores the saved state", async () => {
+    getBackendProfile.mockReturnValue(profile(3, ["viewRoom", "viewCalendar"]));
+    let settings = { enabled: true, calendar: false, room: true };
+    backendFetch.mockImplementation(async (_path, init) => {
+      if (init?.method === "PUT") settings = JSON.parse(init.body);
+      return { settings, items: [] };
+    });
     window.history.replaceState(null, "", "/settings?section=notifications");
-    render(<SettingsScreen />);
+    const view = render(<SettingsScreen />);
     expect(screen.getByRole("region", { name: "알림 수신 방법" })).toBeDefined();
+    const main = await screen.findByRole<HTMLInputElement>("switch", { name: "일반 알림 받기" });
+    const calendar = screen.getByRole<HTMLInputElement>("switch", { name: "공동 캘린더" });
+    expect(calendar.checked).toBe(false);
+    fireEvent.click(main);
+    expect(calendar.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await screen.findByText("알림 설정을 저장했습니다.");
+    expect(settings).toEqual({ enabled: false, calendar: false, room: true });
+    view.unmount();
+    render(<SettingsScreen />);
+    fireEvent.click(await screen.findByRole("switch", { name: "일반 알림 받기" }));
+    const restored = screen.getByRole<HTMLInputElement>("switch", { name: "공동 캘린더" });
+    expect(restored.checked).toBe(false);
+    expect(restored.disabled).toBe(false);
     const details = within(screen.getByRole("region", { name: "알림 세부 설정" }));
     expect(details.getByRole("link", { name: "캘린더 연동 관리" }).getAttribute("href")).toContain("#google-calendar");
-    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(screen.queryByText("카카오톡 알림")).toBeNull();
   });
 
   it.each([1, 2, 3] as const)("offers one Google connection to grade %i without member management or chat permissions", async (grade) => {
@@ -361,11 +391,15 @@ describe("Google outcome navigation", () => {
 describe("reply preferences", () => {
   beforeEach(() => window.history.replaceState(null, "", "/settings?section=reply"));
   it("stores the account's emoji choice with other settings", async () => {
-    const changed = { ...savedPreferences, emoji: "occasional" };
+    const changed = { ...savedPreferences, emoji: "frequency", emojiFrequency: 0 };
     backendFetch.mockResolvedValueOnce(savedPreferences).mockResolvedValueOnce(changed);
     render(<SettingsScreen />);
     expect((await screen.findByRole<HTMLInputElement>("radio", { name: "사용 안 함" })).checked).toBe(true);
-    select("가끔 사용");
+    select("사용 빈도 조절");
+    const slider = screen.getByRole<HTMLInputElement>("slider", { name: "이모티콘 사용 빈도" });
+    expect(slider.value).toBe("50");
+    fireEvent.change(slider, { target: { value: "0" } });
+    expect(backendFetch.mock.calls.filter(([path]) => path === "/api/preferences")).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "저장" }));
     expect(await screen.findByText("답변 스타일을 저장했습니다.")).toBeDefined();
     expect(JSON.parse(backendFetch.mock.calls[1][1].body)).toEqual(changed);

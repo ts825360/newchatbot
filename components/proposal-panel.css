@@ -1,15 +1,58 @@
-.proposal-panel { min-width: 0; padding: 16px; }
-.proposal-intro { margin-bottom: 18px; }
-.proposal-intro p { margin-top: 8px; color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.8; }
-.proposal-item { display: grid; gap: 14px; min-width: 0; margin-bottom: 16px; padding: 16px; border: 1px solid hsl(var(--border)); border-radius: 8px; background: hsl(var(--background)); }
-.proposal-item > header { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
-.proposal-item h3 { min-width: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.proposal-panel { container: proposal-review / inline-size; min-width: 0; padding: 14px; }
+.proposal-panel > :not(.proposal-grid) { margin-block-end: 12px; }
+.proposal-intro p { margin-block-start: 6px; color: hsl(var(--muted-foreground)); font-size: 13px; line-height: 1.6; }
+
+.proposal-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
+.proposal-grid > [data-proposal-span="full"] { grid-column: 1 / -1; }
+@container proposal-review (min-width: 44rem) {
+  .workspace-tools[data-size="expanded"] .proposal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.proposal-grid > :is(.proposal-item, .chat-work-card) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--card-radius, 8px);
+  background: hsl(var(--panel));
+  color: hsl(var(--foreground));
+  overflow-wrap: anywhere;
+}
+.proposal-item > header { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
+.proposal-item h3, .proposal-grid .chat-work-heading h3, .proposal-grid .chat-work-calendar h3 {
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.4;
+}
 .proposal-item header > span { flex-shrink: 0; }
-.proposal-destination { font-size: 11px; color: hsl(var(--primary)); }
-.proposal-source { min-width: 0; font-size: 12px; color: hsl(var(--muted-foreground)); }
-.proposal-source summary { cursor: pointer; }
-.proposal-source blockquote { margin: 10px 0 0; padding-left: 10px; border-left: 2px solid hsl(var(--border)); overflow-wrap: anywhere; }
+.proposal-grid .chat-work-calendar { flex-wrap: wrap; gap: 8px 12px; }
+.proposal-grid .chat-work-calendar-main { flex: 1 1 120px; }
+.proposal-grid .proposal-destination { font-size: 12px; line-height: 1.5; color: hsl(var(--primary)); }
+
+.proposal-source, .proposal-answer {
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: hsl(var(--surface-input));
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  line-height: 1.55;
+}
+.proposal-grid details > summary { cursor: pointer; }
+.proposal-source summary, .proposal-answer summary { color: hsl(var(--foreground)); font-weight: 600; }
+.proposal-source blockquote, .proposal-answer-body { margin: 6px 0 0; padding-block-start: 6px; border-block-start: 1px solid hsl(var(--border)); }
+.proposal-answer-body { display: grid; gap: 6px; max-block-size: 14rem; overflow-y: auto; }
+.proposal-answer-body dt { font-weight: 600; }
+.proposal-answer-text { white-space: pre-wrap; }
 .proposal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .proposal-actions > button { padding-inline: 10px; }
-.proposal-reason { font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.proposal-grid :is(label, input, button, .lobby-secondary) { min-width: 0; max-width: 100%; }
+.proposal-reason { font-size: 13px; line-height: 1.55; }
+@container proposal-review (max-width: 22rem) {
+  .proposal-grid .chat-work-edit { grid-template-columns: minmax(0, 1fr); }
+}
+
 .workspace-review-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; padding: 6px 0; border: 0; background: transparent; color: hsl(var(--primary)); font-size: 12px; }

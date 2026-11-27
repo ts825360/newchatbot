@@ -62,14 +62,20 @@ it("refreshes server data without resetting the displayed month and announces co
   expect(screen.getByLabelText<HTMLInputElement>("년도와 달 선택").value).toBe("2026-12");
 });
 
-it("exposes explicit checklist edit and add buttons", () => {
+it("edits by title and sends the separate checklist action to the draft handler", () => {
   const initial = createInitialState();
   const open = vi.fn();
   const add = vi.fn();
   const item = initial.checklists[initial.rooms[0].id][0];
-  render(<SharedPanel mode="prepare" room={initial.rooms[0]} events={[]} checklist={[item]} risks={[]} onOpenEvent={vi.fn()} onAddEvent={vi.fn()} onToggleChecklist={vi.fn()} onOpenChecklist={open} onAddChecklist={add} onResolveRisk={vi.fn()} />);
-  fireEvent.click(screen.getByRole("button", { name: `${item.title} 수정` }));
+  const ask = vi.fn(), toggle = vi.fn();
+  render(<SharedPanel mode="prepare" room={initial.rooms[0]} events={[]} checklist={[item]} risks={[]} onOpenEvent={vi.fn()} onAddEvent={vi.fn()} onToggleChecklist={toggle} onOpenChecklist={open} onAddChecklist={add} onAskChecklist={ask} onResolveRisk={vi.fn()} />);
+  fireEvent.click(within(screen.getByRole("region", { name: "준비 체크리스트" })).getByText(item.title, { exact: true }).closest("button")!);
   expect(open).toHaveBeenCalledWith(item.id);
+  fireEvent.click(screen.getByRole("button", { name: `${item.title} AI 작업 요청` }));
+  expect(ask).toHaveBeenCalledWith(item);
+  expect(open).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: `${item.title} 상태 변경` }));
+  expect(toggle).toHaveBeenCalledWith(item.id);
   fireEvent.click(screen.getByRole("button", { name: "준비 항목 추가" }));
   expect(add).toHaveBeenCalled();
 });
@@ -79,9 +85,22 @@ it("shows checklist details without mutation controls in read-only mode", () => 
   const item = initial.checklists[initial.rooms[0].id][0];
   render(<SharedPanel mode="prepare" room={initial.rooms[0]} events={[]} checklist={[item]} risks={initial.risks[initial.rooms[0].id]}
     canEditChecklist={false} onOpenEvent={vi.fn()} onToggleChecklist={vi.fn()} onOpenChecklist={vi.fn()} onAddChecklist={vi.fn()} onResolveRisk={vi.fn()} />);
-  expect(screen.getByText(item.title, { exact: true })).toBeDefined();
+  expect(within(screen.getByRole("region", { name: "준비 체크리스트" })).getByText(item.title, { exact: true })).toBeDefined();
   expect(screen.queryByRole("button", { name: `${item.title} 상태 변경` })).toBeNull();
   expect(screen.queryByRole("button", { name: `${item.title} 수정` })).toBeNull();
   expect(screen.queryByRole("button", { name: "준비 항목 추가" })).toBeNull();
   expect(screen.queryByRole("button", { name: "완료 처리" })).toBeNull();
+});
+
+it("distinguishes unreviewed risks from recorded warnings without showing recent shared changes", () => {
+  const { rooms } = createInitialState();
+  const props = { mode: "prepare" as const, room: rooms[0], events: [], checklist: [], risks: [], onOpenEvent: vi.fn(), onToggleChecklist: vi.fn(), onOpenChecklist: vi.fn(), onResolveRisk: vi.fn() };
+  const view = render(<SharedPanel {...props} />);
+  expect(screen.getByText("미검토", { exact: true })).toBeDefined();
+  expect(screen.queryByText("정상", { exact: true })).toBeNull();
+  expect(screen.queryByText("최근 공동 변경", { exact: true })).toBeNull();
+  view.rerender(<SharedPanel {...props} risks={[{ id: "1", title: "차량 점검", detail: "운전자 확인", action: "확인", resolved: false }]} />);
+  expect(screen.getByText("차량 점검", { exact: true })).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "완료 처리" }));
+  expect(props.onResolveRisk).toHaveBeenCalledWith("1");
 });

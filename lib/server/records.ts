@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import type { ServerRecord, ServerSnapshot, ServerWrite } from "../backend-contract";
 import type { LobbyRoom } from "../room-catalog";
 import type { CalendarEvent, Permission, UserProfile } from "../types";
@@ -7,6 +8,9 @@ import { roomDateLabel, validDate } from "../room-timing";
 import { getDatabase, transaction, bumpRevision } from "./database";
 import { profileFor, requirePermission, type Actor } from "./auth";
 import { ApiError } from "./http";
+import { notifyRoomChange } from "./notifications";
+import { readWorkspacePrimaryPlace } from "./workspace-primary-place";
+import { checkTransportVersionWrite } from "../transport-versions";
 import { id, object, text, validateRecord } from "./record-schema";
 import { conversationHistoryKey, privateToolKey, privateToolKinds, type ConversationScope, type PrivateToolKind } from "../conversation-scope";
 import { canonicalConversationHistory, canonicalPrivateTool, canonicalWorkspaceTool, conversationIds, inheritWorkspaceRecords, requireOwnedConversation } from "./conversation-scope";
@@ -43,12 +47,26 @@ export function locateRecord(actor: Actor, key: string): Location {
 }
 
 function rooms(db: DatabaseSync): LobbyRoom[] { return db.prepare("SELECT data_json FROM rooms ORDER BY rowid DESC").all().map((r) => JSON.parse(String(r.data_json))); }
-function readCatalog(actor: Actor, db: DatabaseSync): ServerRecord {
+function readCatalog(actor: Actor, db: DatabaseSync, roomId?: string): ServerRecord {
   const row = db.prepare("SELECT data_json,revision FROM records WHERE key=?").get(`catalog:${actor.id}`);
   const preferences = row ? JSON.parse(String(row.data_json)) : { selectedRoomId: null, pinnedIds: [] };
   const pinned = new Map<string, number>((preferences.pinnedIds as string[] | undefined ?? []).map((id, index) => [id, index]));
-  const list = rooms(db).map(({ location: _location, placeId: _placeId, ...r }) => ({ ...r, location: "", pinned: pinned.has(r.id),
-    memberCount: Number(db.prepare("SELECT COUNT(*) n FROM room_visits v JOIN users u ON u.id=v.user_id WHERE v.room_id=? AND u.suspended=0 AND (u.access_expires_at IS NULL OR u.access_expires_at>?)").get(r.id, new Date().toISOString())!.n) }));
+  const owners = db.prepare("SELECT name FROM users WHERE id=?");
+  const memberCounts = new Map(db.prepare(`
+    SELECT v.room_id,COUNT(*) AS total FROM room_visits v JOIN users u ON u.id=v.user_id
+    WHERE u.suspended=0 AND (u.access_expires_at IS NULL OR julianday(u.access_expires_at)>julianday(?))
+      AND json_type(u.permissions_json)='array'
+      AND EXISTS (SELECT 1 FROM json_each(u.permissions_json) WHERE value='viewRoom')
+    GROUP BY v.room_id`).all(new Date().toISOString()).map(row => [String(row.room_id), Number(row.total)]));
+  const canReadPlace = actor.permissions.includes("chat");
+  const list: LobbyRoom[] = rooms(db).map(({ location: _location, placeId: _placeId, locationStatus: _status, ...r }) => {
+    const place = canReadPlace && !roomId ? readWorkspacePrimaryPlace(db, { accountId: actor.id, roomId: r.id }) : null;
+    const name = r.ownerId ? owners.get(r.ownerId)?.name : null;
+    return { ...r, owner: typeof name === "string" && name.trim() ? name : "미확인",
+      location: place?.state === "saved" ? place.name : "",
+      ...(!canReadPlace ? { locationStatus: "not_authorized" } as const : place?.state === "unreadable" ? { locationStatus: "unreadable" } as const : {}),
+      pinned: pinned.has(r.id), memberCount: memberCounts.get(r.id) ?? 0 };
+  });
   list.sort((a, b) => (pinned.get(a.id) ?? pinned.size) - (pinned.get(b.id) ?? pinned.size));
   const rv = db.prepare("SELECT value FROM meta WHERE key='rooms_revision'").get()?.value ?? 0;
   return { key: catalogKey(actor), version: `${rv}:${row?.revision ?? 0}`, value: JSON.stringify({ rooms: list, selectedRoomId: list.some((r) => r.id === preferences.selectedRoomId) ? preferences.selectedRoomId : null }) };
@@ -56,7 +74,7 @@ function readCatalog(actor: Actor, db: DatabaseSync): ServerRecord {
 
 export function readSnapshot(actor: Actor, roomId?: string, db = getDatabase(), conversationId?: string): ServerSnapshot {
   requirePermission(actor, "viewRoom");
-  const catalog = readCatalog(actor, db);
+  const catalog = readCatalog(actor, db, roomId);
   const list: LobbyRoom[] = JSON.parse(catalog.value!).rooms;
   if (roomId && !list.some((r) => r.id === roomId)) throw new ApiError(404, "행사방이 삭제되었거나 존재하지 않습니다.");
   const profile: UserProfile = { ...profileFor(actor), roomIds: list.map((r) => r.id) };
@@ -84,7 +102,7 @@ export function readSnapshot(actor: Actor, roomId?: string, db = getDatabase(), 
 
 const categories = ["retreat", "revival", "sports", "worship", "celebration", "other"];
 function validateRoom(room: unknown): asserts room is LobbyRoom {
-  if (!object(room) || !id(room.id) || !text(room.name, 60) || !categories.includes(room.category) || !text(room.location, 100, true) || !text(room.description, 300, true) || !text(room.otherDetail, 40, true) || room.category === "other" && !room.otherDetail.trim() || !(room.date === null || validDate(room.date)) || !(room.endDate === null || validDate(room.endDate) && room.date && room.endDate >= room.date) || room.endDate && !room.date) throw new ApiError(400, "행사 이름·종류·기간·장소를 확인해 주세요.");
+  if (!object(room) || !id(room.id) || !text(room.name, 60) || !categories.includes(room.category) || !text(room.location, 180, true) || !text(room.description, 300, true) || !text(room.otherDetail, 40, true) || room.category === "other" && !room.otherDetail.trim() || !(room.date === null || validDate(room.date)) || !(room.endDate === null || validDate(room.endDate) && room.date && room.endDate >= room.date) || room.endDate && !room.date) throw new ApiError(400, "행사 이름·종류·기간·장소를 확인해 주세요.");
   if (typeof room.pinned !== "boolean") throw new ApiError(400, "행사 고정 상태를 확인해 주세요.");
 }
 function saveRow(db: DatabaseSync, location: Location, value: unknown) {
@@ -107,6 +125,7 @@ function saveCatalog(actor: Actor, value: unknown, db: DatabaseSync) {
     requirePermission(actor, previous ? "editRoom" : "createRoom");
     const room: LobbyRoom = { ...(previous ?? submitted), ...fields(submitted), location: previous?.location ?? "", placeId: previous?.placeId, dateLabel: roomDateLabel(submitted.date, submitted.endDate), owner: previous?.owner ?? actor.name, ownerId: previous?.ownerId ?? actor.id, createdAt: previous?.createdAt ?? new Date().toISOString(), memberCount: previous?.memberCount ?? 1, pinned: false, unreadChanges: 0, riskCount: previous?.riskCount ?? 0, icon: submitted.name.slice(0, 1), dDay: "", status: submitted.date ? "needsPreparation" : "needsDate", lastChange: `${actor.name}님이 행사 정보를 수정했습니다.` };
     db.prepare("INSERT INTO rooms(id,data_json,revision) VALUES(?,?,1) ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,revision=revision+1").run(room.id, JSON.stringify(room)); roomChanged = true;
+    if (previous) notifyRoomChange(db, actor, room.id, "room");
   }
   if (roomChanged) db.prepare("INSERT INTO meta(key,value) VALUES('rooms_revision',1) ON CONFLICT(key) DO UPDATE SET value=value+1").run();
   saveRow(db, { canonical: `catalog:${actor.id}`, kind: "catalog", ownerId: actor.id, roomId: null }, { selectedRoomId: value.selectedRoomId, pinnedIds: next.filter((r) => r.pinned).map((r) => r.id) });
@@ -126,12 +145,28 @@ function saveRecord(actor: Actor, location: Location, value: any, db: DatabaseSy
   }
   if (location.roomId && !db.prepare("SELECT id FROM rooms WHERE id=?").get(location.roomId)) throw new ApiError(404, "행사방이 삭제되었습니다.");
   validateRecord(location.kind, value);
-  if (location.kind === "events" && !actor.permissions.includes("deleteEvent")) {
+  if (location.kind === "transport") {
+    const old = db.prepare("SELECT data_json FROM records WHERE key=? AND owner_id=? AND room_id=?").get(location.canonical, actor.id, location.roomId);
+    const previous = old && JSON.parse(String(old.data_json));
+    if (!checkTransportVersionWrite(previous?.versions, value.versions, value.input, value.result, value.approved)) throw new ApiError(409, "이미 보관된 배정 버전은 변경하거나 삭제할 수 없습니다.");
+    if (value.versions && value.approved && !previous?.approved && value.versions.confirmed.length <= (previous?.versions?.confirmed.length ?? 0)) {
+      throw new ApiError(409, "현재 배정을 새 확정 버전으로 기록해 주세요.");
+    }
+  }
+  if (location.kind === "location" && value.placeMetadata?.some((entry: { privateMemo?: { authorId?: string } }) => entry.privateMemo?.authorId && entry.privateMemo.authorId !== actor.id)) {
+    throw new ApiError(400, "장소 메모의 작성자 정보가 일치하지 않습니다.");
+  }
+  if (location.kind === "events" && location.roomId) {
     const previous = db.prepare("SELECT data_json FROM records WHERE key=?").get(location.canonical);
-    if (previous) {
-      const nextIds = new Set((value.items as CalendarEvent[]).map(item => item.id));
-      const previousItems = JSON.parse(String(previous.data_json)).items as CalendarEvent[];
+    const previousItems = previous ? JSON.parse(String(previous.data_json)).items as CalendarEvent[] : [];
+    const nextItems = value.items as CalendarEvent[];
+    if (!actor.permissions.includes("deleteEvent")) {
+      const nextIds = new Set(nextItems.map(item => item.id));
       if (previousItems.some(item => !nextIds.has(item.id))) requirePermission(actor, "deleteEvent");
+    }
+    const previousById = new Map(previousItems.map(item => [item.id, item]));
+    if (previousItems.length !== nextItems.length || nextItems.some(item => !isDeepStrictEqual(previousById.get(item.id), item))) {
+      notifyRoomChange(db, actor, location.roomId, "calendar");
     }
   }
   if (location.kind === "categories" && value.some((c: any) => c.roomIds.some((rid: string) => !db.prepare("SELECT 1 FROM rooms WHERE id=?").get(rid)))) throw new ApiError(409, "분류에 포함한 행사방이 변경되었습니다.");
@@ -151,6 +186,7 @@ function saveRecord(actor: Actor, location: Location, value: any, db: DatabaseSy
       const scope = { accountId: actor.id, roomId: location.roomId!, conversationId };
       db.prepare("DELETE FROM records WHERE key=? AND owner_id=?").run(canonicalPrivateTool(scope, "documents"), actor.id);
       db.prepare("DELETE FROM conversation_files WHERE owner_id=? AND room_id=? AND conversation_id=?").run(actor.id, scope.roomId, conversationId);
+      db.prepare("DELETE FROM chat_work_versions WHERE owner_id=? AND room_id=? AND conversation_id=?").run(actor.id, scope.roomId, conversationId);
     }
   }
   saveRow(db, location, value);
@@ -177,7 +213,7 @@ export function writeBatch(actor: Actor, writes: ServerWrite[], roomId?: string,
           inheritedRooms.add(scope.roomId);
         }
       }
-      const version = w.location.kind === "catalog" ? readCatalog(actor, db).version : String(db.prepare("SELECT revision FROM records WHERE key=?").get(w.location.canonical)?.revision ?? 0);
+      const version = w.location.kind === "catalog" ? readCatalog(actor, db, roomId).version : String(db.prepare("SELECT revision FROM records WHERE key=?").get(w.location.canonical)?.revision ?? 0);
       if (version !== w.version) throw new ApiError(409, "다른 기기에서 자료가 변경되었습니다. 내 변경을 보관하고 최신 자료를 확인해 주세요.");
     }
     for (const w of payload.filter((p) => p.location.kind === "catalog")) saveCatalog(actor, w.value, db);
@@ -188,7 +224,7 @@ export function writeBatch(actor: Actor, writes: ServerWrite[], roomId?: string,
     if (shared.length) db.prepare("INSERT INTO activities(id,actor_id,action,target,at) VALUES(?,?,?,?,?)").run(randomUUID(), actor.id, "자료 저장", shared.map((w) => `${w.location.kind}${w.location.roomId ? `:${w.location.roomId}` : ""}`).join(","), new Date().toISOString());
     const output = readSnapshot(actor, roomId && db.prepare("SELECT id FROM rooms WHERE id=?").get(roomId) ? roomId : undefined, db);
     output.written = payload.map((w) => {
-      if (w.location.kind === "catalog") return readCatalog(actor, db);
+      if (w.location.kind === "catalog") return readCatalog(actor, db, roomId);
       const row = db.prepare("SELECT data_json,revision FROM records WHERE key=?").get(w.location.canonical)!;
       return row ? { key: w.key, value: String(row.data_json), version: String(row.revision) } : noData(w.key);
     });

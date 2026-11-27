@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { ArrowRight, CalendarDays, Church, CircleAlert, Flag, Gift, LayoutGrid, List, LockKeyhole, LogOut, MapPin, Moon, Pencil, Plus, Save, Search, SlidersHorizontal, Star, Sun, TentTree, Trash2, Trophy, UserRound, UsersRound, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { AUTH_CHANGED_EVENT, createBrowserAuth } from "@/lib/prototype-auth";
-import { flushBackendWrites, isBackendConnected } from "@/lib/backend-client";
+import { flushBackendWrites, isBackendConnected, refreshBackendData } from "@/lib/backend-client";
 import { AccountMenu } from "./account-menu";
 import { canManageRooms, createRoomCatalog, filterRooms, ROOM_CATEGORIES, validateRoomDraft, type LobbyRoom, type RoomCatalog, type RoomCategory, type RoomDraft, type RoomDraftErrors, type RoomSort } from "@/lib/room-catalog";
 import { usePrototypeTheme } from "@/lib/use-theme";
@@ -63,6 +63,7 @@ export function RoomLobby() {
       } catch (cause) { setError(errorMessage(cause)); }
     };
     check();
+    if (isBackendConnected()) void refreshBackendData("", null).catch(() => { /* Periodic server sync handles retry. */ });
     window.addEventListener("focus", check);
     window.addEventListener("storage", check);
     window.addEventListener(AUTH_CHANGED_EVENT, check);
@@ -128,7 +129,7 @@ export function RoomLobby() {
   const closeDialog = () => { setCreateOpen(false); setEditingId(null); setDeleteTarget(null); setDateWarning(false); setDialogError(""); };
   const editRoom = (room: LobbyRoom) => {
     setEditingId(room.id); setCreateOpen(true); setDialogError(""); setDraftErrors({});
-    setDraft({ name: room.name, category: room.category, otherDetail: room.otherDetail, date: room.date ?? "", endDate: room.endDate ?? "", location: room.location, description: room.description });
+    setDraft({ name: room.name, category: room.category, otherDetail: room.otherDetail, date: room.date ?? "", endDate: room.endDate ?? "", location: isBackendConnected() ? "" : room.location, description: room.description });
   };
   const create = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -186,7 +187,7 @@ export function RoomLobby() {
       </header>
       <div className="lobby-content">
         <header className="lobby-titlebar"><div><p className="lobby-local-date">{koreanLongDate.format(today)}</p><h1>안녕하세요, {profile.nickname}님</h1><p>참여 중인 행사방 <strong>{rooms?.length ?? 0}</strong>개</p></div></header>
-        <div className="lobby-quick-actions"><span title={!manageable ? "제1·2관리자만 행사방을 만들 수 있습니다." : undefined}><button className="lobby-primary" type="button" disabled={!manageable || !catalog} onClick={() => { setDraft(emptyDraft); setDraftErrors({}); setDialogError(""); setCreateOpen(true); }}><Plus size={19} aria-hidden="true" />새 행사방</button></span><a className="lobby-secondary" href="#lobby-today"><CalendarDays size={17} aria-hidden="true" />오늘의 행사</a></div>
+        <div className="lobby-quick-actions"><span title={!manageable ? "제1·2관리자만 행사방을 만들 수 있습니다." : undefined}><button className="lobby-primary" type="button" disabled={!manageable || !catalog} onClick={() => { setDraft(emptyDraft); setDraftErrors({}); setDialogError(""); setCreateOpen(true); }}><Plus size={19} aria-hidden="true" />새 행사방</button></span></div>
 
         {error && <div className="lobby-error" role="alert"><CircleAlert size={17} aria-hidden="true" /><span>{error}</span><button type="button" className="lobby-icon-button" onClick={() => setError("")} title="알림 닫기" aria-label="오류 알림 닫기"><X size={16} /></button></div>}
         {notice && <p className="lobby-notice" role="status">{notice}</p>}
@@ -216,7 +217,7 @@ export function RoomLobby() {
                   <span className="room-category-name">{room.category === "other" && room.otherDetail ? room.otherDetail : ROOM_CATEGORIES[room.category]}</span>
                   <span className="room-name">{room.name}</span>
                   <span className="room-info-line"><CalendarDays size={16} aria-hidden="true" /><span>{room.dateLabel}</span></span>
-                  <span className="room-info-line"><MapPin size={16} aria-hidden="true" /><span>{room.location || "장소 미정"}</span></span>
+                  <span className="room-info-line"><MapPin size={16} aria-hidden="true" /><span>{room.location || (room.locationStatus === "unreadable" ? "장소 확인 필요" : room.locationStatus === "not_authorized" ? "장소 조회 권한 없음" : "장소 미정")}</span></span>
                   <span className="room-info-line"><UserRound size={16} aria-hidden="true" /><span>담당 {room.owner}</span></span>
                 </span>
               </button>
@@ -227,8 +228,8 @@ export function RoomLobby() {
         {!isBackendConnected() && <footer className="lobby-footnote">프로토타입 · 참여 인원은 샘플 데이터이며, 변경사항은 현재 탭에만 저장됩니다.</footer>}
       </div>
       <aside className="lobby-overview" aria-label="행사 요약">
-        <LobbyOverview stages={counts} total={rooms?.length ?? 0} today={ongoing} busy={busy} onEnter={enter} />
         {profile.accountId && isBackendConnected() && <DevotionLobbyPreview accountId={profile.accountId} />}
+        <LobbyOverview stages={counts} total={rooms?.length ?? 0} today={ongoing} busy={busy} onEnter={enter} />
       </aside>
 
       <RoomDialog title="목록 설정" onClose={() => setListSettingsOpen(false)} open={listSettingsOpen}>

@@ -7,6 +7,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN --mount=type=cache,id=nowchatbot-pnpm-11,target=/pnpm/store \
     pnpm install --frozen-lockfile --store-dir /pnpm/store
 COPY . .
+ARG NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY
+ARG NEXT_PUBLIC_SUPPORT_EMAIL
 RUN CHURCH_STANDALONE=1 pnpm build
 
 FROM scratch AS transport-wheels

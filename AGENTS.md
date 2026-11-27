@@ -4,6 +4,7 @@
 
 ## 시작할 곳
 
+- rc.25 인수인계와 #35~#43: [개발 인수인계](docs/development-handoff.md). 기준 브랜치는 `codex/handoff-rc25`이며 외부 평가 전에 프롬프트와 평가 입력을 고정한다.
 - 실행과 저장소 안내: [README](README.md)
 - 사용자 지침 원문·미완료 항목·재개 지점: [요구사항 추적](docs/requirements/traceability.md)
 - AI 판단 원칙과 구현 현황: [AI 개선 로드맵](docs/assistant-improvement-roadmap.md)

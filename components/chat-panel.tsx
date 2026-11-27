@@ -16,6 +16,7 @@ import type { Conversation } from "@/lib/conversation-store";
 import type { ChatMessage, ChatMessageReference } from "@/lib/types";
 import { WorkspaceBrandMark } from "./workspace-brand-mark";
 import { BlankGoogleFormLink } from "./google-forms-sharing";
+import { chatCopyText } from "@/lib/chat-copy";
 
 type TurnActions = {
   onReviewProposals?: (replyId?: string) => void;
@@ -26,6 +27,7 @@ type TurnActions = {
   onSaveNearbyPlace?: (name: string) => Promise<"added" | "already-saved">;
   retreatVenueScope?: ConversationScope;
   renderWorkProposal?: (message: ChatMessage) => ReactNode;
+  renderPreparationShortcuts?: (message: ChatMessage) => ReactNode;
 };
 
 type ComposerProps = {
@@ -35,11 +37,12 @@ type ComposerProps = {
   externalAIApproved?: boolean; privacyNotice?: ReactNode;
   onOpenDocuments: () => void;
   onImportRoster?: (source: ChatRosterSource) => void;
+  focusRequest?: number;
 };
 
 type DraftReference = { kind: ChatMessageReference["kind"]; source: ChatMessage; text: string; conversationId: string; count: number };
 
-export function ChatPanel({ conversation, visible = true, onDraftChange, onSendMessage, replyStartedAt, onRetryReply, externalAIApproved, privacyNotice, onNewConversation, onOpenDocuments, shortcuts, progress, ...actions }:
+export function ChatPanel({ conversation, visible = true, onDraftChange, onSendMessage, replyStartedAt, onRetryReply, externalAIApproved, privacyNotice, onNewConversation, onOpenDocuments, focusRequest, shortcuts, progress, ...actions }:
   ComposerProps & TurnActions & { visible?: boolean; onNewConversation: () => void; shortcuts?: ReactNode; progress?: ReactNode }) {
   const scroll = useRef<HTMLDivElement>(null);
   const lastScrolled = useRef<{ id?: string; count?: number; pending?: boolean }>({});
@@ -58,7 +61,7 @@ export function ChatPanel({ conversation, visible = true, onDraftChange, onSendM
   return <section className="workspace-chat" aria-label="개인 대화">
     {(showHeading || progress) && <header className={`workspace-chat-heading${showHeading ? "" : " is-untitled"}`}><div className="workspace-reading-width">
       {showHeading && <h2>{conversation?.title ?? "대화 선택"}</h2>}
-      <div className="workspace-chat-heading-actions">{progress}{!!count && <BlankGoogleFormLink className="workspace-icon-button" iconOnly />}{showHeading && <span><LockKeyhole size={13} aria-hidden="true" />개인 대화</span>}</div>
+      <div className="workspace-chat-heading-actions">{progress}{!!count && <BlankGoogleFormLink className="workspace-icon-button" iconOnly />}</div>
     </div></header>}
     <div className="workspace-messages" ref={scroll} role="log" aria-label="대화 내용" aria-live="polite">
       {conversation?.messages.length ? <div className="workspace-message-list">{conversation.messages.map((message, index) => (
@@ -72,7 +75,7 @@ export function ChatPanel({ conversation, visible = true, onDraftChange, onSendM
         {conversation ? shortcuts : <button type="button" className="workspace-start-button" onClick={onNewConversation}>새 대화 만들기</button>}
       </div>}
     </div>
-    <Composer conversation={conversation} reference={activeReference} onClearReference={() => setReference(null)} onEditReference={text => setReference(current => current && { ...current, text })} onDraftChange={onDraftChange} onSendMessage={onSendMessage} replyStartedAt={replyStartedAt} onRetryReply={onRetryReply} externalAIApproved={externalAIApproved} privacyNotice={privacyNotice} onOpenDocuments={onOpenDocuments} onImportRoster={actions.onImportRoster} server={server} />
+    <Composer conversation={conversation} reference={activeReference} onClearReference={() => setReference(null)} onEditReference={text => setReference(current => current && { ...current, text })} onDraftChange={onDraftChange} onSendMessage={onSendMessage} replyStartedAt={replyStartedAt} onRetryReply={onRetryReply} externalAIApproved={externalAIApproved} privacyNotice={privacyNotice} onOpenDocuments={onOpenDocuments} onImportRoster={actions.onImportRoster} focusRequest={focusRequest} server={server} />
   </section>;
 }
 
@@ -101,6 +104,7 @@ function MessageTurn({ message, previous, source, server, actions, busy, onRefer
         {actions.renderWorkProposal(message)}
       </div> : <MessageBody message={message} review={review} saveNearbyPlace={actions.onSaveNearbyPlace} busy={busy} />}
       {assistant && message.actions?.includes(eventPublicVenueUsedAction) && <p className="workspace-reply-elapsed workspace-reply-completed">행사방 대표 장소 참고</p>}
+      {assistant && actions.renderPreparationShortcuts?.(message)}
       {retreatVenueScope && assistant && message.actions?.includes(venueHistoryReplyAction) &&
         <RetreatVenueHistory scope={retreatVenueScope} question={previous?.sender === "user" ? previous.text : ""} />}
     </div>
@@ -123,9 +127,15 @@ function MessageActions({ message, actions, busy, onReference }: { message: Chat
     return () => document.removeEventListener("pointerdown", close);
   }, [open]);
   const actOn = (action: () => void) => { setOpen(false); action(); };
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(chatCopyText(message)); setCopied("복사됨"); }
+    catch { setCopied("복사 실패"); }
+  };
   return <div className="workspace-message-menu" ref={root} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }} onKeyDown={event => {
     if (event.key === "Escape" && open) { event.stopPropagation(); setOpen(false); trigger.current?.focus(); }
   }}>
+    <button type="button" className="workspace-icon-button" aria-label="복사" title="복사" onClick={() => actOn(() => void copy())}><Copy size={15} aria-hidden="true" /></button>
+    <button type="button" className="workspace-icon-button" aria-label="답장" title="답장" disabled={busy} onClick={() => actOn(() => onReference("reply", message))}><Reply size={15} aria-hidden="true" /></button>
     <button type="button" ref={trigger} className="workspace-icon-button" aria-label="메시지 작업" title="메시지 작업" aria-expanded={open} aria-controls={open ? id : undefined} onClick={event => {
       const button = event.currentTarget.getBoundingClientRect();
       const list = event.currentTarget.closest(".workspace-messages")?.getBoundingClientRect();
@@ -133,13 +143,8 @@ function MessageActions({ message, actions, busy, onReference }: { message: Chat
       setCopied(""); setOpen(value => !value);
     }}><Ellipsis size={16} aria-hidden="true" /></button>
     {open && <div id={id} className="workspace-message-options" data-above={above} role="group" aria-label="메시지 작업 선택">
-      <button type="button" onClick={() => actOn(() => {
-        trigger.current?.focus();
-        const plan = message.advisor;
-        const text = plan?.kind === "plan" ? [plan.title, message.text, ...plan.rows.map(row => `${row.label}: ${row.detail}`), plan.rationale].filter(Boolean).join("\n") : message.text;
-        void (async () => { try { await navigator.clipboard.writeText(text); setCopied("복사됨"); } catch { setCopied("복사 실패"); } })();
-      })}><Copy size={15} aria-hidden="true" />복사</button>
-      <button type="button" disabled={busy} onClick={() => actOn(() => onReference("reply", message))}><Reply size={15} aria-hidden="true" />답장</button>
+      <button type="button" onClick={() => actOn(() => { trigger.current?.focus(); void copy(); })}><Copy size={15} aria-hidden="true" />메시지 복사</button>
+      <button type="button" disabled={busy} onClick={() => actOn(() => onReference("reply", message))}><Reply size={15} aria-hidden="true" />이 메시지에 답장</button>
       {own && <button type="button" disabled={busy} onClick={() => actOn(() => onReference("edit", message))}><Pencil size={15} aria-hidden="true" />수정</button>}
       {own && onAddCalendarEvent && canAddCalendarEvent?.(message) && <button type="button" disabled={busy} onClick={() => actOn(() => onAddCalendarEvent(message))}><CalendarPlus size={15} aria-hidden="true" />일정으로 추가</button>}
       {own && onAddChecklist && <button type="button" disabled={busy} onClick={() => actOn(() => onAddChecklist(message))}><ListPlus size={15} aria-hidden="true" />준비 항목으로 추가</button>}
@@ -160,13 +165,14 @@ function ReplyActivity({ startedAt }: { startedAt: number }) {
     <span aria-hidden="true">·</span><span className="workspace-reply-elapsed" aria-hidden="true">{seconds}초</span></span>;
 }
 
-function Composer({ conversation, reference, onClearReference, onEditReference, onDraftChange, onSendMessage, replyStartedAt, onRetryReply, externalAIApproved, privacyNotice, onOpenDocuments, onImportRoster, server }: ComposerProps & { server: boolean; reference: DraftReference | null; onClearReference: () => void; onEditReference: (text: string) => void }) {
+function Composer({ conversation, reference, onClearReference, onEditReference, onDraftChange, onSendMessage, replyStartedAt, onRetryReply, externalAIApproved, privacyNotice, onOpenDocuments, onImportRoster, focusRequest, server }: ComposerProps & { server: boolean; reference: DraftReference | null; onClearReference: () => void; onEditReference: (text: string) => void }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const busy = replyStartedAt != null;
   const editing = reference?.kind === "edit";
   const draft = editing ? reference.text : conversation?.draft ?? "";
   const referenceId = reference?.source.id;
   useEffect(() => { if (referenceId) input.current?.focus(); }, [referenceId, reference?.kind]);
+  useEffect(() => { if (focusRequest) input.current?.focus(); }, [focusRequest]);
   const send = () => {
     const value = draft.trim();
     if (!value || busy) return;
@@ -175,12 +181,11 @@ function Composer({ conversation, reference, onClearReference, onEditReference, 
   };
   return <footer className="workspace-composer-area">
         {privacyNotice}
+        <form className="workspace-composer" onSubmit={(event) => { event.preventDefault(); send(); }}>
         {reference && <div className="workspace-composer-reference">
           <div className="workspace-message-quote"><strong>{editing ? "내 메시지 수정" : reference.source.sender === "assistant" ? "행사비서에게 답장" : "내 메시지에 답장"}</strong><span>{reference.source.text}</span></div>
           <button type="button" className="workspace-icon-button" aria-label={editing ? "수정 취소" : "답장 취소"} onClick={() => { onClearReference(); input.current?.focus(); }}><X size={16} aria-hidden="true" /></button>
         </div>}
-        {reference?.kind === "reply" && server && externalAIApproved && <p className="workspace-composer-caption">{replyPrivacyNotice}</p>}
-        <form className="workspace-composer" onSubmit={(event) => { event.preventDefault(); send(); }}>
           <div className="workspace-composer-tools"><button type="button" className="workspace-icon-button" aria-label="자료 열기" title="자료 열기" onClick={onOpenDocuments}><Paperclip size={18} aria-hidden="true" /></button>
             {onImportRoster && !reference && conversation?.draft.trim() && !busy && <button type="button" className="workspace-icon-button" aria-label="전송 없이 참가자 가져오기" title="전송 없이 참가자 가져오기" onClick={() => onImportRoster({ id: `draft:${conversation.draft}`, text: conversation.draft, fromDraft: true })}><UsersRound size={17} aria-hidden="true" /></button>}
           </div>
@@ -189,6 +194,7 @@ function Composer({ conversation, reference, onClearReference, onEditReference, 
           }} />
           <button type="submit" className="workspace-send" aria-label={editing ? "수정하고 다시 보내기" : "전송"} title={editing ? "수정하고 다시 보내기" : "전송"} disabled={busy || !draft.trim()}><Send size={17} aria-hidden="true" /></button>
         </form>
+        {reference?.kind === "reply" && server && externalAIApproved && <p className="workspace-composer-caption workspace-quote-privacy">{replyPrivacyNotice}</p>}
         <div className="workspace-composer-caption">{!busy && (!server || externalAIApproved !== undefined) && <span role="status">{server && <LockKeyhole size={12} aria-hidden="true" />}{!server ? "화면 체험용 · 샘플 응답" : externalAIApproved ? "외부 AI 허용됨" : "외부 AI 꺼짐"}</span>}
           {!busy && onRetryReply && <div><button type="button" className="workspace-start-button gap-2" onClick={onRetryReply}><RefreshCw size={14} aria-hidden="true" />답변 다시 요청</button></div>}
         </div>

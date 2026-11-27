@@ -23,10 +23,11 @@ it("directs a disconnected workspace calendar to settings without starting OAuth
   expect(fetcher.mock.calls).toEqual([["/api/integrations/google/status"]]);
 });
 
-it("shows automatic delivery without a send button while Google has no error", async () => {
+it("shows a compact status with counts and no send button while Google has no error", async () => {
   fetcher.mockResolvedValue(ready);
   render(<GoogleCalendarConnection />);
-  await screen.findByText("자동 전송 · 완료 3 · 대기 2");
+  await screen.findByText("완료 3 · 대기 2");
+  expect(screen.queryByText(/자동 전송|전용 Google 캘린더/)).toBeNull();
   expect(screen.queryByRole("button", { name: /전송|연결 해제/ })).toBeNull();
   expect(fetcher.mock.calls).toEqual([["/api/integrations/google/status"]]);
 });

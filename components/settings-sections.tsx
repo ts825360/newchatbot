@@ -1,16 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { Bell, CalendarDays, Check, CircleCheck, Eye, Info, KeyRound, ListChecks, LockKeyhole, Mail, MessageCircle, Monitor, Moon, Phone, RotateCcw, ShieldCheck, Sun, type LucideIcon } from "lucide-react";
+import { CalendarDays, Check, Eye, Info, KeyRound, ListChecks, LockKeyhole, MessageCircle, Monitor, Moon, RotateCcw, ShieldCheck, Sun, type LucideIcon } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { backendFetch, flushBackendWrites } from "@/lib/backend-client";
 import { refreshServerAuth } from "@/lib/client-auth";
-import { googleSettingsHref } from "@/lib/google-settings";
 import { externalAIConsentDetails, externalAIConsentTitle, openAIChatConsentVersion, openAIReplyContextConsentVersion, replyContextConsentDetails, replyContextConsentPath, replyContextConsentTitle } from "@/lib/assistant-privacy";
 import type { UserProfile } from "@/lib/types";
 import { defaultDisplay, readDisplaySettings, saveDisplaySettings, type DisplaySettings } from "@/lib/use-theme";
 import { RoomDialog } from "./room-dialog";
-import { SupportButton } from "./support-dialog";
 import { Badge, Field, inputClass } from "./ui";
 import { WorkspaceBrandMark } from "./workspace-brand-mark";
 
@@ -32,18 +30,23 @@ export function AccountPreferences({ profile }: { profile: UserProfile }) {
   const [username, setUsername] = useState("");
   const [name, setName] = useState(profile.nickname);
   const [savedName, setSavedName] = useState(profile.nickname);
-  const [loading, setLoading] = useState(true);
+  const [accountLookup, setAccountLookup] = useState<"loading" | "ready" | "failed">("loading");
+  const [accountRetry, setAccountRetry] = useState(0);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const canManage = (profile.grade === 1 || profile.grade === 2) && profile.permissions.includes("manageMembers");
   useEffect(() => {
+    if (!profile.accountId) { setAccountLookup("failed"); return; }
     const controller = new AbortController();
-    void backendFetch("/api/auth/account", { signal: controller.signal }).then(value => {
-      if (!controller.signal.aborted && typeof value.username === "string") setUsername(value.username);
-    }).catch(() => {}).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    void backendFetch("/api/auth/account", { signal: controller.signal, headers: { "x-account-id": profile.accountId } }).then(value => {
+      if (controller.signal.aborted) return;
+      if (typeof value?.username !== "string" || !value.username.trim()) throw new Error();
+      setUsername(value.username);
+      setAccountLookup("ready");
+    }).catch(() => { if (!controller.signal.aborted) setAccountLookup("failed"); });
     return () => controller.abort();
-  }, []);
+  }, [profile.accountId, accountRetry]);
   const save = async (event: FormEvent) => {
     event.preventDefault();
     if (busy || !profile.accountId || !name.trim() || name.trim() === savedName) return;
@@ -64,7 +67,11 @@ export function AccountPreferences({ profile }: { profile: UserProfile }) {
     </Row>
     <div className="settings-row"><label className="settings-row-label" htmlFor="settings-display-name"><strong>표시 이름</strong></label>
       <div className="settings-account-field"><input id="settings-display-name" className={inputClass} maxLength={20} value={name} disabled={busy || !profile.accountId} onChange={event => { setName(event.target.value); setNotice(""); setError(""); }} aria-describedby="settings-name-help" required /><p id="settings-name-help">행사비서에서 다른 화면에 표시되는 이름입니다.</p></div></div>
-    <Row title="로그인 아이디"><div className="settings-account-field"><p className="settings-readonly-value">{username || (loading ? "불러오는 중…" : "확인할 수 없음")}</p><p>로그인에 사용하는 아이디입니다.</p></div></Row>
+    <Row title="로그인 아이디"><div className="settings-account-field">
+      {accountLookup === "failed" ? <><p className="settings-error" role="alert">로그인 아이디를 불러오지 못했습니다.</p>
+        <button type="button" className="lobby-secondary" onClick={() => { setAccountLookup("loading"); setAccountRetry(n => n + 1); }}>로그인 아이디 다시 불러오기</button></> :
+        <p className="settings-readonly-value">{accountLookup === "ready" ? username : "불러오는 중…"}</p>}
+      <p>로그인에 사용하는 아이디입니다.</p></div></Row>
     <Row title="관리자 등급" description={profile.duty || profile.role}><Badge tone="blue">{profile.grade ? `제${profile.grade}관리자` : "등급 미지정"}</Badge></Row>
     <Row title="관리 권한">
       <span>{profile.permissions.includes("inviteMember") && (profile.grade === 1 || profile.grade === 2) ? "초대코드 발급 가능" : "초대코드 발급 권한 없음"}</span>
@@ -127,24 +134,6 @@ export function DisplayPreferences() {
   </div><div className="settings-actions"><p className={result === "error" ? "settings-error" : "settings-save-status"} role={result === "error" ? "alert" : "status"}>{result === "error" ? "이 브라우저에 설정을 저장하지 못했습니다." : result === "saved" ? "화면 설정을 저장했습니다." : ""}</p>
     <div className="settings-action-buttons"><button type="button" className="lobby-secondary" onClick={() => update(defaultDisplay)}><RotateCcw size={15} aria-hidden="true" />기본값으로 되돌리기</button><button type="submit" className="lobby-primary" disabled={!dirty}><Check size={16} aria-hidden="true" />저장</button></div>
   </div></form>;
-}
-
-export function AlertPreferences({ canConnectCalendar }: { canConnectCalendar: boolean }) {
-  return <div className="settings-alerts">
-    <section className="settings-alert-band" aria-labelledby="alert-channels"><header><h3 id="alert-channels">알림 수신 방법</h3><p>현재 사용할 수 있는 알림 채널입니다.</p></header>
-      <div className="settings-alert-channels">
-        <div data-available="true"><Bell size={20} aria-hidden="true" /><strong>앱 내 알림</strong><Badge tone="green">사용 중</Badge></div>
-        <div><Mail size={20} aria-hidden="true" /><strong>이메일 알림</strong><Badge tone="neutral">미지원</Badge></div>
-        <div><MessageCircle size={20} aria-hidden="true" /><strong>카카오톡 알림</strong><Badge tone="neutral">미지원</Badge></div>
-      </div>
-    </section>
-    <section className="settings-alert-band" aria-labelledby="alert-items"><header><h3 id="alert-items">알림 항목</h3></header>
-      <div><Row icon={Bell} title="저장·연결·오류" description="작업 결과는 해당 화면에 바로 표시됩니다." /><Row icon={CalendarDays} title="행사 일정" description="Google로 보낸 확정 일정의 알림은 Google 캘린더에서 받을 수 있습니다." /></div>
-    </section>
-    <section className="settings-alert-band" aria-labelledby="alert-details"><header><h3 id="alert-details">알림 세부 설정</h3></header>
-      <div><Row title="Google 일정 알림" description="알림 시간과 반복은 Google 캘린더에서 설정합니다.">{canConnectCalendar && <a href={googleSettingsHref("calendar")} className="lobby-secondary">캘린더 연동 관리</a>}</Row></div>
-    </section>
-  </div>;
 }
 
 export function PasswordPreferences({ accountId }: { accountId?: string }) {
@@ -243,12 +232,4 @@ export function ExternalAIPreferences({ accountId }: { accountId: string }) {
     {error && <p className="settings-error" role="alert">{error}</p>}
     {notice && <p className="settings-save-status" role="status">{notice}</p>}
   </section>;
-}
-
-export function SupportPreferences() {
-  return <><SupportButton screenName="환경설정" presentation="settings" />
-    <div className="settings-support-footer">
-      <section aria-labelledby="settings-service-state"><h3 id="settings-service-state"><CircleCheck size={21} aria-hidden="true" />서비스 상태</h3><Badge tone="green">로그인됨</Badge><p>현재 계정으로 접속 중입니다. Google 서비스별 연결 상태는 보안 및 개인정보에서 확인할 수 있습니다.</p></section>
-      <section aria-labelledby="settings-contact"><h3 id="settings-contact"><Phone size={21} aria-hidden="true" />문의 및 연락처</h3><p>가입이나 접근 권한은 초대코드를 발급한 관리자에게 문의해 주세요.</p><p>공개 문의 연락처는 설정되어 있지 않습니다.</p></section>
-    </div></>;
 }

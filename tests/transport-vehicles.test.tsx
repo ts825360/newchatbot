@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { TransportPanel } from "@/components/transport-panel";
 import { createTransportDraft, type TransportInput, type TransportVehicle } from "@/lib/transport";
 import { privateToolKey } from "@/lib/conversation-scope";
+import { parseDirectionalSurveyMovement } from "@/lib/transport-movement";
 
 const storageKey = "church:transport:v1:vehicles";
 const registered = (id: string, label: string): TransportVehicle => ({
@@ -21,6 +22,22 @@ const rename = (field: HTMLInputElement, value: string) => {
 afterEach(() => { cleanup(); sessionStorage.clear(); vi.unstubAllGlobals(); });
 
 describe("vehicle registration", () => {
+  it("reviews an offered car once and includes promised riders before making extra seats allocatable", () => {
+    vi.stubGlobal("HTMLDialogElement", HTMLDialogElement);
+    Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value(this: HTMLDialogElement) { this.setAttribute("open", ""); } });
+    Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value(this: HTMLDialogElement) { this.removeAttribute("open"); } });
+    const draft = createTransportDraft();
+    const rider = { id: "rider", name: "테스트 동승자", department: "청년부", familyId: "", companionGroup: "", outboundTripId: null, returnTripId: null };
+    const provider = { ...rider, id: "driver", name: "테스트 운전자", movementPlan: parseDirectionalSurveyMovement({ outbound: { method: "자차 이동", riderNames: rider.name, extraSeats: "2" }, return: { method: "출발할 때와 동일" } }) };
+    sessionStorage.setItem(storageKey, JSON.stringify({ input: { ...draft, people: [provider, rider], vehicles: [{ ...registered("car", "테스트 자차"), driverId: provider.id, externalDriverConfirmed: false, capacity: 5, totalSeats: 5 }] }, result: null, baseline: null, approved: false }));
+    render(<TransportPanel roomId="vehicles" />); showVehicles();
+    fireEvent.click(screen.getByRole("button", { name: "동승 약속 검토" }));
+    expect(saved().input.locks).toEqual([]);
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "배정 조건에 반영" }));
+    expect(saved().input.vehicles[0].capacity).toBe(4);
+    expect(saved().input.locks).toHaveLength(4);
+    expect(saved().input.people[1].outboundTripId).toBe("main");
+  });
   it("starts unchecked and keeps allocatable seats blank without blocking the import flow", () => {
     const view = render(<TransportPanel roomId="vehicles" />);
     showVehicles();
@@ -33,6 +50,7 @@ describe("vehicle registration", () => {
     render(<TransportPanel roomId="vehicles" />);
     showVehicles();
     expect(screen.getByLabelText<HTMLInputElement>("추가 차량 배정 가능 좌석").value).toBe("");
+    fireEvent.click(screen.getByRole("tab", { name: "배치" }));
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "배정 계산" }).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "폼 불러오기" }));
     expect(screen.getByLabelText("Google Forms 응답 CSV")).toBeTruthy();

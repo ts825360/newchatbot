@@ -43,9 +43,11 @@ export function ProposalPanel({ room, scope, messages, onApply, canApprove = () 
     {error && <p role="alert" className="documents-error">{error}</p>}
     {decisions === null && !error && <p role="status" className="text-xs text-muted-foreground">제안 불러오는 중...</p>}
     {decisions && real && !proposals.length && !modern.length && <p className="text-sm text-muted-foreground">이 대화에서 검토할 제안이 없습니다.</p>}
-    {scope && modern.map(message => <ChatWorkCard key={`${scope.accountId}:${scope.roomId}:${scope.conversationId}:${message.id}`} scope={scope} message={message} onApply={onApply}
-      canApprove={message.workProposal?.kind === "survey" || canApprove(message.workProposal!.kind)} remember={remember} />)}
-    {decisions && proposals.map(proposal => <ProposalRow key={`${room.id}:${proposal.id}:${room.date ?? ""}`} proposal={proposal} privateReview={!!scope} decision={decisions.find(item => item.id === proposal.id)} onApply={onApply} onDecide={decide} />)}
+    <div className="proposal-grid">
+      {scope && modern.map(message => <ChatWorkCard key={`${scope.accountId}:${scope.roomId}:${scope.conversationId}:${message.id}`} scope={scope} message={message} onApply={onApply}
+        canApprove={message.workProposal?.kind === "survey" || canApprove(message.workProposal!.kind)} remember={remember} review />)}
+      {decisions && proposals.map(proposal => <ProposalRow key={`${room.id}:${proposal.id}:${room.date ?? ""}`} proposal={proposal} privateReview={!!scope} decision={decisions.find(item => item.id === proposal.id)} onApply={onApply} onDecide={decide} />)}
+    </div>
   </div>;
 }
 

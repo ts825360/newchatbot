@@ -98,8 +98,9 @@ export function usePreparationProgressReview(scope: ConversationScope | null) {
 }
 
 export function PreparationProgressShortcut({ busy, loading, saving, report, stale, error, onOpen }: ReviewState & { busy: boolean; onOpen: () => void }) {
-  return <button type="button" className="workspace-chat-progress" aria-controls="workspace-progress-review" onClick={onOpen}>
-    <ScanSearch size={16} aria-hidden="true" /><span>준비 진행도 <strong aria-live="polite">· {busy ? "점검 중" : loading || saving ? "확인 중" : error ? "확인 실패" : report ? `${report.percent ?? 0}%` : stale ? "재점검 필요" : "미검토"}</strong></span>
+  const detail = busy ? "점검 중" : loading || saving ? "확인 중" : error ? "확인 실패" : report ? `${report.percent ?? 0}%` : stale ? "재점검 필요" : "미검토";
+  return <button type="button" className="workspace-chat-progress" aria-controls="workspace-tools" title={`준비 진행도: ${detail}`} onClick={onOpen}>
+    <ScanSearch size={16} aria-hidden="true" />행사 요약
   </button>;
 }
 

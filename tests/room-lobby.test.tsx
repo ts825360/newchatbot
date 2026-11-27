@@ -5,10 +5,11 @@ import { createBrowserAuth } from "../lib/prototype-auth";
 import { createRoomCatalog } from "../lib/room-catalog";
 
 const { router } = vi.hoisted(() => ({ router: { push: vi.fn(), replace: vi.fn() } }));
-const backend = vi.hoisted(() => ({ connected: false, flush: vi.fn() }));
+const backend = vi.hoisted(() => ({ connected: false, flush: vi.fn(), fetch: vi.fn() }));
 vi.mock("../lib/backend-client", async importOriginal => ({
   ...await importOriginal<typeof import("../lib/backend-client")>(),
   isBackendConnected: () => backend.connected,
+  backendFetch: backend.fetch,
   flushBackendWrites: backend.flush
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => router }));
@@ -16,7 +17,7 @@ beforeAll(() => {
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
   HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
 });
-beforeEach(() => { sessionStorage.clear(); localStorage.clear(); vi.clearAllMocks(); backend.connected = false; backend.flush.mockResolvedValue(undefined); });
+beforeEach(() => { sessionStorage.clear(); localStorage.clear(); vi.clearAllMocks(); backend.connected = false; backend.flush.mockResolvedValue(undefined); backend.fetch.mockRejectedValue(new Error("offline")); });
 afterEach(() => { cleanup(); window.history.replaceState(null, "", window.location.pathname); vi.restoreAllMocks(); });
 
 const results = () => screen.getByRole("region", { name: "행사방 목록" });
@@ -208,12 +209,30 @@ describe("event room lobby", () => {
     window.history.replaceState(null, "", "#lobby-today");
     render(<RoomLobby />);
     const nav = within(await screen.findByRole("navigation", { name: "주 메뉴" }));
-    expect(nav.getByRole("link", { name: "오늘의 행사" }).getAttribute("aria-current")).toBe("location");
-    expect(nav.getByRole("link", { name: "행사방" }).hasAttribute("aria-current")).toBe(false);
+    expect(nav.getAllByRole("link").map(link => link.textContent)).toEqual(["홈", "행사방"]);
+    expect(screen.queryByRole("link", { name: "오늘의 행사" })).toBeNull();
+    expect(screen.getByRole("region", { name: "오늘의 행사" }).id).toBe("lobby-today");
+    expect(nav.getByRole("link", { name: "행사방" }).getAttribute("aria-current")).toBe("location");
     for (const [hash, label] of [["#lobby-home", "홈"], ["#rooms-panel", "행사방"]]) {
       window.history.replaceState(null, "", hash);
       act(() => { window.dispatchEvent(new HashChangeEvent("hashchange")); });
       expect(nav.getByRole("link", { name: label }).getAttribute("aria-current")).toBe("location");
     }
+  });
+
+  it("keeps meditation first only in the right dashboard and uses the same venue in both room listings", async () => {
+    await signIn();
+    backend.connected = true;
+    const today = new Intl.DateTimeFormat("sv-SE", { dateStyle: "short", timeZone: "Asia/Seoul" }).format(new Date());
+    backend.fetch.mockResolvedValue({ date: today, reference: "시편 23:1", verse: "검증용 본문", url: "https://www.bible.com/ko/bible/88/PSA.23.1.KRV" });
+    const profile = createBrowserAuth().currentProfile()!;
+    createRoomCatalog(sessionStorage, profile).create({ name: "오늘 검증 행사", category: "retreat", date: today, endDate: today, location: "검증 장소", description: "" });
+    render(<RoomLobby />);
+    await screen.findByRole("heading", { name: "오늘의 묵상" });
+    const dashboard = within(screen.getByRole("complementary", { name: "행사 요약" }));
+    expect(dashboard.getAllByRole("heading", { level: 2 }).map(item => item.textContent)).toEqual(["오늘의 묵상", "오늘의 행사", "전체 진행 현황"]);
+    expect(within(results()).getByText("검증 장소")).toBeDefined();
+    expect(dashboard.getByText("검증 장소")).toBeDefined();
+    expect(within(results()).queryByText(/참가자/)).toBeNull();
   });
 });

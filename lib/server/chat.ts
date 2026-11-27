@@ -10,6 +10,7 @@ import { extractChatCalendarFields } from "../chat-calendar";
 import { isVenueHistoryChat, venueHistoryReplyAction } from "../retreat-venue-history";
 import { loadRetreatReview, summarizeRetreatReview } from "./retreat-preparation";
 import { loadPreparationStatus } from "./preparation-status";
+import { preparationFactsAction, preparationFactsTool, readPreparationFacts } from "./chat-preparation-tool";
 import { loadChatWork } from "./chat-work-proposals";
 import { isRetreatRoom, loadRetreatVenueReview } from "./retreat-venue-history";
 import type { ConversationHistory } from "../conversation-store";
@@ -23,6 +24,7 @@ import { diningVisit, nearbySearchKind, participantBand, recommendDining } from 
 import { classifyContinuation, contextOrdinal, requestOnlyConditions, type EventWindow } from "../chat-continuity";
 import { resolveWorkConditions, type WorkCondition } from "../chat-work-state";
 import { readParticipantCount } from "./chat-work-reads";
+import { createWorkSession } from "./chat-work-store";
 import { interpretNearbyFollowUp, type NearbyIntent } from "./chat-interpretation";
 import type { NearbyTask } from "../chat-dining";
 import { verifiedPublicPlace } from "../conversation-places";
@@ -80,7 +82,7 @@ function replyIdFor(scope: ConversationScope, turn: ChatMessage, internal: boole
 
 function confirmedOpenAITurn(scope: ConversationScope, question?: ChatMessage, reply?: ChatMessage) {
   return question?.sender === "user" && !question.actions?.includes(internalChatAction) && !requestsPersonalDisclosure(question.text) && reply?.sender === "assistant"
-    && reply.id === replyIdFor(scope, question, false, false);
+    && !reply.workProposal && reply.id === replyIdFor(scope, question, false, false);
 }
 
 function chatInput(scope: ConversationScope, messages: readonly ChatMessage[], current: ChatMessage, includeReplies: boolean): string | OpenAIChatTurn[] {
@@ -166,7 +168,8 @@ function findTurn(db: DatabaseSync, scope: ConversationScope, userMessageId: str
   const travelContinuation = anchor && anchor.answer.id === replyIdFor(scope, anchor.question, true, false)
     ? venueTravelFollowUp(anchor.question.text, userMessageText) : undefined;
   const internal = localReview || Boolean(travelContinuation);
-  const previousNearby = internal ? undefined : priorNearby(scope, messages, index);
+  const lastWork = messages.slice(0, index).findLast(message => message.sender === "assistant" && (message.workProposal || message.nearbyTask));
+  const previousNearby = internal || !messages[index].reference && lastWork?.workProposal ? undefined : priorNearby(scope, messages, index);
   const nearbyKind = internal ? null : nearbySearchKind(messages[index].text) ?? previousNearby?.nearbyTask?.kind ?? null;
   const replyId = replyIdFor(scope, messages[index], internal, retreatVenueReview, !!nearbyKind);
   const existing = messages[index + 1];
@@ -226,6 +229,12 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
     if (pending.has(original.key)) return json({ error: "이 행사방의 다른 답변을 작성 중입니다. 잠시 후 다시 시도해 주세요." }, 429);
     pending.add(original.key);
     try {
+      const checkExternal = () => {
+        assertSameHistory(currentTurn());
+        if (!hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
+      };
+      const work = createWorkSession(db, scope, original.conversation.messages, original.message, checkExternal);
+      let preparationUsed: ReturnType<typeof readPreparationFacts> | undefined;
       const preferences = loadAssistantPreferences(db, actor.id);
       const format = (value: string) => value.trim() ? formatAssistantReply(value.trim(), preferences.emoji) : "";
       let assertSourcesStillCurrent = () => {};
@@ -243,6 +252,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         reply = { text: "이 대화에서 이어가던 요청을 중단했어요. 행사방에 저장된 기록은 변경하지 않았습니다.", actions: ["context-cancelled"] };
       } else if (workIntent) {
         reply = loadChatWork(db, actor, scope, workIntent, data.userMessageText);
+        if (reply.workProposal?.kind === "survey") work.createLocal();
       } else if (venueRouteQuestion || original.travelContinuation) {
         const venue = readPublicEventVenue(db, scope);
         let usedSearch = false;
@@ -375,9 +385,9 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         const publicVenue = readPublicEventVenue(db, scope);
         const memory = (action !== "new" || original.message.reference != null) && hasReplyContextConsent(db, actor.id);
         let venueUsed: string | undefined;
-        const tool = publicVenue ? { definition: eventVenueTool, run: () => {
-          assertSameHistory(currentTurn());
-          if (!hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
+        const tool = publicVenue ? { definition: eventVenueTool, run: (args: unknown) => {
+          checkExternal();
+          if (!object(args) || Object.keys(args).length) throw new ApiError(502, "장소 조회 도구 입력을 확인하지 못했습니다.");
           if (memory && !hasReplyContextConsent(db, actor.id)) throw new ApiError(423, "이전 AI 답변 사용 동의가 변경되었습니다.");
           const venue = readPublicEventVenue(db, scope);
           if (!venue) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
@@ -385,11 +395,24 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
           return venueUsed;
         } } : undefined;
         const continuityInstruction = "후속 요청에서는 사용자가 바꾼 조건만 바꾸고 나머지는 유지하세요. 이전 AI 답변은 대화의 후보나 판단이며 저장 또는 확정된 사실이 아닙니다. 임시 가정, 이어가는 조건, 확인된 행사 기록을 구분하세요. 새 요청에는 관련 없는 이전 조건을 적용하지 마세요. 후보나 결정의 근거가 전달되지 않으면 추측하지 마세요. 본인·관리자의 요청에도 생년월일, 연락처, 개인 주소, 이메일, 참가자 명단 원문은 조회하거나 답변에 넣지 마세요.";
+        const surveyInstruction = `현재 대화에서 참조 가능한 설문 작업: ${work.hasPrevious ? "있음" : "없음"}. 참석 조사나 참가 신청용 양식을 만들라는 의미라면 create_survey_draft를 사용하세요. 이전 초안의 재생성·재출력에는 get_work_draft를 먼저 사용하고 부분 수정에는 해당 조회 버전을 사용하세요. 행사명은 서버가 적용합니다. 일상 대화에는 도구를 호출하지 마세요. 도구를 호출해도 게시, 승인 또는 Google Forms 작성을 완료했다고 답하지 마세요.`;
+        const planning = { definition: preparationFactsTool, run: (args: unknown) => {
+          checkExternal();
+          if (!object(args) || Object.keys(args).length) throw new ApiError(502, "준비 현황 조회 도구 입력을 확인하지 못했습니다.");
+          preparationUsed = readPreparationFacts(db, requireUser(request, db), scope);
+          return JSON.stringify(preparationUsed);
+        } };
         const raw = await generateOpenAIText(chatInput(scope, original.conversation.messages, original.message, memory), request.signal,
-          [chatAdvisorPrompt, continuityInstruction, chatOutputInstruction, assistantStyleInstruction(preferences), ...(tool ? ["사용자가 우리 숙소나 행사 장소, 그 주변 식당·활동을 물으면 장소를 다시 묻기 전에 get_current_event_venue를 호출하세요. 결과는 저장된 대표 장소의 공개 기본 정보이며 주변 시설의 최신 검색 결과가 아닙니다."] : [])].join("\n\n"), advisorReplyFormat, tool);
+          [chatAdvisorPrompt, continuityInstruction, surveyInstruction, chatOutputInstruction, assistantStyleInstruction(preferences), ...(tool ? ["사용자가 우리 숙소나 행사 장소, 그 주변 식당·활동을 물으면 장소를 다시 묻기 전에 get_current_event_venue를 호출하세요. 결과는 저장된 대표 장소의 공개 기본 정보이며 주변 시설의 최신 검색 결과가 아닙니다."] : [])].join("\n\n"), advisorReplyFormat, [...work.tools, planning, ...(tool ? [tool] : [])], () => {
+          checkExternal();
+          if (memory && !hasReplyContextConsent(db, actor.id)) throw new ApiError(423, "이전 AI 답변 사용 동의가 변경되었습니다.");
+        });
         assertSourcesStillCurrent = () => {
           if (memory && !hasReplyContextConsent(db, actor.id)) throw new ApiError(423, "이전 AI 답변 사용 동의가 변경되었습니다.");
           if (venueUsed && venueUsed !== JSON.stringify(readPublicEventVenue(db, scope))) throw new ApiError(409, "대표 장소가 변경되었습니다. 다시 요청해 주세요.");
+          if (preparationUsed && !isDeepStrictEqual(preparationUsed, readPreparationFacts(db, requireUser(request, db), scope))) {
+            throw new ApiError(409, "행사 준비 기록이 변경되었습니다. 최신 상태에서 다시 요청해 주세요.");
+          }
         };
         const answer = parseAdvisorReply(raw);
         if (!answer) throw new ApiError(502, "AI 답변 형식을 읽지 못했습니다. 답변을 다시 요청해 주세요.");
@@ -399,14 +422,20 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         const sourceDate = extractChatCalendarFields(data.userMessageText).date;
         reply = {
           text: format(answer.summary),
-          ...(venueUsed && { actions: [eventPublicVenueUsedAction] }),
+          ...((venueUsed || preparationUsed) && { actions: [...(venueUsed ? [eventPublicVenueUsedAction] : []), ...(preparationUsed ? [preparationFactsAction] : [])] }),
           advisor: {
             kind: answer.kind, title: format(answer.title), rationale: format(answer.rationale),
             rows: answer.rows.map(row => ({ label: format(row.label), detail: format(row.detail) })),
-            proposals: answer.proposals.filter(proposal => proposal.kind === "checklist" || proposal.date === sourceDate)
+            proposals: (preparationUsed ? [] : answer.proposals).filter(proposal => proposal.kind === "checklist" || proposal.date === sourceDate)
               .map(proposal => ({ ...proposal, title: format(proposal.title) })),
           },
         };
+      }
+      const pendingWork = preparationUsed ? undefined : work.pending();
+      if (pendingWork) {
+        const { draft, operation } = pendingWork;
+        const workText = { create: "현재 행사의 참가 설문 초안을 만들었어요.", edit: "요청한 문항만 바꿔 새 검토 버전으로 저장했어요.", show: "현재 대화에 저장된 최신 설문 초안이에요.", regenerate: "기존 문항과 조건을 유지해 검토할 새 버전을 만들었어요." };
+        reply = { text: `${workText[operation]} Google Forms에는 아직 생성하지 않았습니다.`, workProposal: { kind: "survey", title: draft.title, draft } };
       }
       transaction(db, () => {
         const latest = currentTurn();
@@ -415,6 +444,7 @@ export async function handleChat(request: Request, database?: DatabaseSync): Pro
         if (!useLocalReply && !hasChatConsent(db, actor.id)) throw new ApiError(423, "OpenAI 전송 동의가 변경되었습니다.");
         assertSourcesStillCurrent();
         const replyId = original.nearbyKind && !nearbyKind ? replyIdFor(scope, latest.message, false, false) : latest.replyId;
+        if (!preparationUsed) work.commit(replyId);
         latest.conversation.messages.push({ id: replyId, sender: "assistant", ...reply, time: "방금 전", replyElapsedMs: Math.round(performance.now() - startedAt) });
         const updatedAt = new Date().toISOString();
         latest.conversation.updatedAt = updatedAt;

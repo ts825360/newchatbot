@@ -1,98 +1,113 @@
 "use client";
 
-import { BedDouble, BusFront, CalendarDays, ChevronRight, MapPin, UsersRound, type LucideIcon } from "lucide-react";
+import { BedDouble, BusFront, CalendarDays, CalendarRange, ChevronRight, ClipboardList, Clock3, Folder, MapPin, UsersRound, type LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
-import { dataStorage } from "@/lib/backend-client";
+import { backendFetch, dataStorage, isBackendConnected } from "@/lib/backend-client";
+import { normalizeCalendarStatus } from "@/lib/calendar-status";
 import { readConversationPlaces } from "@/lib/conversation-places";
 import { privateToolKey, scopeId, type ConversationScope } from "@/lib/conversation-scope";
-import { parseTransportSnapshot, type TransportSnapshot } from "@/lib/transport-snapshot";
-import { initialLodgingPlan, roomKindLabel, rosterFingerprint, summarizeLodging } from "@/lib/lodging-plan";
-import { normalizeCalendarStatus } from "@/lib/calendar-status";
-import { validateTransportResult } from "@/lib/transport";
-import type { CalendarEvent, EventRoom } from "@/lib/types";
+import { initialLodgingPlan, summarizeLodging } from "@/lib/lodging-plan";
+import { roomDateLabel, validDate } from "@/lib/room-timing";
 import { readTimetable } from "@/lib/timetable";
+import { parseTransportSnapshot, type TransportSnapshot } from "@/lib/transport-snapshot";
+import type { CalendarEvent, EventRoom } from "@/lib/types";
 import { Badge } from "./ui";
 
-export function WorkspacePreparationRecords({ scope, room, events, onOpenTimetable }: { scope: ConversationScope; room: EventRoom; events: CalendarEvent[]; onOpenTimetable?: () => void }) {
-  return <PreparationRecords key={scopeId(scope)} locationKey={privateToolKey(scope, "location")} transportKey={privateToolKey(scope, "transport")}
-    timetableKey={privateToolKey(scope, "timetable")} room={room} events={events} onOpenTimetable={onOpenTimetable} />;
+export type PreparationRecordTarget = "calendar" | "timetable" | "location" | "people" | "transport" | "lodging" | "documents" | "proposals";
+export type PreparationReadState = "ready" | "loading" | "error" | "restricted" | "notApplicable";
+type Surveys = { drafts: number; forms: number };
+type Read<T> = { state: "ready"; value: T } | { state: Exclude<PreparationReadState, "ready">; value?: undefined };
+type Props = {
+  scope: ConversationScope; room: EventRoom; events: CalendarEvent[]; calendarState?: PreparationReadState;
+  documentsState?: PreparationReadState; documentCount?: number; surveyState?: PreparationReadState; surveys?: Surveys;
+  active?: boolean; canOpenProposals?: boolean; transportState?: "ready" | "restricted"; onOpen?: (target: PreparationRecordTarget) => void;
+};
+type ScopedRecords = { places: Read<string[]>; transport: Read<TransportSnapshot | null>; timetable: Read<number> };
+const waiting: ScopedRecords = { places: { state: "loading" }, transport: { state: "loading" }, timetable: { state: "loading" } };
+const read = <T,>(factory: () => T): Read<T> => {
+  try { return { state: "ready", value: factory() }; }
+  catch { return { state: "error" }; }
+};
+
+export function WorkspacePreparationRecords(props: Props) {
+  return <PreparationRecords key={scopeId(props.scope)} {...props} />;
 }
 
-function PreparationRecords({ locationKey, transportKey, timetableKey, room, events, onOpenTimetable }: {
-  locationKey: string; transportKey: string; timetableKey: string; room: EventRoom; events: CalendarEvent[]; onOpenTimetable?: () => void;
-}) {
-  const [places, setPlaces] = useState<string[] | null>([]);
-  const [transport, setTransport] = useState<TransportSnapshot | "error" | null>(null);
-  const [timetableCount, setTimetableCount] = useState<number | null>(null);
+function PreparationRecords({ scope, room, events, active = true, calendarState = "ready", documentsState = "ready", documentCount = 0,
+  surveys, surveyState, canOpenProposals = true, transportState = "ready", onOpen }: Props) {
+  const [records, setRecords] = useState<ScopedRecords>(waiting);
+  const server = isBackendConnected();
+  const [storedSurveys, setStoredSurveys] = useState<Read<Surveys>>(server ? { state: "loading" } : { state: "ready", value: { drafts: 0, forms: 0 } });
+  const locationKey = privateToolKey(scope, "location"), transportKey = privateToolKey(scope, "transport"), timetableKey = privateToolKey(scope, "timetable");
   useEffect(() => {
-    const load = () => {
-      try {
-        const location = dataStorage(localStorage).getItem(locationKey);
-        setPlaces(location ? readConversationPlaces(JSON.parse(location)) : []);
-      } catch { setPlaces(null); }
-      try {
+    const load = () => setRecords({
+      places: read(() => { const raw = dataStorage(localStorage).getItem(locationKey); return raw ? readConversationPlaces(JSON.parse(raw)) : []; }),
+      transport: transportState === "restricted" ? { state: "restricted" } : read(() => {
         const raw = dataStorage(sessionStorage).getItem(transportKey);
-        const value = raw ? parseTransportSnapshot(raw) : null;
-        setTransport(value?.demo ? null : value);
-      } catch { setTransport("error"); }
-      try {
-        setTimetableCount(readTimetable(dataStorage(localStorage).getItem(timetableKey)).entries.length);
-      } catch { setTimetableCount(null); }
-    };
+        const parsed = raw ? parseTransportSnapshot(raw) : null;
+        return parsed?.demo ? null : parsed;
+      }),
+      timetable: read(() => readTimetable(dataStorage(localStorage).getItem(timetableKey)).entries.length),
+    });
     load();
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === null || event.key === locationKey || event.key === transportKey || event.key === timetableKey) load();
-    };
+    const handleStorage = (event: StorageEvent) => { if (!event.key || [locationKey, transportKey, timetableKey].includes(event.key)) load(); };
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
-  }, [locationKey, transportKey, timetableKey]);
-  const vehicles = transport && transport !== "error" ? transport.input.vehicles : [];
-  const result = transport && transport !== "error" ? transport.result : null;
-  const approved = !!transport && transport !== "error" && transport.approved;
-  const outdated = !!transport && transport !== "error" && !!result && result.revision !== transport.input.revision;
-  const issues = transport && transport !== "error" && result && !approved && !outdated ? validateTransportResult(transport.input, result) : [];
-  const selected = approved && result ? vehicles.filter(vehicle => result.usedVehicleIds.includes(vehicle.id)) : vehicles;
-  const vehicleStatus = transport === "error" ? "읽기 실패" : approved ? "확정" : outdated ? "재계산 필요" : issues.length ? "승인 전 확인" : result ? "검토 중" : vehicles.length ? "차량 등록" : "미정";
-  const people = transport && transport !== "error" ? transport.input.people : [];
-  const checked = !!people.length && transport && transport !== "error" && transport.rosterConfirmation === rosterFingerprint(people);
-  const lodging = transport && transport !== "error" ? summarizeLodging(people, transport.lodgingPlan ?? initialLodgingPlan(people)) : undefined;
-  const lodgingKinds = lodging?.active.length ? (["personal", "family", "group", "existing"] as const).flatMap(kind => {
-    const count = lodging.active.filter(r => r.kind === kind).length;
-    return count ? [`${roomKindLabel[kind]} ${count}실`] : [];
-  }).join(" · ") : "";
+  }, [locationKey, transportKey, timetableKey, transportState, active]);
+  useEffect(() => {
+    if (!active || !server || surveyState) return;
+    const controller = new AbortController();
+    const query = new URLSearchParams({ roomId: scope.roomId, conversationId: scope.conversationId });
+    void backendFetch(`/api/preparation-surveys?${query}`, { signal: controller.signal, headers: { "x-preparation-account": scope.accountId } }).then((value: Surveys) => {
+      if (![value?.drafts, value?.forms].every(count => Number.isSafeInteger(count) && count >= 0)) throw new Error("Invalid counts");
+      if (!controller.signal.aborted) setStoredSurveys({ state: "ready", value });
+    }).catch(() => { if (!controller.signal.aborted) setStoredSurveys({ state: "error" }); });
+    return () => controller.abort();
+  }, [active, server, surveyState, scope.accountId, scope.roomId, scope.conversationId]);
+
+  const transport = records.transport.value;
+  const people = transport?.input.people ?? [];
+  const vehicles = transport?.input.vehicles.length ?? 0;
+  const storedRooms = transport?.lodgingPlan ?? initialLodgingPlan(people);
+  const rooms = transport && storedRooms.rooms.length ? summarizeLodging(people, storedRooms) : null;
+  const imported = transport?.survey;
+  const { drafts, forms } = surveys ?? storedSurveys.value ?? { drafts: 0, forms: 0 };
+  const formState = surveyState ?? storedSurveys.state;
+  const brokenSurvey = formState !== "ready" ? formState : records.transport.state !== "ready" && records.transport.state !== "restricted" ? records.transport.state : "ready";
   const confirmedEvents = events.filter(item => normalizeCalendarStatus(item.status) === "confirmed").length;
-  const period = room.date && room.endDate && room.endDate !== room.date ? `${room.date} ~ ${room.endDate}` : room.date;
-  const missing = result && !outdated && !approved ? [
-    ...(result.unassignedCount ? [`미배정 ${result.unassignedCount}건`] : []),
-    ...(result.unreservedCount ? [`예상 추가 좌석 ${result.unreservedCount}석 부족`] : []),
-  ].join(" · ") : "";
-  return <section className="mb-5" aria-label="이 행사방의 내 준비 기록">
-    <h3 className="mb-2 text-sm font-semibold">이 행사방의 내 준비 기록</h3>
-    <div className="workspace-checklist-rows">
-      <RecordRow icon={CalendarDays} title="행사 일정" status={period ? "기간 지정" : confirmedEvents ? "확정 일정 있음" : "미정"} positive={!!period || !!confirmedEvents}
-        detail={[period, confirmedEvents ? `공동 캘린더 확정 ${confirmedEvents}건` : "", onOpenTimetable && timetableCount !== null ? `내 타임테이블 ${timetableCount}개` : ""].filter(Boolean).join(" · ")}
-        onClick={onOpenTimetable} />
-      <div className="workspace-checklist-row"><div className="flex flex-wrap items-center gap-2">
-        <MapPin size={16} className="text-primary" aria-hidden="true" /><strong className="text-sm">행사 장소</strong><Badge tone={places?.length ? "green" : places === null ? "amber" : "neutral"}>{places?.length ? "등록됨" : places === null ? "읽기 실패" : "미정"}</Badge>
-      </div>{!!places?.length && <p className="mt-1 break-words text-xs text-muted-foreground">{places.join(" · ")}</p>}</div>
-      <RecordRow icon={UsersRound} title="참가자 명단" status={transport === "error" ? "읽기 실패" : checked ? "확정" : people.length ? "등록됨" : "미정"} positive={!!checked}
-        detail={people.length ? `${people.length}명${checked ? "" : " · 참가자 탭에서 확정 가능"}` : ""} />
-      <div className="workspace-checklist-row"><div className="flex flex-wrap items-center gap-2">
-        <BusFront size={16} className="text-primary" aria-hidden="true" /><strong className="text-sm">차량 배정</strong><Badge tone={approved ? "green" : vehicles.length || transport === "error" ? "amber" : "neutral"}>{vehicleStatus}</Badge>
-      </div>{!!vehicles.length && <p className="mt-1 break-words text-xs text-muted-foreground">{approved ? "확정 " : "등록 "}{selected.length}대{selected.length > 0 && ` · ${selected.map(vehicle => vehicle.label).join(", ")}`}</p>}
-        {(missing || issues[0]) && <p className="mt-1 text-xs text-danger">{missing || issues[0]}</p>}</div>
-      <RecordRow icon={BedDouble} title="숙소 배정" status={transport === "error" ? "읽기 실패" : !lodging?.assigned ? "미정" : lodging.pending === 0 && lodging.numbered === lodging.active.length ? "호수 지정됨" : "배정 중"}
-        positive={!!lodging?.assigned && lodging.pending === 0 && lodging.numbered === lodging.active.length}
-        detail={lodging && people.length ? [`배정 ${lodging.assigned}/${people.length}명`, lodgingKinds, lodging.active.length ? `호수 지정 ${lodging.numbered}실` : ""].filter(Boolean).join(" · ") : ""} />
-    </div>
+  const periodValid = !room.date || validDate(room.date) && (!room.endDate || validDate(room.endDate) && room.endDate >= room.date);
+  const places = records.places.value ?? [];
+  const assigned = rooms?.assigned ?? 0;
+  const roomCount = rooms?.active.length ?? 0;
+  const hasRooms = storedRooms.rooms.length > 0;
+  const row = (icon: LucideIcon, title: string, target: PreparationRecordTarget, state: PreparationReadState, registered: boolean, detail?: string) =>
+    <RecordRow icon={icon} title={title} state={state} registered={registered} detail={detail} onOpen={onOpen && (target !== "proposals" || canOpenProposals) ? () => onOpen(target) : undefined} />;
+  return <section className="workspace-preparation-records" aria-label="준비 기록">
+    <h3>준비 기록</h3>
+    <p className="workspace-preparation-caption">행사 기능의 데이터 등록 상태</p>
+    <ul className="workspace-preparation-record-list">
+      {row(CalendarRange, "행사 기간", "calendar", periodValid ? "ready" : "error", !!room.date, room.date && periodValid ? roomDateLabel(room.date, room.endDate) : undefined)}
+      {row(CalendarDays, "공동 캘린더", "calendar", calendarState, events.length > 0, events.length ? `${events.length}건 · 확정 ${confirmedEvents}건` : undefined)}
+      {row(Clock3, "타임테이블", "timetable", records.timetable.state, !!records.timetable.value, records.timetable.value ? `${records.timetable.value}개 일정` : undefined)}
+      {row(MapPin, "행사 장소", "location", records.places.state, places.length > 0, places.length ? `${places.length}곳 · 대표 ${places[0]}` : undefined)}
+      {row(ClipboardList, "참가 설문", imported ? "people" : "proposals", drafts || forms || imported ? "ready" : brokenSurvey, !!(drafts || forms || imported),
+        [drafts ? `현재 대화 초안 ${drafts}건` : "", forms ? `Google 생성 ${forms}건` : "", imported ? `가져온 응답 ${imported.data.rows.length}건` : "", brokenSurvey === "error" && (drafts || forms || imported) ? "일부 기록 읽기 실패" : ""].filter(Boolean).join(" · "))}
+      {row(UsersRound, "참가자 명단", "people", records.transport.state, people.length > 0, people.length ? `${people.length}명` : undefined)}
+      {row(BusFront, "차량 배정", "transport", records.transport.state, !!(vehicles || transport?.result), vehicles ? `등록 차량 ${vehicles}대${transport?.result ? " · 배정안 있음" : ""}` : undefined)}
+      {row(BedDouble, "숙소 배정", "lodging", records.transport.state, hasRooms, hasRooms ? `${roomCount}실 · 배정 ${assigned}/${people.length}명` : undefined)}
+      {row(Folder, "행사 자료", "documents", documentsState, documentCount > 0, documentCount ? `${documentCount}건` : undefined)}
+    </ul>
   </section>;
 }
 
-function RecordRow({ icon: Icon, title, status, positive, detail, onClick }: { icon: LucideIcon; title: string; status: string; positive: boolean; detail: string; onClick?: () => void }) {
-  const content = <><span className="flex flex-wrap items-center gap-2">
-    <Icon size={16} className="text-primary" aria-hidden="true" /><strong className="text-sm">{title}</strong><Badge tone={positive ? "green" : status === "미정" ? "neutral" : "amber"}>{status}</Badge>
-    {onClick && <ChevronRight size={16} className="ml-auto text-muted-foreground" aria-hidden="true" />}
-  </span>{detail && <span className="mt-1 block break-words text-xs text-muted-foreground">{detail}</span>}</>;
-  return onClick ? <button type="button" className="workspace-checklist-row timetable-preparation-link" aria-label="행사 일정 타임테이블 열기" onClick={onClick}>{content}</button>
-    : <div className="workspace-checklist-row">{content}</div>;
+const statusLabels = { loading: "조회 중", error: "읽기 실패", restricted: "권한 없음", notApplicable: "해당 없음" } as const;
+function RecordRow({ icon: Icon, title, state, registered, detail, onOpen }: { icon: LucideIcon; title: string; state: PreparationReadState; registered: boolean; detail?: string; onOpen?: () => void }) {
+  const enabled = onOpen && state !== "restricted" && state !== "notApplicable";
+  const content = <><Icon size={17} className="text-primary" aria-hidden="true" /><span className="preparation-record-copy">
+    <strong>{title}</strong>{state === "ready" && detail && <span>{detail}</span>}
+  </span><Badge tone={state === "error" ? "amber" : state === "ready" && registered ? "blue" : "neutral"}>
+    {state === "ready" ? registered ? "등록됨" : "미등록" : statusLabels[state]}
+  </Badge>{enabled && <ChevronRight size={15} aria-hidden="true" />}</>;
+  return <li aria-label={title}>{enabled ? <button className="preparation-record-row" type="button" aria-label={`${title} 열기`} onClick={onOpen}>{content}</button>
+    : <div className="preparation-record-row">{content}</div>}</li>;
 }

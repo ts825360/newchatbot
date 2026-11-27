@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GET as callback } from "@/app/api/integrations/google/callback/route";
 import { GET, POST } from "@/app/api/integrations/google-form-drafts/route";
 import { createDatabase, getDatabase } from "@/lib/server/database";
-import { analyzeSurvey, defaultSurveyMapping } from "@/lib/transport-survey";
+import { defaultSurveyItems, surveyTemplateVersion } from "@/lib/chat-survey-draft";
 
 const provider = vi.hoisted(() => ({ consent: vi.fn(), exchange: vi.fn(), verify: vi.fn(), access: vi.fn(), fetch: vi.fn(), after: vi.fn() }));
 vi.mock("@/lib/server/database", async (original) => ({
@@ -170,8 +170,94 @@ describe("Google Forms draft authorization", () => {
   });
 });
 
+type EmittedOption = { value: string; isOther?: boolean; goToAction?: string; goToSectionId?: string };
+type EmittedItem = { itemId?: string; title: string; description?: string; pageBreakItem?: object;
+  questionItem?: { question: { required: boolean; choiceQuestion?: { type: string; options: EmittedOption[] }; textQuestion?: { paragraph: boolean } } } };
+
+function assembleForm(requests: { createItem: { item: EmittedItem; location: { index: number } } }[]) {
+  const items: EmittedItem[] = [];
+  for (const { createItem: { item, location } } of requests) {
+    if (item.itemId) expect(items.some(prior => prior.itemId === item.itemId)).toBe(false);
+    for (const option of item.questionItem?.question.choiceQuestion?.options ?? []) {
+      if (option.goToSectionId) {
+        expect(option.goToAction).toBeUndefined();
+        expect(items.some(prior => prior.pageBreakItem && prior.itemId === option.goToSectionId)).toBe(true);
+      }
+    }
+    items.splice(location.index, 0, item);
+  }
+  return items;
+}
+
+function walkForm(items: EmittedItem[], answers: Record<string, string>) {
+  const seen: string[] = [];
+  for (let index = 0, next: number | undefined; index < items.length; index++) {
+    const item = items[index];
+    if (item.pageBreakItem) {
+      if (next !== undefined) index = next;
+      next = undefined;
+      continue;
+    }
+    seen.push(item.title);
+    const options = item.questionItem?.question.choiceQuestion?.options ?? [];
+    const option = options.find(option => option.value === (answers[item.title] ?? "계속"));
+    if (option?.goToAction === "SUBMIT_FORM") break;
+    if (option?.goToSectionId) {
+      next = items.findIndex(target => target.itemId === option.goToSectionId);
+      expect(next).toBeGreaterThan(index);
+    }
+  }
+  return seen;
+}
+
 describe("Google Forms draft creation", () => {
-  it("creates an unpublished form for a view-only user with the fixed, attendance-first branching template", async () => {
+  it("copies the approved version exactly, rejects stale and cross-scope versions, and deduplicates retries", async () => {
+    const workId = "d57ec424-64fe-4bd2-a777-b3717581c420";
+    const versioned = { id: workId, template: "retreat", templateVersion: 1, title: "검토한 양식", description: "참가 조사 초안", items: defaultSurveyItems(1) };
+    const changedItems = versioned.items.filter(item => item.id !== "department");
+    const save = db.prepare(`INSERT INTO chat_work_versions(owner_id,room_id,conversation_id,work_id,version,kind,source_message_id,data_json,created_at)
+      VALUES('chatter','room-one','private-one',?,?,'survey','fixture',?,?)`);
+    save.run(workId, 1, JSON.stringify({ ...versioned, version: 1 }), new Date().toISOString());
+    save.run(workId, 2, JSON.stringify({ ...versioned, version: 2, items: changedItems }), new Date().toISOString());
+    await connect("chatter", "google-one");
+    const approved = { action: "create-version", ...conversation, workId, version: 2 };
+    expect((await POST(request("chatter", { ...approved, version: 1 }))).status).toBe(409);
+    expect((await POST(request("chatter", { ...approved, roomId: "room-two" }))).status).toBe(404);
+    expect((await POST(request("chatter", { ...approved, conversationId: "private-two" }))).status).toBe(404);
+    expect((await POST(request("other", approved))).status).toBe(404);
+    expect((await POST(request("chatter", { ...approved, title: "주입한 제목" }))).status).toBe(400);
+    expect(provider.fetch).not.toHaveBeenCalled();
+    formReady("draft_version2");
+    expect(await (await POST(request("chatter", approved))).json()).toEqual({ editorUrl: editorUrl("draft_version2") });
+    const batch = JSON.parse(provider.fetch.mock.calls[1][1].body);
+    expect(batch.requests[0]).toEqual({ updateFormInfo: { info: { description: versioned.description }, updateMask: "description" } });
+    expect(batch.requests.slice(1).map((row: { createItem: { item: { title: string } } }) => row.createItem.item.title)).toEqual(changedItems.map(item => item.title));
+    expect(batch.requests.slice(1).map((row: { createItem: { item: { title: string } } }) => row.createItem.item.title)).toContain("이동수단");
+    expect(await (await POST(request("chatter", approved))).json()).toEqual({ editorUrl: editorUrl("draft_version2") });
+    expect(provider.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("finishes the already approved immutable snapshot if a new version is saved while Google creates the form", async () => {
+    const workId = "b3537a74-10a1-4632-a740-f72038110dbd";
+    const original = { id: workId, template: "retreat", templateVersion: surveyTemplateVersion, version: 1, title: "경합 검증", description: "", items: defaultSurveyItems() };
+    const save = db.prepare(`INSERT INTO chat_work_versions(owner_id,room_id,conversation_id,work_id,version,kind,source_message_id,data_json,created_at)
+      VALUES('chatter','room-one','private-one',?,?,'survey','fixture',?,?)`);
+    save.run(workId, 1, JSON.stringify(original), new Date().toISOString());
+    await connect("chatter", "google-one");
+    provider.fetch.mockImplementationOnce(async () => {
+      save.run(workId, 2, JSON.stringify({ ...original, version: 2, items: original.items.filter(item => item.id !== "department") }), new Date().toISOString());
+      return created("draft_started1");
+    }).mockResolvedValueOnce(Response.json({}));
+    const approved = { action: "create-version", ...conversation, workId, version: 1 };
+    const response = await POST(request("chatter", approved));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ editorUrl: editorUrl("draft_started1") });
+    const operations = JSON.parse(provider.fetch.mock.calls[1][1].body).requests;
+    expect(assembleForm(operations).map(item => item.title)).toEqual(original.items.map(item => item.title));
+    expect(await (await POST(request("chatter", approved))).json()).toEqual({ editorUrl: editorUrl("draft_started1") });
+    expect(provider.fetch).toHaveBeenCalledTimes(2);
+  });
+  it("creates an unpublished form whose directional branches only show relevant questions", async () => {
     await connect("viewer", "google-one");
     formReady("draft_sample1");
     const response = await POST(request("viewer", { ...draft, title: "  여름\t  행사  " }));
@@ -187,24 +273,52 @@ describe("Google Forms draft creation", () => {
     expect(JSON.parse(createInit.body)).toEqual({ info: { title: "여름 행사", documentTitle: "여름 행사" } });
     const batch = JSON.parse(provider.fetch.mock.calls[1][1].body);
     expect(batch.writeControl).toEqual({ requiredRevisionId: "created-revision" });
-    const items = batch.requests.map((op: { createItem: { item: Record<string, unknown> } }) => op.createItem.item);
-    expect(items.map((item: { title: string }) => item.title)).toEqual(["참석 여부", "참석자 정보", "소속", "이름", "숙소 배정", "이동수단", "기타 특이사항", "가족 ID"]);
-    const question = (i: number) => items[i].questionItem.question;
+    const items = assembleForm(batch.requests);
+    const question = (title: string) => items.find(item => item.title === title)?.questionItem?.question;
+    const other = { value: "기타", isOther: true };
     expect(items[1].pageBreakItem).toEqual({});
-    expect(question(0)).toMatchObject({ required: true, choiceQuestion: { type: "RADIO", options: [
-      { value: "참석", goToAction: "NEXT_SECTION" }, { value: "불참", goToAction: "SUBMIT_FORM" },
+    expect(question("참석 여부")).toMatchObject({ required: true, choiceQuestion: { type: "RADIO", options: [
+      { value: "참석", goToAction: "NEXT_SECTION" }, { value: "불참", goToAction: "SUBMIT_FORM" }, { ...other, goToAction: "NEXT_SECTION" },
     ] } });
-    expect(question(2).choiceQuestion.options.map(({ value }: { value: string }) => value)).toEqual(["유초등부", "아동부", "청소년부", "청년부", "장년부", "명단 확인 필요"]);
-    expect(question(3)).toMatchObject({ required: true, textQuestion: {} });
-    expect(question(4).choiceQuestion.options).toEqual([{ value: "가족방" }, { value: "단체방" }]);
-    const movements: string[] = question(5).choiceQuestion.options.map(({ value }: { value: string }) => value);
-    expect(movements).toEqual(["단체 이동", "왕복 자차", "왕복 개별 이동", "편도 개별 이동", "가족 차량 동승", "다른 차량 동승", "미정", "기타"]);
-    const headers = ["참석 여부", "이름", "이동수단"];
-    const survey = analyzeSurvey({ headers, rows: movements.map((value, i) => ["참석", `fixture-${i}`, value]) }, defaultSurveyMapping(headers));
-    expect(survey.entries.map(({ independent, movementReview }) => [independent, movementReview])).toEqual([
-      [false, false], [true, false], [true, false], ...movements.slice(3).map(() => [false, true]),
-    ]);
-    expect([4, 5, 6, 7].map(i => question(i).required)).toEqual([true, false, false, false]);
+    expect(question("소속")).toMatchObject({ required: true, choiceQuestion: { options: ["유초등부", "아동부", "청소년부", "청년부", "장년부", "명단 확인 필요"].map(value => ({ value })).concat(other) } });
+    expect(question("이름")).toEqual({ required: true, textQuestion: { paragraph: false } });
+    expect(question("성별")).toEqual({ required: false, choiceQuestion: { type: "RADIO", options: [{ value: "남성" }, { value: "여성" }, { value: "응답하지 않음" }] } });
+    expect(question("숙소 배정")).toMatchObject({ required: true, choiceQuestion: { options: [{ value: "가족방" }, { value: "단체방" }, other] } });
+    expect(question("기타 특이사항")).toEqual({ required: false, textQuestion: { paragraph: true } });
+    expect(items.some(item => /가족\s*id/i.test(item.title))).toBe(false);
+    const movements = ["자차 이동", "단체 이동", "가족 차량 동승", "다른 참가자와 차량 동승", "기타"];
+    for (const [leg, values] of [["출발", movements], ["귀가", [...movements, "출발할 때와 동일", "미정"]]] as const) {
+      const method = question(`${leg} 이동수단`);
+      expect(method).toMatchObject({ required: true, choiceQuestion: { type: "RADIO" } });
+      expect(method?.choiceQuestion?.options.map(option => option.value)).toEqual(values);
+      expect(method?.choiceQuestion?.options.every(option => !option.isOther && option.goToSectionId)).toBe(true);
+      expect(items.find(item => item.title === `${leg} 추가 탑승 가능 인원`)?.description).toMatch(/운전자.*기존 동승자.*짐.*0/);
+      expect(question(`${leg} 추가 탑승 가능 인원`)).toEqual({ required: true, textQuestion: { paragraph: false } });
+      expect(question(`${leg} 기타 이동 방법`)).toEqual({ required: true, textQuestion: { paragraph: true } });
+    }
+
+    const yes = "예, 제가 차량을 제공합니다.";
+    const no = "아니요, 다른 사람의 차량에 탑승합니다.";
+    const cases = [
+      ["자차 이동", "", ["추가 탑승 가능 인원", "좌석 입력 후 계속"]],
+      ["단체 이동", "", []],
+      ["가족 차량 동승", yes, ["차량 제공 여부", "기존 동승자 이름", "추가 탑승 가능 인원", "좌석 입력 후 계속"]],
+      ["가족 차량 동승", no, ["차량 제공 여부", "차량 제공자 이름", "동승 정보 입력 후 계속"]],
+      ["다른 참가자와 차량 동승", yes, ["차량 제공 여부", "기존 동승자 이름", "추가 탑승 가능 인원", "좌석 입력 후 계속"]],
+      ["다른 참가자와 차량 동승", no, ["차량 제공 여부", "차량 제공자 이름", "동승 정보 입력 후 계속"]],
+      ["기타", "", ["기타 이동 방법"]],
+    ] as const;
+    const common = ["참석 여부", "소속", "이름", "성별", "숙소 배정"];
+    for (const [outbound, outboundOwner, outboundFields] of cases) {
+      for (const [returning, returnOwner, returnFields] of [...cases, ["출발할 때와 동일", "", []], ["미정", "", []]] as const) {
+        expect(walkForm(items, { "참석 여부": "참석", "출발 이동수단": outbound, "귀가 이동수단": returning,
+          "출발 차량 제공 여부": outboundOwner, "귀가 차량 제공 여부": returnOwner })).toEqual([
+          ...common, "출발 이동수단", ...outboundFields.map(title => `출발 ${title}`),
+          "귀가 이동수단", ...returnFields.map(title => `귀가 ${title}`), "기타 특이사항",
+        ]);
+      }
+    }
+    expect(walkForm(items, { "참석 여부": "불참" })).toEqual(["참석 여부"]);
   });
 
   it("rejects invalid titles before provider activity and allows 100 UTF-16 code units after normalization", async () => {

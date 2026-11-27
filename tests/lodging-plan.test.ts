@@ -7,6 +7,22 @@ const person = (id: string, lodging = "", department = "", familyId = "", roomAs
 });
 
 describe("숙소 배정", () => {
+  it("separates youth departments and explicit genders, leaves unknowns pending, and keeps mixed-gender families together", () => {
+    const people: TransportPerson[] = [
+      { ...person("young-m1", "단체방", "청년부"), gender: "male" },
+      { ...person("young-m2", "단체방", "청년부"), gender: "male" },
+      { ...person("young-f", "단체방", "청년부"), gender: "female" },
+      { ...person("teen-m", "단체방", "청소년부"), gender: "male" },
+      { ...person("teen-f", "단체방", "청소년부"), gender: "female" },
+      person("가상 여자 이름", "단체방", "청소년부"),
+      { ...person("family-m", "가족방", "청년부", "F1"), gender: "male" },
+      { ...person("family-f", "가족방", "청소년부", "F1"), gender: "female" },
+    ];
+    const next = calculateLodging(people, initialLodgingPlan(people));
+    expect(next.rooms.filter(r => r.kind === "group").map(r => r.people)).toEqual([["young-m1", "young-m2"], ["young-f"], ["teen-m"], ["teen-f"]]);
+    expect(next.rooms.find(r => r.kind === "family")?.people).toEqual(["family-m", "family-f"]);
+    expect(summarizeLodging(people, next).pending).toBe(1);
+  });
   it("allocates 150 distinct people once and reports capacity counts at retreat scale", () => {
     const groups = Array.from({ length: 120 }, (_, i) => person(`g${i}`, "단체방", i < 60 ? "남자" : "여자"));
     const families = Array.from({ length: 24 }, (_, i) => person(`f${i}`, "가족방", "", `F${Math.floor(i / 4)}`));

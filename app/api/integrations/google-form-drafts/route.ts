@@ -17,7 +17,7 @@ export async function POST(request: Request) {
     assertGoogleFormDraftPermission(actor);
     const input = await readJson(request, 4096);
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new ApiError(400, "구글폼 초안 요청을 확인해 주세요.");
-    const { action, title, roomId, conversationId } = input as Record<string, unknown>;
+    const { action, title, roomId, conversationId, workId, version } = input as Record<string, unknown>;
     const keys = Object.keys(input);
     const recheck = () => {
       const current = requireUser(request);
@@ -36,6 +36,9 @@ export async function POST(request: Request) {
       if (keys.length === 4 && keys.includes("title") && typeof roomId === "string" && typeof conversationId === "string") {
         return json(await createGoogleFormDraft(current, title, { roomId, conversationId }, recheck));
       }
+    }
+    if (action === "create-version" && keys.length === 5 && typeof roomId === "string" && typeof conversationId === "string") {
+      return json(await createGoogleFormDraft(current, undefined, { roomId, conversationId, review: { workId, version } }, recheck));
     }
     throw new ApiError(400, "구글폼 초안 요청을 확인해 주세요.");
   } catch (error) {

@@ -1,12 +1,12 @@
 "use client";
 
 import { Check, Download, FileUp, LoaderCircle, Play, Plus, Undo2, X } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { createTransportDemo, createTransportDraft, isTransportResult, moveTransportAssignment, resolveTransportEntries, transportCsv, transportReservationCsv, transportRosterCsv, transportUnnamedParticipant, transportVehicleSeatError, tripFor, validateTransportInput, validateTransportResult, type Direction, type TransportAssignment, type TransportInput, type TransportResult } from "@/lib/transport";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { createTransportDemo, createTransportDraft, isTransportResult, moveTransportAssignment, resolveTransportEntries, transportWorkingCsv, transportReservationCsv, transportRosterCsv, transportUnnamedParticipant, transportVehicleSeatError, tripFor, validateTransportInput, validateTransportResult, type Direction, type TransportAssignment, type TransportInput, type TransportResult } from "@/lib/transport";
 import { analyzeSurvey, mergeGoogleSurvey, surveyTransportInput, type TransportSurvey } from "@/lib/transport-survey";
 import { parseTransportSnapshot as loadSnapshot, type TransportSnapshot as Snapshot } from "@/lib/transport-snapshot";
 import { TransportBoard } from "./transport-board";
-import { TransportComparisonPanel } from "./transport-comparison-panel";
+import { TransportComparisonPanel, type TransportComparisonSelection } from "./transport-comparison-panel";
 import { TransportConfig } from "./transport-config";
 import { TransportLodging } from "./transport-lodging";
 import { rosterFingerprint } from "@/lib/lodging-plan";
@@ -15,25 +15,34 @@ import type { ChatRosterSource } from "@/lib/chat-tool-candidates";
 import { ChatRosterDialog } from "./chat-roster-dialog";
 import { setGoogleFormsRosterTarget } from "@/lib/google-forms-roster-target";
 import { writeBrowserRecord } from "@/lib/storage-status";
-import { dataStorage, flushBackendWrites, isBackendConnected } from "@/lib/backend-client";
+import { dataStorage, flushBackendWrites, isBackendConnected, writeConfirmedBackendRecord } from "@/lib/backend-client";
 import { privateToolKey, type ConversationScope } from "@/lib/conversation-scope";
-import { buildTransportPlan, quoteLabel, recordedTransportQuote, type ComparisonSlot, type TransportComparison } from "@/lib/transport-comparison";
+import { buildTransportComparisonSummaries, buildTransportPlan, quoteLabel, recordedTransportQuote, type ComparisonSlot, type TransportComparison } from "@/lib/transport-comparison";
+import { appendTransportVersion, buildTransportDraft } from "@/lib/transport-versions";
 import "./transport-panel.css";
 
 const tabs = [
-  { id: "teams", label: "팀 구성" }, { id: "vehicles", label: "차량" }, { id: "people", label: "참가자" },
+  { id: "teams", label: "이동 조건" }, { id: "vehicles", label: "차량" }, { id: "people", label: "참가자" },
   { id: "board", label: "배치" }, { id: "compare", label: "배정안 비교" },
 ] as const;
 type TransportTab = typeof tabs[number]["id"];
 const seed = (demo = false, revision = 1): Snapshot => ({ input: { ...(demo ? { ...createTransportDemo(), extraCount: 3 } : createTransportDraft()), revision }, result: null, baseline: null, approved: false, demo });
 
-export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut = 0, surveyView, lodgingView = false, formTargetLabel, onOpenTransport, chatRoster, onCloseChatRoster }: {
+export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut = 0, peopleShortcut = 0, surveyView, lodgingView = false, visible = true, expanded, formTargetLabel, onOpenTransport, chatRoster, onCloseChatRoster }: {
   roomId: string; scope?: ConversationScope; onUnsavedChange?: (unsaved: boolean) => void;
   surveyShortcut?: number; surveyView?: boolean; lodgingView?: boolean; formTargetLabel?: string; onOpenTransport?: () => void;
+  peopleShortcut?: number; visible?: boolean; expanded?: boolean;
   chatRoster?: ChatRosterSource; onCloseChatRoster?: (applied?: boolean) => void;
 }) {
   const [snapshot, setSnapshot] = useState<Snapshot>(() => seed());
   const [tab, setTab] = useState<TransportTab>("teams");
+  const [visitedTabs, setVisitedTabs] = useState<ReadonlySet<TransportTab>>(() => new Set(["teams"]));
+  const [visitedLodging, setVisitedLodging] = useState(false);
+  const [boardMode, setBoardMode] = useState<"draft" | "work" | "saved" | "confirmed">("work");
+  const [draftVersion, setDraftVersion] = useState(1);
+  const [savedVersion, setSavedVersion] = useState(1);
+  const [confirmedVersion, setConfirmedVersion] = useState<number>();
+  const [summaries, setSummaries] = useState<Awaited<ReturnType<typeof buildTransportComparisonSummaries>>>();
   const [newParticipantId, setNewParticipantId] = useState<string>();
   const tabPrefix = useId();
   const [capturing, setCapturing] = useState<ComparisonSlot | null>(null);
@@ -51,11 +60,19 @@ export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut 
   const [pending, setPending] = useState<TransportAssignment | "approve" | "reset" | "start" | null>(null);
   const controller = useRef<AbortController | null>(null);
   const surface = useRef<HTMLDivElement>(null);
+  const scrollPositions = useRef(new Map<string, number>());
   const showingSurvey = !lodgingView && (surveyView ?? (importOpen && tab === "people"));
   const pauseAssignment = showingSurvey;
   const storageKey = scope ? privateToolKey(scope, "transport") : `church:transport:v1:${roomId}`;
+  const scrollKey = `${storageKey}:${lodgingView ? "lodging" : showingSurvey ? "survey" : tab}`;
   const activeStorageKey = useRef(storageKey); activeStorageKey.current = storageKey;
-  const { input, result, baseline, approved, demo, survey } = snapshot;
+  const { input, result, baseline, approved, demo, survey, versions } = snapshot;
+  const versionShown = boardMode === "draft" ? versions?.drafts.find(item => item.version === draftVersion) ?? versions?.drafts[0]
+    : boardMode === "saved" ? versions?.saved.find(item => item.version === savedVersion)
+    : boardMode === "confirmed" ? versions?.confirmed.find(item => item.version === confirmedVersion) ?? versions?.confirmed.at(-1) : undefined;
+  const boardInput = versionShown?.input ?? input;
+  const boardResult = boardMode === "work" ? result : versionShown?.result ?? null;
+  const boardStale = boardMode === "work" && Boolean(result && result.revision !== input.revision);
   const stale = Boolean(result && result.revision !== input.revision);
   const errors = useMemo(() => result ? validateTransportResult(input, result) : [], [input, result]);
   const shortage = result && !stale && result.unreservedCount ? [input.extraOutboundTripId, input.extraReturnTripId].flatMap(id => {
@@ -69,7 +86,24 @@ export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut 
   const selectedVehicles = input.vehicles.filter((v) => vehicleSelection.includes(v.id));
   const selectedVehicleIds = selectedVehicles.map((v) => v.id);
   const lockedVehicles = selectedVehicles.filter((v) => input.locks.some((a) => a.vehicleId === v.id));
-  const selectTab = (next: TransportTab) => { setTab(next); setImportBlocked(false); setNewParticipantId(undefined); if (surface.current) surface.current.scrollTop = 0; };
+  const selectTab = (next: TransportTab) => { setTab(next); setImportBlocked(false); setNewParticipantId(undefined); };
+  const keepTab = (view: TransportTab) => tab === view || visitedTabs.has(view);
+  const selectComparison = (choice: TransportComparisonSelection) => {
+    if (choice.kind === "draft") { setDraftVersion(1); setBoardMode("draft"); }
+    else if (choice.kind === "saved") { setSavedVersion(Number(choice.id)); setBoardMode("saved"); }
+    else if (choice.kind === "current") setBoardMode("work");
+    else return;
+    setExportFilter("all"); selectTab("board");
+  };
+  useEffect(() => {
+    setSummaries(undefined);
+    if (tab !== "compare") return;
+    let canceled = false;
+    void buildTransportComparisonSummaries({ current: { input, result }, draft: versions?.drafts[0] ?? null,
+      saved: versions?.saved.map(item => ({ ...item, id: String(item.version), title: `임시저장 v${item.version}` })),
+    }).then(next => { if (!canceled) setSummaries(next); }).catch(() => { if (!canceled) setError("배정안 비교 지표를 불러오지 못했습니다."); });
+    return () => { canceled = true; };
+  }, [tab, input, result, versions]);
   const navigateTabs = (event: KeyboardEvent<HTMLDivElement>) => {
     const current = tabs.findIndex((entry) => entry.id === tab);
     const direction = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
@@ -80,9 +114,9 @@ export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut 
     selectTab(tabs[next].id);
   };
   useEffect(() => {
-    setSnapshot(seed()); setUndo([]); setPending(null); setError(""); setSaveError(""); setUnsaved(false); setBusy(false); setTab("teams"); setDirection("outbound"); setImportOpen(false); setImportBlocked(false);
+    setSnapshot(seed()); setUndo([]); setPending(null); setError(""); setSaveError(""); setUnsaved(false); setBusy(false); setTab("teams"); setBoardMode("work"); setDraftVersion(1); setConfirmedVersion(undefined); setDirection("outbound"); setImportOpen(false); setImportBlocked(false);
     setVehicleSelection([]); setVehicleDeleteOpen(false); setExportFilter("all"); setCapturing(null);
-    setNewParticipantId(undefined);
+    setNewParticipantId(undefined); setVisitedTabs(new Set(["teams"])); setVisitedLodging(false);
     try {
       const raw = dataStorage(sessionStorage).getItem(storageKey);
       if (raw) {
@@ -94,13 +128,23 @@ export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut 
     return () => controller.current?.abort();
   }, [storageKey]);
   useEffect(() => {
+    if (visible && !lodgingView && !showingSurvey) setVisitedTabs(current => current.has(tab) ? current : new Set([...current, tab]));
+    if (lodgingView) setVisitedLodging(true);
+  }, [tab, visible, lodgingView, showingSurvey, storageKey]);
+  useEffect(() => {
     if (!surveyView && !surveyShortcut) return;
     if (surveyView === undefined) setTab("people");
     setImportBlocked(false); setPreferGoogle(true); setImportOpen(true);
   }, [surveyView, surveyShortcut, storageKey]);
   useEffect(() => {
-    if (surface.current) surface.current.scrollTop = 0;
-  }, [showingSurvey, surveyShortcut, lodgingView]);
+    if (!peopleShortcut) return;
+    setTab("people");
+    setImportOpen(false);
+    setImportBlocked(false);
+  }, [peopleShortcut, storageKey]);
+  useLayoutEffect(() => {
+    if (visible && surface.current) surface.current.scrollTop = scrollPositions.current.get(scrollKey) ?? 0;
+  }, [visible, scrollKey]);
   useEffect(() => {
     if (!isBackendConnected()) return;
     const reload = (event: StorageEvent) => {
@@ -151,7 +195,7 @@ export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut 
     const roomByPerson = new Map(input.people.map(person => [person.id, person.roomAssignment]));
     const people = previous.input.people.map(person => roomByPerson.has(person.id) ? { ...person, roomAssignment: roomByPerson.get(person.id) } : person);
     const sameMode = Boolean(previous.demo) === Boolean(snapshot.demo);
-    persist({ ...previous, comparison, ...(sameMode ? { lodgingPlan: snapshot.lodgingPlan, rosterConfirmation: snapshot.rosterConfirmation } : {}), input: { ...previous.input, people, revision },
+    persist({ ...previous, comparison, ...(sameMode ? { lodgingPlan: snapshot.lodgingPlan, rosterConfirmation: snapshot.rosterConfirmation, versions: snapshot.versions, baseline: snapshot.baseline } : {}), input: { ...previous.input, people, revision },
       result: previous.result ? { ...previous.result, revision: fresh ? revision : previous.result.revision } : null,
       approved: false }, false);
     setUndo(undo.slice(0, -1));
@@ -209,7 +253,7 @@ export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut 
       if (next === input) persist({ ...snapshot, input: next, survey: value });
       else persist({ ...snapshot, input: next, survey: value, approved: false });
     } else {
-      persist({ input: next, result: null, baseline: null, approved: false, demo: false, survey: value, comparison: snapshot.comparison });
+      persist({ ...snapshot, input: next, result: null, approved: false, demo: false, survey: value });
       setExportFilter("all");
     }
     setImportOpen(false);
@@ -217,12 +261,41 @@ export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut 
     onOpenTransport?.();
     setError("");
   };
+  const storeDraft = async (select = true) => {
+    try {
+      const ledger = appendTransportVersion(versions, "drafts", input, buildTransportDraft(input));
+      if (!await persist({ ...snapshot, versions: ledger }, false)) return null;
+      if (select) { setDraftVersion(ledger.drafts.length); setBoardMode("draft"); }
+      return ledger;
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "초안을 저장하지 못했습니다."); return null; }
+  };
+  const saveAllocation = async () => {
+    if (!result || stale || demo || busy) return;
+    try {
+      const ledger = appendTransportVersion(versions, "saved", input, result);
+      await persist({ ...snapshot, versions: ledger }, false);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "배정안을 저장하지 못했습니다."); }
+  };
+  const finalize = async () => {
+    if (busy || !result || validateTransportResult(input, result).length) return;
+    setBusy(true);
+    try {
+      const ledger = demo ? undefined : appendTransportVersion(versions, "confirmed", input, result);
+      const next = { ...snapshot, versions: ledger, baseline: result, approved: true };
+      if (isBackendConnected()) await writeConfirmedBackendRecord(storageKey, raw => !!raw && JSON.stringify(loadSnapshot(raw)) === JSON.stringify(loadSnapshot(JSON.stringify(snapshot))), next);
+      else if (!await persist(next, false)) return;
+      if (activeStorageKey.current === storageKey) { setSnapshot(next); setPending(null); setSaveError(""); setUnsaved(false); }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "확정안을 저장하지 못했습니다."); }
+    finally { setBusy(false); }
+  };
   const calculate = async () => {
     const problems = validateTransportInput(input);
     if (problems.length) { setError(problems.join(" ")); return; }
     setBusy(true); setError("");
+    const saved = demo || versions?.drafts.length ? versions : await storeDraft(false);
+    if (saved === null || activeStorageKey.current !== storageKey) { setBusy(false); return; }
     const nextInput: TransportInput = { ...input, previousAssignments: replanAll ? [] : (result?.assignments ?? []).filter((a) => input.people.some((p) => p.id === a.personId && input.trips.some((t) => t.id === a.tripId && tripFor(p, t.direction) === t.id)) && (a.vehicleId === null || input.vehicles.some((v) => v.id === a.vehicleId))) };
-    const solverInput = { ...nextInput, people: nextInput.people.map(({ movement, lodging, roomAssignment, notes, ...person }) => person) };
+    const solverInput = { ...nextInput, people: nextInput.people.map(({ movement, movementPlan, lodging, roomAssignment, notes, ...person }) => person) };
     controller.current = new AbortController();
     try {
       const response = await fetch("/api/transport", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...solverInput, roomId, conversationId: scope?.conversationId, accountId: scope?.accountId }), signal: controller.current.signal });
@@ -231,7 +304,7 @@ export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut 
       if (!response.ok) throw new Error(data.error || "계산에 실패했습니다.");
       if (!isTransportResult(data) || data.revision !== nextInput.revision) throw new Error("계산 결과 형식이 올바르지 않습니다.");
       validateTransportResult(nextInput, data);
-      persist({ ...snapshot, input: nextInput, result: data, approved: false }); setTab("board");
+      persist({ ...snapshot, versions: saved, input: nextInput, result: data, approved: false }); setTab("board"); setBoardMode("work");
     } catch (cause) {
       if (!(cause instanceof Error && cause.name === "AbortError")) setError(cause instanceof Error ? cause.message : "계산에 실패했습니다.");
     } finally { setBusy(false); }
@@ -263,20 +336,23 @@ export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut 
   };
   const download = async () => {
     try {
-      if (!result) return;
+      if (!boardResult || boardStale) return;
       if (isBackendConnected()) await flushBackendWrites();
-      const content = exportFilter === "reserve" ? transportReservationCsv(input, result, approved) : transportCsv(input, result, direction, approved, exportFilter);
-      downloadCsv(`차량배정-${exportFilter}-${direction === "outbound" ? "출발" : "귀가"}-v${input.revision}.csv`, content);
+      const plan = boardMode === "draft" ? "초안" : boardMode === "confirmed" || (boardMode === "work" && approved) ? "확정" : "최적화안";
+      const version = versionShown?.version ?? (plan === "확정" ? versions?.confirmed.at(-1)?.version : undefined) ?? boardInput.revision;
+      const content = exportFilter === "reserve" && plan === "확정" ? transportReservationCsv(boardInput, boardResult, true)
+        : transportWorkingCsv(boardInput, boardResult, direction, plan, version, exportFilter === "reserve" ? "all" : exportFilter);
+      downloadCsv(`차량배정-${plan}-${exportFilter}-${direction === "outbound" ? "출발" : "귀가"}-v${version}.csv`, content);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "파일을 만들지 못했습니다."); }
   };
-  return <section className="transport-panel" aria-label={lodgingView ? "숙소 배정" : "차량 배정"} data-view={lodgingView ? "lodging" : showingSurvey ? "survey" : tab}>
+  return <section className="transport-panel" aria-label={lodgingView ? "숙소 배정" : "차량 배정"} data-view={lodgingView ? "lodging" : showingSurvey ? "survey" : tab} data-board-mode={boardMode}>
     <header className="transport-heading"><div><h3>배정 설정</h3>{(demo || !scope) && <span>{demo ? "가상 예시" : ""}{!scope ? `${demo ? " · " : ""}현재 탭 저장` : ""}</span>}</div><div>{surveyView === undefined && !formTargetLabel && <button type="button" className="transport-primary" disabled={busy} onClick={openImport}><FileUp size={16} />폼 불러오기</button>}
-      {demo ? <button type="button" disabled={busy} onClick={() => setPending("start")}>실제 배정 시작</button> : !input.people.length && !input.vehicles.length && <button type="button" disabled={busy} onClick={() => setPending("reset")}>가상 예시 불러오기</button>}
+      {demo ? <button type="button" disabled={busy} onClick={() => setPending("start")}>실제 배정 시작</button> : !versions && !input.people.length && !input.vehicles.length && <button type="button" disabled={busy} onClick={() => setPending("reset")}>가상 예시 불러오기</button>}
       <button type="button" title="이전 변경 되돌리기" aria-label="이전 변경 되돌리기" disabled={!undo.length || busy} onClick={undoAllocation}><Undo2 size={16} /></button></div></header>
     {importBlocked && <div className="transport-alert" role="alert">{demo ? "가상 예시에는 실제 설문을 가져올 수 없습니다." : "폼을 불러오기 전에 차량을 먼저 입력해 주세요."}<button type="button" onClick={() => { setImportBlocked(false); if (demo) setPending("start"); else setTab("vehicles"); }}>{demo ? "실제 배정으로 전환" : "차량 입력"}</button></div>}
     {saveError && <div className="transport-alert" role="alert">{saveError}<button type="button" onClick={() => persist(snapshot, false)}>다시 저장</button></div>}
     {error && <div className="transport-alert" role="alert">{error}</div>}
-    <fieldset className="transport-controls" disabled={busy}><label>예상 추가 인원<input aria-label="추가 인원" type="number" min={0} max={50} value={input.extraCount} onChange={(e) => {
+    <fieldset className="transport-controls" hidden={tab !== "board" || boardMode !== "work"} disabled={busy}><label>예상 추가 인원<input aria-label="추가 인원" type="number" min={0} max={50} value={input.extraCount} onChange={(e) => {
       const count = Number(e.target.value);
       if (Number.isInteger(count) && count >= 0 && count <= 50 && count !== input.extraCount) change({ ...input, extraCount: count });
     }} /></label>
@@ -292,7 +368,7 @@ export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut 
       </div></details>
       <button type="button" className="transport-primary" disabled={!input.people.length || !hasCalculableVehicle || pauseAssignment} onClick={calculate}>{busy ? <LoaderCircle size={16} className="transport-spinning" /> : <Play size={16} />}{busy ? "계산 중" : "배정 계산"}</button></fieldset>
     <div className="transport-summary"><div><span>{demo ? "가상 참가" : "참가자"}</span><strong>{input.people.length}명</strong></div><div><span>예상 추가</span><strong>{input.extraCount}명</strong></div><div><span>대여 견적 합계</span><strong>{result && !stale && !["unknown", "infeasible"].includes(result.status) ? quoteLabel(recordedTransportQuote(input, result)) : "—"}</strong></div><div><span>미배정 / 추가 좌석 부족</span><strong>{result && !stale ? `${result.unassignedCount}건 / ${result.unreservedCount}석` : "—"}</strong></div><div><span>상태 · v{input.revision}</span><strong className={stale || errors.length ? "transport-warning" : ""}>{stale ? "재계산 필요" : approved ? "담당자 확정" : result ? errors.length ? "승인 전 확인" : "검토 대기" : "계산 전"}</strong></div></div>
-    {result && <div className={`transport-result-state ${errors.length ? "has-errors" : ""}`}>
+    {tab === "board" && boardMode === "work" && result && <div className={`transport-result-state ${errors.length ? "has-errors" : ""}`}>
       {stale ? <strong>입력이 변경되었습니다. 다시 계산해 주세요.</strong> : approved ? <strong>담당자가 배정안을 확정했습니다.</strong> : !errors.length ? <strong>검토 가능 · 명단을 확인하고 배정안 승인</strong> : <strong>승인 전 확인 · {shortage.length ? `예상 추가 좌석 부족: ${shortage.join(" / ")}` : errors[0]}</strong>}
       {shortage.length > 0 && <span>차량의 배정 가능 좌석이나 예상 추가 인원을 확인한 뒤 다시 계산해 주세요.</span>}
       {errors.length > 0 && <details><summary>검증 결과 {errors.length}건</summary><ul>{errors.map((e) => <li key={e}>{e}</li>)}</ul></details>}
@@ -314,29 +390,57 @@ export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut 
         <button type="button" className="transport-primary" disabled={busy || input.people.length >= 250} onClick={addParticipant}><Plus size={16} />참가자 추가</button>
       </div>}
     </div>}
-    <div className="transport-body" ref={surface} id={surveyView || lodgingView ? undefined : `${tabPrefix}-panel`} role={surveyView || lodgingView ? undefined : "tabpanel"} aria-labelledby={surveyView || lodgingView ? undefined : `${tabPrefix}-${tab}`}><fieldset disabled={busy}>
-      {lodgingView ? <TransportLodging people={input.people} demo={demo} saved={snapshot.lodgingPlan} onPeople={() => { selectTab("people"); onOpenTransport?.(); }} onChange={lodgingPlan => {
+    <div className="transport-body" ref={surface} onScroll={event => { if (visible) scrollPositions.current.set(scrollKey, event.currentTarget.scrollTop); }} id={surveyView || lodgingView ? undefined : `${tabPrefix}-panel`} role={surveyView || lodgingView ? undefined : "tabpanel"} aria-labelledby={surveyView || lodgingView ? undefined : `${tabPrefix}-${tab}`}><fieldset key={storageKey} disabled={busy}>
+      {(lodgingView || visitedLodging) && <div hidden={!lodgingView}><TransportLodging people={input.people} demo={demo} saved={snapshot.lodgingPlan} onPeople={() => { selectTab("people"); onOpenTransport?.(); }} onChange={lodgingPlan => {
         const numbers = new Map(lodgingPlan.rooms.flatMap(room => room.people.map(id => [id, room.number] as const)));
         void persist({ ...snapshot, lodgingPlan, input: { ...input, people: input.people.map(p => ({ ...p, roomAssignment: numbers.get(p.id) || undefined })) } }, false);
-      }} /> : <>
+      }} /></div>}
+      <div hidden={lodgingView}>
       {(importOpen || surveyView) && <div hidden={!showingSurvey}><TransportSurveyForm key={storageKey} scope={scope} people={input.people} previous={survey} hasPeople={input.people.length > 0}
         csvOnly={!!formTargetLabel} initialMode={preferGoogle || surveyView ? "google" : undefined} onRegisterVehicle={!hasRegisteredVehicle || demo ? () => {
           onOpenTransport?.();
           if (demo) setPending("start"); else setTab("vehicles");
         } : undefined} onCancel={surveyView === undefined ? () => setImportOpen(false) : undefined} onImport={importSurvey} /></div>}
       {tab === "people" && !showingSurvey && survey && <details className="transport-survey"><summary>가져온 설문 응답 · {survey.data.rows.length}건</summary><SurveyPreview survey={survey} /></details>}
-      {!showingSurvey && (tab === "compare" ? <TransportComparisonPanel key={storageKey}
+      {keepTab("compare") && <div hidden={showingSurvey || tab !== "compare"}><TransportComparisonPanel
         comparison={snapshot.comparison ?? {}} scope={scope} canCapture={!!result && !stale && !busy} capturing={capturing}
+        {...summaries} expanded={expanded} onSelectPlan={selectComparison}
         onCapture={captureComparison} onRemove={(slot) => { const next = { ...snapshot.comparison }; delete next[slot]; setComparison(next); }}
         onAssembly={(slot, count) => {
           const plan = snapshot.comparison?.[slot];
           if (plan) setComparison({ ...snapshot.comparison, [slot]: { ...plan, assemblyPoints: count } });
-        }} />
-        : tab === "board" ? <TransportBoard input={input} result={result} stale={stale} direction={direction} onDirection={setDirection} onMove={setPending} onLock={toggleLock} /> : <TransportConfig key={tab} input={input} tab={tab} onChange={change} newParticipantId={newParticipantId} onRosterExport={() => downloadCsv(`참가자명단-v${input.revision}.csv`, transportRosterCsv(input))}
-        selectedVehicleIds={selectedVehicleIds} onVehicleSelect={(id, selected) => setVehicleSelection((ids) => selected ? [...ids, id] : ids.filter((value) => value !== id))}
-        onVehicleDelete={() => setVehicleDeleteOpen(true)} />)}
-    </>}</fieldset></div>
-    <footer className="transport-footer"><span>{input.locks.length}건 잠금 · 소속 분산은 담당자 확인</span><select aria-label="CSV 구분" value={exportFilter} onChange={(e) => setExportFilter(e.target.value)}><option value="all">전체 실제 명단</option><option value="independent">개별 이동 명단</option><option value="reserve">가상 좌석 확보표</option>{input.vehicles.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}</select><button type="button" className="transport-primary" title={stale ? "입력 변경 후 다시 계산해 주세요." : errors.length ? "승인 전 확인 항목을 먼저 해결해 주세요." : !result ? "먼저 배정 계산을 실행해 주세요." : undefined} disabled={!result || busy || stale || errors.length > 0 || approved || pauseAssignment} onClick={() => setPending("approve")}><Check size={16} />배정안 승인</button><button type="button" disabled={!approved || !result || errors.length > 0 || busy || pauseAssignment} onClick={download}><Download size={16} />확정 CSV 다운로드</button></footer>
+        }} /></div>}
+      {keepTab("board") && <div hidden={showingSurvey || tab !== "board"}>
+          <div className="transport-board-modes"><div className="transport-segment" role="group" aria-label="배치 보기">
+            <button type="button" aria-pressed={boardMode === "draft"} disabled={demo} onClick={() => { setBoardMode("draft"); setExportFilter("all"); }}>초안</button>
+            <button type="button" aria-pressed={boardMode === "work"} onClick={() => { setBoardMode("work"); setExportFilter("all"); }}>최적화안</button>
+            {boardMode === "saved" && versionShown && <button type="button" aria-pressed>임시저장 v{versionShown.version}</button>}
+            {!!versions?.confirmed.length && <button type="button" aria-pressed={boardMode === "confirmed"} onClick={() => { setBoardMode("confirmed"); setExportFilter("all"); }}>이전 확정안</button>}
+          </div><div className="transport-export">
+            <select aria-label="CSV 구분" value={exportFilter} onChange={event => setExportFilter(event.target.value)}><option value="all">전체 명단</option><option value="independent">개별 이동</option>{((boardMode === "work" && approved) || boardMode === "confirmed") && <option value="reserve">가상 좌석 확보표</option>}{boardInput.vehicles.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}</select>
+            <button type="button" disabled={!boardResult || boardStale || busy} onClick={download}><Download size={16} />{boardMode === "draft" ? "초안 CSV" : boardMode === "confirmed" || (boardMode === "work" && approved) ? "확정 CSV 다운로드" : "최적화안 CSV"}</button>
+          </div></div>
+          {boardMode === "draft" && <div className="transport-board-modes"><span>{versionShown ? `읽기 전용 초안 v${versionShown.version}` : "아직 저장한 초안이 없습니다."}</span>
+            {versions?.drafts && versions.drafts.length > 1 && <select aria-label="초안 버전" value={versionShown?.version} onChange={event => setDraftVersion(Number(event.target.value))}>{versions.drafts.map(item => <option key={item.version} value={item.version}>v{item.version}</option>)}</select>}
+            <button type="button" disabled={busy || !input.people.length || versionShown?.input.revision === input.revision} onClick={() => void storeDraft()}>{versionShown ? "새 초안 버전" : "초안 생성"}</button>
+          </div>}
+          {boardMode === "confirmed" && versionShown && <div className="transport-board-modes"><span>읽기 전용 확정안 v{versionShown.version}{versionShown.input.revision !== input.revision ? " · 현재 이동 조건과 다릅니다." : ""}</span>
+            {versions && versions.confirmed.length > 1 && <select aria-label="확정안 버전" value={versionShown.version} onChange={event => { setConfirmedVersion(Number(event.target.value)); setExportFilter("all"); }}>{versions.confirmed.map(item => <option key={item.version} value={item.version}>v{item.version}</option>)}</select>}
+          </div>}
+          {boardMode === "work" && versions?.saved.length ? <div className="transport-board-note">임시저장 v{versions.saved.at(-1)?.version} · 확정 전 수정 가능</div> : null}
+          {(boardMode === "work" || versionShown) && <TransportBoard input={boardInput} result={boardResult} stale={boardStale} readOnly={boardMode !== "work" || approved} direction={direction} onDirection={setDirection} onMove={setPending} onLock={toggleLock} />}
+      </div>}
+      {(["teams", "vehicles", "people"] as const).map(view => keepTab(view) && <div key={view} hidden={showingSurvey || tab !== view}>
+        <TransportConfig input={input} tab={view} onChange={change} newParticipantId={tab === "people" ? newParticipantId : undefined} onRosterExport={() => downloadCsv(`참가자명단-v${input.revision}.csv`, transportRosterCsv(input))}
+          selectedVehicleIds={selectedVehicleIds} onVehicleSelect={(id, selected) => setVehicleSelection((ids) => selected ? [...ids, id] : ids.filter((value) => value !== id))}
+          onVehicleDelete={() => setVehicleDeleteOpen(true)} />
+      </div>)}
+      </div></fieldset></div>
+    {tab === "board" && !pauseAssignment && !lodgingView && <footer className="transport-footer" aria-label="배치 작업">
+      <button type="button" disabled={boardMode !== "work" || !result || stale || busy || demo || approved} onClick={() => void saveAllocation()}>임시저장</button>
+      <button type="button" onClick={() => selectTab("compare")}>비교</button>
+      <button type="button" className="transport-primary" title={stale ? "입력 변경 후 다시 계산해 주세요." : errors.length ? "승인 전 확인 항목을 먼저 해결해 주세요." : !result ? "먼저 배정 계산을 실행해 주세요." : undefined} disabled={boardMode !== "work" || !result || busy || stale || errors.length > 0 || approved} onClick={() => setPending("approve")}><Check size={16} />배치</button>
+    </footer>}
     {chatRoster && scope && onCloseChatRoster && <ChatRosterDialog scope={scope} source={chatRoster} input={input} onClose={onCloseChatRoster} onApply={async next => {
       if (busy || latestSnapshot.current !== snapshot) throw new Error("배정이 변경되었습니다. 현재 명단을 다시 확인해 주세요.");
       if (demo) throw new Error("가상 예시를 종료하고 실제 배정으로 전환한 뒤 추가해 주세요.");
@@ -354,7 +458,7 @@ export function TransportPanel({ roomId, scope, onUnsavedChange, surveyShortcut 
         <dt>참가 / 가상</dt><dd>{input.people.length}명 / {input.extraCount}명</dd>
         <dt>대여 견적</dt><dd>{quoteLabel(result ? recordedTransportQuote(input, result) : null)}</dd>
         <dt>기존 확정 대비 변경</dt><dd>{changedRows}건</dd>
-      </dl><ul className="transport-approval-splits">{splitGroups.map((s) => <li key={s}>{s}</li>)}</ul><button type="button" className="transport-primary" onClick={() => { if (result && validateTransportResult(input, result).length === 0) { persist({ ...snapshot, baseline: result, approved: true }); setPending(null); } }}>배정안 확정</button></> : <><p><strong>{input.people.find((p) => p.id === pending.personId)?.name}</strong></p><p>{input.trips.find((t) => t.id === pending.tripId)?.label} → {input.vehicles.find((v) => v.id === pending.vehicleId)?.label ?? "미배정"}</p><p>승인한 변경은 잠금으로 유지됩니다. 전체 명단은 별도 확정 전까지 초안입니다.</p>{moveErrors.length > 0 && <ul className="transport-alert">{moveErrors.map((e) => <li key={e}>{e}</li>)}</ul>}<button type="button" className="transport-primary" disabled={!candidate || moveErrors.length > 0} onClick={() => { if (candidate) { persist({ ...snapshot, ...candidate, approved: false }); setPending(null); } }}>변경 승인</button></>}
+      </dl><ul className="transport-approval-splits">{splitGroups.map((s) => <li key={s}>{s}</li>)}</ul><button type="button" className="transport-primary" disabled={busy} onClick={() => void finalize()}>배정안 확정</button></> : <><p><strong>{input.people.find((p) => p.id === pending.personId)?.name}</strong></p><p>{input.trips.find((t) => t.id === pending.tripId)?.label} → {input.vehicles.find((v) => v.id === pending.vehicleId)?.label ?? "미배정"}</p><p>승인한 변경은 잠금으로 유지됩니다. 전체 명단은 별도 확정 전까지 초안입니다.</p>{moveErrors.length > 0 && <ul className="transport-alert">{moveErrors.map((e) => <li key={e}>{e}</li>)}</ul>}<button type="button" className="transport-primary" disabled={!candidate || moveErrors.length > 0} onClick={() => { if (candidate) { persist({ ...snapshot, ...candidate, approved: false }); setPending(null); } }}>변경 승인</button></>}
     </TransportConfirmation>}
   </section>;
 }

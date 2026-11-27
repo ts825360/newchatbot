@@ -71,7 +71,7 @@ it("opens a reviewed, private-safe editor without writing; repeated adds reopen 
   render(<PrototypeApp />);
   expect(screen.queryByRole("button", { name: "일정으로 추가" })).toBeNull();
   addEvent();
-  expect(screen.getByRole("button", { name: "일정 닫기" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "일정 확대" })).toBeDefined();
   expect((screen.getByLabelText("날짜") as HTMLInputElement).value).toBe("2028-02-29");
   expect((screen.getByLabelText("시작 시간") as HTMLInputElement).value).toBe("15:00");
   expect((screen.getByLabelText("설명") as HTMLTextAreaElement).value).toBe("");

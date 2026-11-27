@@ -382,7 +382,12 @@ export async function authGet(request: Request, action: string, db: DatabaseSync
         return response;
       }
     }
-    if (action === "account") return json({ username: requireUser(request, db).username });
+    if (action === "account") {
+      const actor = requireUser(request, db);
+      const expectedAccount = request.headers.get("x-account-id");
+      if (expectedAccount !== null && expectedAccount !== actor.id) throw new ApiError(409, "접속 계정이 변경되었습니다. 다시 확인해 주세요.");
+      return json({ username: actor.username });
+    }
     if (action === "management" || action === "owner") return overview(request, db, action === "owner");
     throw new ApiError(404, "Auth action not found.");
   } catch (error) { return errorResponse(error); }

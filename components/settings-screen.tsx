@@ -3,10 +3,10 @@
 import Link from "next/link";
 import { ArrowLeft, Bell, Check, CircleAlert, CircleHelp, Link2, LockKeyhole, MessageSquare, Monitor, RotateCcw, Save, Settings, Sparkles, UserRound } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import {
-  assistantEmojiLabels, assistantLengthLabels, assistantToneLabels, defaultAssistantPreferences, isAssistantPreferences,
-  maxAssistantInstructionsLength, type AssistantPreferences
+  assistantEmojiIntensity, assistantEmojiLabels, assistantLengthLabels, assistantToneLabels, defaultAssistantEmojiFrequency,
+  defaultAssistantPreferences, maxAssistantInstructionsLength, parseAssistantPreferences, type AssistantPreferences
 } from "@/lib/assistant-preferences";
 import { backendFetch, flushBackendWrites, getBackendProfile } from "@/lib/backend-client";
 import type { GoogleConnectionOutcome, GoogleConnectionService } from "@/lib/google-settings";
@@ -14,13 +14,15 @@ import { AUTH_CHANGED_EVENT, createBrowserAuth } from "@/lib/prototype-auth";
 import type { UserProfile } from "@/lib/types";
 import { GoogleAccountConnection } from "./google-account-connection";
 import { ManagementShell } from "./management-shell";
-import { AccountPreferences, AlertPreferences, DisplayPreferences, ExternalAIPreferences, PasswordPreferences, SettingsHeading, SupportPreferences } from "./settings-sections";
+import { AccountPreferences, DisplayPreferences, ExternalAIPreferences, PasswordPreferences, SettingsHeading } from "./settings-sections";
+import { SettingsHelp } from "./settings-help";
+import { SettingsNotifications } from "./settings-notifications";
 import { WorkspaceBrandMark } from "./workspace-brand-mark";
 
 const sections = [
   { id: "account", label: "내 계정", icon: UserRound, subtitle: "표시 이름과 계정 권한을 확인합니다." },
   { id: "display", label: "화면 및 접근성", icon: Monitor, subtitle: "이 브라우저의 테마, 글자 크기, 화면 밀도를 설정합니다." },
-  { id: "notifications", label: "알림", icon: Bell, subtitle: "받을 수 있는 알림과 설정 위치를 확인합니다." },
+  { id: "notifications", label: "알림", icon: Bell, subtitle: "일반 알림 수신을 설정하고 받은 알림을 확인합니다." },
   { id: "reply", label: "답변 스타일", icon: MessageSquare, subtitle: "행사비서의 말투, 답변 길이와 이모티콘 사용을 설정합니다." },
   { id: "security", label: "보안 및 개인정보", icon: LockKeyhole, subtitle: "비밀번호와 외부 서비스 권한을 관리합니다." },
   { id: "support", label: "도움말 및 지원", icon: CircleHelp, subtitle: "이용 안내를 확인하고 문제를 신고합니다." },
@@ -154,9 +156,9 @@ function AccountSettings({ profile }: { profile: UserProfile }) {
           <SettingsHeading icon={icon} title={label} subtitle={subtitle} />
           {id === "account" && location.section === id && <AccountPreferences profile={profile} />}
           {id === "display" && location.section === id && <DisplayPreferences />}
-          {id === "notifications" && location.section === id && <AlertPreferences canConnectCalendar={canConnectCalendar} />}
+          {id === "notifications" && location.section === id && profile.accountId && <SettingsNotifications accountId={profile.accountId} canViewRoom={canConnectForms} canConnectCalendar={canConnectCalendar} />}
           {id === "reply" && (!canChat ? <p className="settings-empty">답변 스타일을 설정할 권한이 없습니다.</p> : visitedReply && <ReplyPreferences />)}
-          {id === "support" && location.section === id && <SupportPreferences />}
+          {id === "support" && location.section === id && <SettingsHelp />}
           {id === "security" && location.section === id && <>
             {canChat && profile.accountId && <ExternalAIPreferences accountId={profile.accountId} />}
             <PasswordPreferences accountId={profile.accountId} />
@@ -192,6 +194,7 @@ const equalPreferences = (left: AssistantPreferences, right: AssistantPreference
 function ReplyPreferences() {
   const [saved, setSaved] = useState<AssistantPreferences | null>(null);
   const [draft, setDraft] = useState<AssistantPreferences | null>(null);
+  const [lastFrequency, setLastFrequency] = useState(defaultAssistantEmojiFrequency);
   const [attempt, setAttempt] = useState(0);
   const [loadFailed, setLoadFailed] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "failed">("idle");
@@ -199,24 +202,25 @@ function ReplyPreferences() {
   useEffect(() => {
     let current = true;
     void backendFetch(preferencesPath).then((value: unknown) => {
-      if (!isAssistantPreferences(value)) throw new Error("Invalid preferences response");
-      if (current) { setSaved(value); setDraft(value); }
+      const preferences = parseAssistantPreferences(value);
+      if (!preferences) throw new Error("Invalid preferences response");
+      if (current) { setSaved(preferences); setDraft(preferences); }
     }).catch(() => { if (current) setLoadFailed(true); });
     return () => { current = false; };
   }, [attempt]);
 
-  const dirty = saved !== null && draft !== null && !equalPreferences(saved, draft);
+  const dirty = saved !== null && draft !== null && (!equalPreferences(saved, draft) || saved.emojiFrequency !== draft.emojiFrequency);
   const saving = saveStatus === "saving";
   const save = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!draft || !dirty || saving) return;
     setSaveStatus("saving");
     try {
-      const response: unknown = await backendFetch(preferencesPath, {
+      const response = parseAssistantPreferences(await backendFetch(preferencesPath, {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(draft)
-      });
-      if (!isAssistantPreferences(response)) throw new Error("Invalid preferences response");
+      }));
+      if (!response) throw new Error("Invalid preferences response");
       setSaved(response);
       setDraft(response);
       setSaveStatus("saved");
@@ -234,14 +238,35 @@ function ReplyPreferences() {
   if (!draft) return <p className="settings-empty" role="status">답변 스타일을 불러오는 중...</p>;
 
   const update = (value: AssistantPreferences) => { setDraft(value); setSaveStatus("idle"); };
+  const intensity = draft.emoji === "frequency" ? assistantEmojiIntensity(draft.emojiFrequency) : null;
 
   return <div className="settings-with-preview"><form className="settings-preferences" onSubmit={save}>
     <PreferenceOptions label="말투" hint="행사비서가 답변할 때의 말투입니다." name="tone" value={draft.tone} labels={assistantToneLabels} descriptions={{ standard: "정중하고 자연스럽게", friendly: "편하고 부드럽게", direct: "핵심부터 간결하게" }} disabled={saving}
       onChange={(tone) => update({ ...draft, tone })} />
     <PreferenceOptions label="답변 길이" hint="답변에 포함할 설명의 양입니다." name="length" value={draft.length} labels={assistantLengthLabels} descriptions={{ brief: "핵심만 간단히", balanced: "일반적인 길이", detailed: "배경과 예시까지" }} disabled={saving}
       onChange={(length) => update({ ...draft, length })} />
-    <PreferenceOptions label="이모티콘" hint="답변에 이모티콘을 넣을지 선택합니다." name="emoji" value={draft.emoji} labels={assistantEmojiLabels} descriptions={{ off: "이모티콘 없이", occasional: "필요한 경우에만" }} disabled={saving}
-      onChange={(emoji) => update({ ...draft, emoji })} />
+    <PreferenceOptions label="이모티콘" hint="답변에 이모티콘을 넣을지 선택합니다." name="emoji" value={draft.emoji} labels={assistantEmojiLabels} descriptions={{ off: "이모티콘 없이", frequency: "문맥에 맞는 사용 빈도" }} disabled={saving}
+      onChange={(emoji) => {
+        if (emoji === "frequency") update({ ...draft, emoji, emojiFrequency: lastFrequency });
+        else if (draft.emoji === "frequency") {
+          const { emojiFrequency, ...style } = draft;
+          setLastFrequency(emojiFrequency);
+          update({ ...style, emoji });
+        }
+      }}>
+      {draft.emoji === "frequency" && <div className="settings-emoji-frequency">
+        <div className="settings-emoji-frequency-heading">
+          <label htmlFor="settings-emoji-frequency">이모티콘 사용 빈도</label>
+          <span aria-hidden="true">{draft.emojiFrequency}</span>
+        </div>
+        <input id="settings-emoji-frequency" type="range" min={0} max={100} step={1} value={draft.emojiFrequency}
+          aria-describedby="settings-emoji-frequency-scale"
+          onChange={event => update({ ...draft, emojiFrequency: event.currentTarget.valueAsNumber })} />
+        <div id="settings-emoji-frequency-scale" className="settings-emoji-frequency-scale">
+          <span>0 최소한</span><span>50 가끔</span><span>100 많이</span>
+        </div>
+      </div>}
+    </PreferenceOptions>
     <div className="settings-instructions">
       <label className="settings-instructions-label" htmlFor="settings-instructions">내 답변 지침 <small>(선택)</small></label>
       <textarea id="settings-instructions" rows={5} maxLength={maxAssistantInstructionsLength}
@@ -258,7 +283,7 @@ function ReplyPreferences() {
       </p>
       <div className="settings-action-buttons">
         <button className="lobby-secondary" type="button" disabled={saving || equalPreferences(draft, defaultAssistantPreferences)}
-          onClick={() => update(defaultAssistantPreferences)}><RotateCcw size={15} aria-hidden="true" />기본값으로 되돌리기</button>
+          onClick={() => { setLastFrequency(defaultAssistantEmojiFrequency); update(defaultAssistantPreferences); }}><RotateCcw size={15} aria-hidden="true" />기본값으로 되돌리기</button>
         <button className="lobby-primary" type="submit" disabled={saving || !dirty}><Save size={15} aria-hidden="true" />저장</button>
       </div>
     </div>
@@ -267,7 +292,7 @@ function ReplyPreferences() {
     <p className="settings-empty">예시 답변이며, 입력한 개인 지침은 반영하지 않습니다.</p>
     <div className="settings-preview-thread"><p>수련회 준비는 어디서부터 시작하면 좋을까요?</p>
       <div><span className="settings-preview-brand"><WorkspaceBrandMark size={19} /></span><div>
-        <p>{draft.tone === "friendly" ? "좋아요, 한 가지씩 준비해 봐요!" : draft.tone === "direct" ? "날짜와 장소부터 확정하세요." : "먼저 행사 날짜와 장소를 확인해 주세요."}{draft.emoji === "occasional" && " \u2728"}</p>
+        <p>{(intensity === "minimal" || intensity === "frequent") && "\u{1F4CC} "}{draft.tone === "friendly" ? "좋아요, 한 가지씩 준비해 봐요!" : draft.tone === "direct" ? "날짜와 장소부터 확정하세요." : "먼저 행사 날짜와 장소를 확인해 주세요."}{(intensity === "occasional" || intensity === "frequent") && " \u2728"}</p>
         {draft.length !== "brief" && <ol><li><strong>기본 계획 수립</strong><p>날짜, 장소, 예상 참가 인원을 확인해요.</p></li><li><strong>준비 항목 정리</strong><p>숙소, 식사, 차량을 체크리스트에 넣어요.</p></li><li><strong>담당자 지정</strong><p>항목별 담당자와 확인 기한을 정해요.</p></li></ol>}
         {draft.length === "detailed" && <p>날짜가 미정이라면 가능한 주말을 2~3개 먼저 정해 의견을 모아 보세요.</p>}
       </div></div>
@@ -275,8 +300,8 @@ function ReplyPreferences() {
   </aside></div>;
 }
 
-function PreferenceOptions<T extends string>({ label, hint, name, value, labels, descriptions, disabled, onChange }: {
-  label: string; hint: string; name: string; value: T; labels: Readonly<Record<T, string>>; descriptions: Readonly<Record<T, string>>; disabled: boolean; onChange: (value: T) => void;
+function PreferenceOptions<T extends string>({ label, hint, name, value, labels, descriptions, disabled, onChange, children }: {
+  label: string; hint: string; name: string; value: T; labels: Readonly<Record<T, string>>; descriptions: Readonly<Record<T, string>>; disabled: boolean; onChange: (value: T) => void; children?: ReactNode;
 }) {
   return <fieldset className="settings-option-group" disabled={disabled}>
     <legend>{label}</legend>
@@ -287,5 +312,6 @@ function PreferenceOptions<T extends string>({ label, hint, name, value, labels,
         <span><strong>{labels[option]}</strong><small>{descriptions[option]}</small></span>
       </label>)}
     </div>
+    {children}
   </fieldset>;
 }

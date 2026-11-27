@@ -35,6 +35,21 @@ const props = {
 };
 
 describe("workspace 3-1", () => {
+  it("appends a checklist request without overwriting or automatically sending the composer draft", async () => {
+    render(<EventWorkspace {...props} renderTools={(mode, _scope, _timetable, ask) => mode === "prepare" &&
+      <button type="button" onClick={() => ask?.({ id: "prep-one", title: "참가 설문 초안과 마감 정하기", status: "needsReview", due: "", owner: "", memo: "PRIVATE_MEMO" })}>항목 요청</button>} />);
+    const start = screen.queryByRole("button", { name: "새 대화 만들기" });
+    if (start) fireEvent.click(start);
+    const draft = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "메시지" });
+    await waitFor(() => expect(draft.disabled).toBe(false));
+    fireEvent.change(draft, { target: { value: "이미 입력한 요청" } });
+    openGroupedTool("행사 준비", "준비 현황 열기");
+    fireEvent.click(await screen.findByRole("button", { name: "항목 요청" }));
+    expect(draft.value).toMatch(/^이미 입력한 요청\n\n.*참가 설문 초안과 마감 정하기/);
+    expect(draft.value).not.toContain("PRIVATE_MEMO");
+    expect(within(screen.getByRole("log", { name: "대화 내용" })).queryByText(/참가 설문 초안과 마감/)).toBeNull();
+    expect(document.activeElement).toBe(draft);
+  });
   it("links a locally verified lodging route to Maps with only the public origin and destination", () => {
     render(<ChatPanel conversation={{ id: "thread", title: "숙소 위치", draft: "", createdAt: "", updatedAt: "", messages: [
       { id: "route", sender: "assistant", text: "실제 소요 시간은 지도에서 확인하세요.", time: "", venueRoute: { venueName: "한화리조트 대천 파로스", origin: "대전역" } },
@@ -77,9 +92,11 @@ describe("workspace 3-1", () => {
     render(<EventWorkspace {...props} overview={() => ({ calendar: { state: "ready", items: [] }, onEvent: vi.fn() })} />);
     const history = screen.getByRole("complementary", { name: "대화 기록" });
     expect(within(history).getByRole("button", { name: "행사방 목록" })).toBeDefined();
-    const toggle = screen.getByRole("button", { name: "행사 요약 열기" });
-    fireEvent.click(toggle);
     const inspector = screen.getByRole("complementary", { name: "행사 요약" });
+    fireEvent.click(screen.getByRole("button", { name: "오른쪽 패널 접기" }));
+    expect(screen.queryByRole("complementary", { name: "행사 요약" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "오른쪽 패널 열기" }));
+    expect(screen.getByRole("complementary", { name: "행사 요약" })).toBe(inspector);
     expect(within(inspector).getByRole("separator", { name: "부가기능 너비 조절" })).toBeDefined();
     fireEvent.click(within(inspector).getByRole("button", { name: "전체 일정 보기" }));
     expect(screen.getByRole("complementary", { name: "부가기능" })).toBe(inspector);
@@ -88,6 +105,129 @@ describe("workspace 3-1", () => {
     fireEvent.click(back);
     expect(screen.getByRole("complementary", { name: "행사 요약" })).toBe(inspector);
     expect(document.activeElement).toBe(within(inspector).getByRole("heading", { name: "행사 요약" }));
+  });
+
+  it("resizes one shared inspector without resetting the conversation, calendar and timetable tab state", async () => {
+    render(<EventWorkspace {...props} renderTools={mode => mode === "calendar" && <input aria-label="검증용 연월" defaultValue="2026-11" />} />);
+    const draft = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "메시지" });
+    fireEvent.change(draft, { target: { value: "보존할 초안" } });
+    fireEvent.click(screen.getByRole("button", { name: "일정 열기" }));
+    const inspector = screen.getByRole("complementary", { name: "부가기능" });
+    const calendar = within(inspector).getByRole("tab", { name: "공동 캘린더" });
+    const pointer = within(inspector).getByRole<HTMLInputElement>("textbox", { name: "검증용 연월" });
+    expect(inspector.getAttribute("data-size")).toBe("docked");
+    fireEvent.change(pointer, { target: { value: "2026-12" } });
+    fireEvent.click(calendar);
+    expect(inspector.getAttribute("data-size")).toBe("expanded");
+    expect(screen.getByRole("complementary", { name: "대화 기록" })).toBeDefined();
+    expect(screen.queryByRole("textbox", { name: "메시지" })).toBeNull();
+    const timetable = within(inspector).getByRole("tab", { name: "타임테이블" });
+    fireEvent.click(timetable);
+    expect(inspector.getAttribute("data-size")).toBe("expanded");
+    expect(timetable.getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(timetable);
+    expect(inspector.getAttribute("data-size")).toBe("docked");
+    fireEvent.click(calendar);
+    expect(within(inspector).getByRole("textbox", { name: "검증용 연월" })).toBe(pointer);
+    expect(pointer.value).toBe("2026-12");
+    fireEvent.click(within(inspector).getByRole("button", { name: "작업 영역 확대" }));
+    expect(inspector.getAttribute("data-size")).toBe("expanded");
+    fireEvent.click(screen.getByRole("button", { name: "대화" }));
+    expect(screen.getByRole("textbox", { name: "메시지" })).toBe(draft);
+    expect(draft.value).toBe("보존할 초안");
+  });
+
+  it("keeps one right-panel control in the navigation before and after the first tool opens", () => {
+    render(<EventWorkspace {...props} />);
+    const nav = within(screen.getByRole("navigation", { name: "행사방 도구" }));
+    const control = nav.getByRole<HTMLButtonElement>("button", { name: "오른쪽 패널 열기" });
+    expect(control.disabled).toBe(true);
+    fireEvent.click(nav.getByRole("button", { name: "일정 열기" }));
+    expect(nav.getByRole("button", { name: "오른쪽 패널 접기" })).toBe(control);
+    expect(control.disabled).toBe(false);
+  });
+
+  it("expands the event summary from its header and keeps it mounted when changing tools", () => {
+    render(<EventWorkspace {...props} overview={() => ({ calendar: { state: "ready", items: [] }, onEvent: vi.fn() })} />);
+    const inspector = screen.getByRole("complementary", { name: "행사 요약" });
+    const overview = within(inspector).getByRole("region", { name: "행사 정보" });
+    fireEvent.click(within(inspector).getByRole("button", { name: "작업 영역 확대" }));
+    expect(inspector.getAttribute("data-size")).toBe("expanded");
+    expect(screen.queryByRole("textbox", { name: "메시지" })).toBeNull();
+    fireEvent.click(within(inspector).getByRole("button", { name: "작업 영역 축소" }));
+    openGroupedTool("행사 준비", "장소 열기");
+    fireEvent.click(within(inspector).getByRole("button", { name: "행사 요약으로 돌아가기" }));
+    expect(within(inspector).getByRole("region", { name: "행사 정보" })).toBe(overview);
+  });
+
+  it("keeps the timetable tab and location draft when switching tools and resizing from the panel header", () => {
+    render(<EventWorkspace {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "일정 열기" }));
+    const inspector = within(screen.getByRole("complementary", { name: "부가기능" }));
+    fireEvent.click(inspector.getByRole("tab", { name: "타임테이블" }));
+    openGroupedTool("행사 준비", "장소 열기");
+    const location = inspector.getByRole<HTMLInputElement>("textbox", { name: "장소 추가" });
+    fireEvent.change(location, { target: { value: "저장하지 않은 가상 장소" } });
+    fireEvent.click(inspector.getByRole("button", { name: "작업 영역 확대" }));
+    fireEvent.click(inspector.getByRole("button", { name: "작업 영역 축소" }));
+    expect(screen.getByRole("button", { name: "행사 준비" }).getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: "일정 열기" }));
+    expect(inspector.getByRole("tab", { name: "타임테이블" }).getAttribute("aria-selected")).toBe("true");
+    openGroupedTool("행사 준비", "장소 열기");
+    expect(inspector.getByRole("textbox", { name: "장소 추가" })).toBe(location);
+    expect(location.value).toBe("저장하지 않은 가상 장소");
+  });
+
+  it("restores the vehicle tab scroll after viewing lodging or another vehicle tab", () => {
+    const { container } = render(<EventWorkspace {...props} />);
+    openGroupedTool("참가·이동", "차량 배정 열기");
+    const surface = container.querySelector<HTMLElement>(".transport-body")!;
+    surface.scrollTop = 166;
+    fireEvent.scroll(surface);
+    fireEvent.click(screen.getByRole("tab", { name: "차량" }));
+    expect(surface.scrollTop).toBe(0);
+    fireEvent.click(screen.getByRole("tab", { name: "이동 조건" }));
+    expect(surface.scrollTop).toBe(166);
+    openGroupedTool("참가·이동", "숙소 배정 열기");
+    expect(surface.scrollTop).toBe(0);
+    openGroupedTool("참가·이동", "차량 배정 열기");
+    expect(surface.scrollTop).toBe(166);
+  });
+
+  it("retains the participant filter and the board search between vehicle tabs", () => {
+    render(<EventWorkspace {...props} />);
+    openGroupedTool("참가·이동", "차량 배정 열기");
+    const tab = (name: string) => fireEvent.click(screen.getByRole("tab", { name }));
+    tab("참가자");
+    const filter = screen.getByRole<HTMLInputElement>("textbox", { name: "참가자 검색" });
+    fireEvent.change(filter, { target: { value: "청년부" } });
+    tab("배치");
+    const search = screen.getByRole<HTMLInputElement>("searchbox", { name: "차량 배정 이름 검색" });
+    fireEvent.change(search, { target: { value: "가상 참가자" } });
+    tab("참가자");
+    expect(screen.getByRole("textbox", { name: "참가자 검색" })).toBe(filter);
+    expect(filter.value).toBe("청년부");
+    tab("배치");
+    expect(screen.getByRole("searchbox", { name: "차량 배정 이름 검색" })).toBe(search);
+    expect(search.value).toBe("가상 참가자");
+  });
+
+  it("toggles the selected subtool rather than expanding when its group button is pressed", () => {
+    render(<EventWorkspace {...props} />);
+    openGroupedTool("행사 준비", "장소 열기");
+    const inspector = screen.getByRole("complementary", { name: "부가기능" });
+    const location = within(inspector).getByRole<HTMLInputElement>("textbox", { name: "장소 추가" });
+    fireEvent.change(location, { target: { value: "작성 중" } });
+    fireEvent.click(screen.getByRole("button", { name: "행사 준비" }));
+    expect(inspector.getAttribute("data-size")).toBe("docked");
+    fireEvent.click(screen.getByRole("button", { name: "장소" }));
+    expect(inspector.getAttribute("data-size")).toBe("docked");
+    fireEvent.click(within(inspector).getByRole("button", { name: "작업 영역 확대" }));
+    expect(inspector.getAttribute("data-size")).toBe("expanded");
+    expect(location.value).toBe("작성 중");
+    fireEvent.click(within(inspector).getByRole("button", { name: "작업 영역 축소" }));
+    expect(inspector.getAttribute("data-size")).toBe("docked");
+    expect(location.value).toBe("작성 중");
   });
 
   it("starts with a one-line composer, leaves shift-enter for line breaks and does not send during IME composition", () => {
@@ -122,13 +262,11 @@ describe("workspace 3-1", () => {
     expect(calendar.getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("returns from a full-width vehicle tool to visible conversation history", () => {
+  it("keeps conversation history visible beside an expanded vehicle tool", () => {
     render(<EventWorkspace {...props} />);
     openGroupedTool("참가·이동", "차량 배정 열기");
-    const history = screen.getByRole("button", { name: "대화 목록 열기" });
-    expect(history.getAttribute("aria-expanded")).toBe("false");
-    fireEvent.click(history);
-    expect(screen.queryByRole("complementary", { name: "부가기능" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "작업 영역 확대" }));
+    expect(screen.getByRole("complementary", { name: "부가기능" }).getAttribute("data-size")).toBe("expanded");
     expect(screen.getByRole("complementary", { name: "대화 기록" })).toBeDefined();
   });
 
@@ -153,14 +291,14 @@ describe("workspace 3-1", () => {
     expect(open).toHaveBeenCalledTimes(2);
   });
 
-  it.each([["숙소 배정", "lodging"], ["차량 배정", "transport"]] as const)("keeps the workspace theme and selection in the full-width %s tool", (name, tool) => {
+  it.each([["숙소 배정", "lodging"], ["차량 배정", "transport"]] as const)("keeps the workspace theme and selection in the %s tool", (name, tool) => {
     render(<EventWorkspace {...props} />);
     openGroupedTool("참가·이동", `${name} 열기`);
     expect(screen.getByRole("complementary", { name: "부가기능" }).classList.contains("workspace-theme")).toBe(true);
     const group = screen.getByRole("button", { name: "참가·이동" });
     expect(group.getAttribute("data-active")).toBe("true");
     fireEvent.click(group);
-    const option = screen.getByRole("button", { name: `${name} 닫기` });
+    const option = screen.getByRole("button", { name: new RegExp(`^${name}$`) });
     expect(option.getAttribute("data-tool")).toBe(tool);
     expect(option.getAttribute("aria-pressed")).toBe("true");
   });
@@ -185,7 +323,9 @@ describe("workspace 3-1", () => {
     await refreshBackendData(roomId);
     render(<EventWorkspace {...props} overview={() => ({ onEvent: vi.fn() })} />);
     const chat = within(screen.getByRole("region", { name: "개인 대화" }));
-    fireEvent.click(await chat.findByRole("button", { name: "준비 진행도 · 미검토" }));
+    const shortcut = await chat.findByRole("button", { name: "행사 요약" });
+    await waitFor(() => expect(shortcut.getAttribute("title")).toBe("준비 진행도: 미검토"));
+    fireEvent.click(shortcut);
     const summary = within(screen.getByRole("complementary", { name: "행사 요약" }));
     expect((await summary.findByRole("progressbar", { name: "준비 진행도" })).getAttribute("value")).toBe("0");
     expect(summary.getByText("0%")).toBeDefined();
@@ -193,21 +333,20 @@ describe("workspace 3-1", () => {
     fireEvent.click(summary.getByRole("button", { name: "중간점검" }));
     expect(review).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "확인하고 점검" }));
-    expect(await chat.findByRole("button", { name: "준비 진행도 · 33%" })).toBeDefined();
+    await waitFor(() => expect(shortcut.getAttribute("title")).toBe("준비 진행도: 33%"));
     expect(summary.getByRole("progressbar", { name: "준비 진행도" }).getAttribute("value")).toBe("33");
     openGroupedTool("참가·이동", "차량 배정 열기");
     fireEvent.click(screen.getByRole("button", { name: "대화" }));
-    expect(chat.getByRole("button", { name: "준비 진행도 · 33%" })).toBeDefined();
+    expect(shortcut.getAttribute("title")).toBe("준비 진행도: 33%");
     fireEvent.click(screen.getByRole("button", { name: "second 선택" }));
-    expect(chat.queryByRole("button", { name: "준비 진행도 · 33%" })).toBeNull();
-    expect(await chat.findByRole("button", { name: "준비 진행도 · 미검토" })).toBeDefined();
+    await waitFor(() => expect(shortcut.getAttribute("title")).toBe("준비 진행도: 미검토"));
     expect(review).toHaveBeenCalledTimes(1);
   });
 
   it.each(["pending", "remaining"] as const)("displays an empty graph and preserves the reasons when %s has no calculated score", state => {
     const view = { busy: false, loading: false, saving: false, error: "", stale: false, report: { state, percent: null, notes: ["확정된 일정이 필요합니다."] } };
     render(<><PreparationProgressShortcut {...view} onOpen={vi.fn()} /><PreparationProgressReview {...view} review={vi.fn()} /></>);
-    expect(screen.getByRole("button", { name: "준비 진행도 · 0%" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "행사 요약" }).getAttribute("title")).toBe("준비 진행도: 0%");
     expect(screen.getByRole("progressbar", { name: "준비 진행도" }).getAttribute("value")).toBe("0");
     expect(screen.queryByText("판단 보류")).toBeNull();
     const details = screen.getByText("판단 근거").closest("details");
@@ -222,8 +361,10 @@ describe("workspace 3-1", () => {
     const composer = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "메시지" });
     fireEvent.change(composer, { target: { value: "확인 중인 초안" } });
     openGroupedTool("참가·이동", "차량 배정 열기");
+    expect(screen.getByRole("textbox", { name: "메시지" })).toBe(composer);
+    fireEvent.click(screen.getByRole("button", { name: "작업 영역 확대" }));
     expect(screen.queryByRole("textbox", { name: "메시지" })).toBeNull();
-    expect(screen.queryByRole("complementary", { name: "대화 기록" })).toBeNull();
+    expect(screen.getByRole("complementary", { name: "대화 기록" })).toBeDefined();
     fireEvent.click(screen.getByRole("button", { name: "대화" }));
     expect(screen.getByRole("textbox", { name: "메시지" })).toBe(composer);
     expect(composer.value).toBe("확인 중인 초안");
@@ -407,12 +548,12 @@ describe("workspace 3-1", () => {
     fireEvent.click(screen.getByRole("button", { name: "회의록 예시 보기" }));
     fireEvent.click(screen.getByRole("button", { name: "일정 후보 추가" }));
     expect(props.onAddExtractedEvent).toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "일정 닫기" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "일정 확대" })).toBeDefined();
     fireEvent.click(screen.getAllByRole("button", { name: "자료 열기" })[0]);
     fireEvent.click(screen.getByRole("button", { name: "준비 항목 추가" }));
     expect(props.onAddExtractedChecklist).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "행사 준비" }));
-    expect(screen.getByRole("button", { name: "준비 현황 닫기" })).toBeDefined();
+    expect(screen.getByRole("button", { name: /^준비 현황$/ })).toBeDefined();
   });
   it("keeps the location private, ignores the old room location, and remounts on conversation changes", () => {
     render(<EventWorkspace {...props} room={{ ...props.room, location: "행사 장소" }} />);
@@ -426,7 +567,7 @@ describe("workspace 3-1", () => {
     fireEvent.click(screen.getByRole("button", { name: "새 대화 만들기" }));
     expect(screen.getByTestId("location-panel").textContent).toBe("");
     fireEvent.click(screen.getByRole("button", { name: "부가기능 닫기" }));
-    expect(screen.queryByTestId("location-panel")).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "장소 추가" })).toBeNull();
   });
 
   it("does not collapse history when a side tool is opened on a medium screen", () => {
@@ -460,6 +601,8 @@ describe("workspace 3-1", () => {
     fireEvent.doubleClick(handle);
     expect(localStorage.getItem("church-workspace-tools-width")).toBeNull();
     openGroupedTool("참가·이동", "차량 배정 열기");
+    expect(screen.getByRole("separator", { name: "부가기능 너비 조절" })).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "작업 영역 확대" }));
     expect(screen.queryByRole("separator", { name: "부가기능 너비 조절" })).toBeNull();
   });
 

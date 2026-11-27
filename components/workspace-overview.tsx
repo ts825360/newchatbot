@@ -21,11 +21,12 @@ function stillUpcoming(event: CalendarEvent, today: string, now: Date) {
   return !hours || hours.nextDay || Date.parse(`${event.date}T${hours.end}:00+09:00`) > now.getTime();
 }
 
-export function WorkspaceOverview({ event, scope, calendar, onCalendar, onEvent, progress }: WorkspaceOverviewData & {
+export function WorkspaceOverview({ event, scope, calendar, onCalendar, onEvent, progress, hidden }: WorkspaceOverviewData & {
   event: { name: string; period: string; status: string };
   scope: ConversationScope | null;
   onCalendar: () => void;
   progress?: ReactNode;
+  hidden?: boolean;
 }) {
   const now = new Date();
   const today = koreaDate(now);
@@ -47,7 +48,7 @@ export function WorkspaceOverview({ event, scope, calendar, onCalendar, onEvent,
           })}</ul> : <p className="overview-empty">다가오는 일정이 없어요.</p>}
       </section>;
 
-  return <div className="workspace-overview-content">
+  return <div className="workspace-overview-content" hidden={hidden}>
       <section className="workspace-overview-event" aria-label="행사 정보">
         <header><h3><WorkspaceBrandMark size={18} />{event.name}</h3></header>
         <p><CalendarDays size={15} aria-hidden="true" />{event.period || "일정 미정"}{event.period && <Badge tone="neutral">{event.status}</Badge>}</p>

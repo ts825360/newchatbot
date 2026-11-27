@@ -4,7 +4,7 @@ import { ArrowRightLeft, BusFront, GripVertical, LockKeyhole, Search, Unlock } f
 import { useEffect, useRef, useState } from "react";
 import { companionFor, entryFor, transportVehicleSeatError, tripFor, type Direction, type TransportAssignment, type TransportInput, type TransportResult } from "@/lib/transport";
 
-export function TransportBoard({ input, result, stale, direction, onDirection, onMove, onLock }: { input: TransportInput; result: TransportResult | null; stale: boolean; direction: Direction; onDirection: (d: Direction) => void; onMove: (a: TransportAssignment) => void; onLock: (a: TransportAssignment) => void }) {
+export function TransportBoard({ input, result, stale, readOnly = false, direction, onDirection, onMove, onLock }: { input: TransportInput; result: TransportResult | null; stale: boolean; readOnly?: boolean; direction: Direction; onDirection: (d: Direction) => void; onMove: (a: TransportAssignment) => void; onLock: (a: TransportAssignment) => void }) {
   const [selectedTrip, setSelectedTrip] = useState(""); const [editing, setEditing] = useState(""); const [target, setTarget] = useState("");
   const [search, setSearch] = useState(""); const [jump, setJump] = useState<{ personId: string; tripId: string; vehicleId: string | null }>();
   const [dragging, setDragging] = useState(""); const [over, setOver] = useState<string | null>();
@@ -16,7 +16,7 @@ export function TransportBoard({ input, result, stale, direction, onDirection, o
   const assignments = result?.assignments.filter((a) => a.tripId === tripId) ?? [];
   const vehicles = input.vehicles.filter(v => v.enabled && v.tripIds.includes(tripId) && !transportVehicleSeatError(v));
   const nextVehicle = vehicles.some(v => v.id === target) ? target : target === "__unassigned" ? null : undefined;
-  const available = result && ["optimal", "feasible", "manual"].includes(result.status) && !stale;
+  const available = !readOnly && result && ["optimal", "feasible", "manual"].includes(result.status) && !stale;
   const searchTerm = search.trim().normalize("NFC").toLowerCase();
   const matches = searchTerm ? input.people.filter(p => `${p.name} ${p.department}`.normalize("NFC").toLowerCase().includes(searchTerm)) : [];
   useEffect(() => {
@@ -30,7 +30,10 @@ export function TransportBoard({ input, result, stale, direction, onDirection, o
     && passengers.some(p => p.id === id) && assignments.some(a => a.personId === id && a.vehicleId !== vehicleId);
   const move = (id: string, vehicleId: string | null) => { if (canMove(id, vehicleId)) onMove({ personId: id, tripId, vehicleId }); };
   const rows = (vehicleId: string | null) => assignments.filter((a) => a.vehicleId === vehicleId);
-  const peopleList = (vehicleId: string | null) => <ul className="transport-riders">{rows(vehicleId).map((a) => {
+  const peopleList = (vehicleId: string | null) => {
+    const vehicle = input.vehicles.find(item => item.id === vehicleId);
+    const assigned = rows(vehicleId).toSorted((a, b) => Number(a.personId !== vehicle?.driverId) - Number(b.personId !== vehicle?.driverId));
+    return <ul className={vehicle ? "transport-riders transport-conceptual-seats" : "transport-riders"}>{assigned.map((a) => {
     const p = input.people.find((p) => p.id === a.personId);
     if (!p) return null;
     const draggable = Boolean(available && !locked(p.id));
@@ -39,7 +42,7 @@ export function TransportBoard({ input, result, stale, direction, onDirection, o
         if (!draggable) { e.preventDefault(); return; }
         e.dataTransfer.setData("application/x-church-person", p.id); e.dataTransfer.effectAllowed = "move"; setDragging(p.id); setEditing("");
       }} onDragEnd={() => { setDragging(""); setOver(undefined); }}>
-      <GripVertical size={13} className="transport-grip" /><div><span>{p.name}</span><small>{p.department}{companionFor(p, direction) ? ` · 동반 ${companionFor(p, direction)}` : ""}</small></div>
+      <GripVertical size={13} className="transport-grip" /><div><span>{p.name}</span><small>{vehicle?.driverId === p.id ? "운전자" : p.department}{locked(p.id) ? " · 고정" : ""}{companionFor(p, direction) ? ` · 동반 ${companionFor(p, direction)}` : ""}</small></div>
       <button type="button" disabled={!available} aria-label={`${p.id} ${locked(p.id) ? "잠금 해제" : "배정 잠금"}`} title={locked(p.id) ? "잠금 해제" : "배정 잠금"} onClick={() => onLock(a)}>{locked(p.id) ? <LockKeyhole size={13} /> : <Unlock size={13} />}</button>
       <button type="button" disabled={!available || locked(p.id)} title="차량 변경" aria-label={`${p.name} 차량 변경`} onClick={() => {
         setEditing(editing === p.id ? "" : p.id); setTarget("");
@@ -48,7 +51,8 @@ export function TransportBoard({ input, result, stale, direction, onDirection, o
         <option value="">차량 선택</option>{vehicleId !== null && <option value="__unassigned">미배정으로 이동</option>}{vehicles.filter(v => v.id !== vehicleId).map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
       </select></label><button type="button" disabled={nextVehicle === undefined || !canMove(p.id, nextVehicle)} onClick={() => { if (nextVehicle !== undefined) move(p.id, nextVehicle); }}>변경 검토</button></div>}
     </li>;
-  })}</ul>;
+    })}</ul>;
+  };
   const drop = (vehicleId: string | null) => ({
     "data-drop": dragging && canMove(dragging, vehicleId) ? over === vehicleId ? "active" : "available" : undefined,
     onDragOver: (e: React.DragEvent) => {
@@ -85,6 +89,10 @@ export function TransportBoard({ input, result, stale, direction, onDirection, o
       </div>}
     </div>
     {!result && <p className="transport-footnote">배정 결과 없음 · 계산 후 차량별 탑승자가 표시됩니다.</p>}
+    {result && <p className="transport-footnote">차량별 탑승 관계 · 실제 좌석 번호 아님</p>}
+    {input.people.some(person => entryFor(person, direction)) && <details className="transport-unresolved"><summary>이동 조건 확인 필요 {input.people.filter(person => entryFor(person, direction)).length}명</summary>
+      <ul>{input.people.filter(person => entryFor(person, direction)).map(person => <li key={person.id}>{person.name} · {entryFor(person, direction)}</li>)}</ul>
+    </details>}
     <div className="transport-vehicle-grid">
       {result && <article className="transport-vehicle is-unassigned" data-vehicle-id="unassigned" {...drop(null)}><header><strong>미배정</strong><span>{rows(null).length}명</span></header>{peopleList(null)}{rows(null).length === 0 && <p>미배정 인원 없음</p>}</article>}
       {input.vehicles.map((v) => {
@@ -95,7 +103,9 @@ export function TransportBoard({ input, result, stale, direction, onDirection, o
           <div className="transport-vehicle-trips">{assignedTrips.length ? assignedTrips.map(trip => <button key={trip.id} type="button" aria-pressed={trip.id === tripId} onClick={() => selectTrip(trip.id)}>{trip.label}</button>) : <span>{direction === "outbound" ? "출발 팀 미지정" : "귀가편 미지정"}</span>}</div>
           {eligible && result ? <>
           <div className="transport-capacity"><meter min={0} max={v.capacity} value={Math.min(v.capacity, count + reserved)} /><span>실제 {count} · 가상 {reserved} · 여유 {Math.max(0, v.capacity - count - reserved)}</span></div>
-          {count > 0 && peopleList(v.id)}</> : <p>{!v.enabled ? "미사용 차량" : transportVehicleSeatError(v) ? "좌석 설정 확인 필요" : eligible ? "배정 계산 전" : "선택한 이동편에는 운행하지 않음"}</p>}
+          {count > 0 && peopleList(v.id)}
+          <div className="transport-seat-legend"><span>추가 배정 가능 {Math.max(0, v.capacity - count - reserved)}석</span>
+            {v.totalSeats !== undefined && v.totalSeats > v.capacity && <span>배정 제외 {v.totalSeats - v.capacity}석</span>}</div></> : <p>{!v.enabled ? "미사용 차량" : transportVehicleSeatError(v) ? "좌석 설정 확인 필요" : eligible ? "배정 계산 전" : "선택한 이동편에는 운행하지 않음"}</p>}
           <footer>{v.driverId ? `운전자 ${input.people.find((p) => p.id === v.driverId)?.name ?? v.driverId}` : v.externalDriverConfirmed ? v.driverName ? `외부 운전자 ${v.driverName}` : "외부 운전자 확인됨" : "운전자 미확정"}</footer></article>;
       })}</div>
   </div>;

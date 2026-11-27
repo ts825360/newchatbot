@@ -61,7 +61,6 @@ it("keeps upcoming events in the summary and the private checklist in preparatio
     { id: "done", title: "완료된 준비 항목", status: "done", owner: "", due: "", memo: "" },
   ]);
   render(<PrototypeApp />);
-  fireEvent.click(screen.getByRole("button", { name: "행사 요약 열기" }));
   const summary = within(screen.getByRole("complementary", { name: "행사 요약" }));
   expect(summary.getByText("다음 준비 회의")).toBeDefined();
   expect(summary.queryByText("이 대화의 장소 예약")).toBeNull();

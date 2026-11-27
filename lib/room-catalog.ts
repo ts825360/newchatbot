@@ -21,6 +21,7 @@ export type LobbyRoom = EventRoom & {
   endDate: string | null;
   otherDetail: string;
   location: string;
+  locationStatus?: "not_authorized" | "unreadable";
   description: string;
   memberCount: number;
   owner: string;

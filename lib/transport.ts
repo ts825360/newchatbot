@@ -1,8 +1,16 @@
+import { isDirectionalTransportMovement, type DirectionalTransportMovement } from "./transport-movement";
+
 export type Direction = "outbound" | "return";
-export type TransportPerson = { id: string; name: string; department: string; team?: string; familyId: string; companionGroup: string; outboundCompanionGroup?: string; returnCompanionGroup?: string; outboundTripId: string | null; returnTripId: string | null; outboundEntry?: string; returnEntry?: string; movement?: string; lodging?: string; roomAssignment?: string; notes?: string };
+export const transportGenderLabels = { male: "남성", female: "여성" } as const;
+export type TransportGender = keyof typeof transportGenderLabels;
+export const isTransportGender = (value: unknown): value is TransportGender => value === "male" || value === "female";
+export type TransportPerson = { id: string; name: string; department: string; gender?: TransportGender; team?: string; familyId: string; companionGroup: string; outboundCompanionGroup?: string; returnCompanionGroup?: string; outboundTripId: string | null; returnTripId: string | null; outboundEntry?: string; returnEntry?: string; movement?: string; movementPlan?: DirectionalTransportMovement; lodging?: string; roomAssignment?: string; notes?: string };
 export const transportUnnamedParticipant = "이름 미입력";
-export type TransportTrip = { id: string; label: string; direction: Direction; start: number; end: number };
-export type TransportVehicle = { id: string; label: string; capacity: number; totalSeats?: number; vehicleType?: TransportVehicleType; driverId: string | null; driverName?: string; externalDriverConfirmed?: boolean; rental: boolean; rentalCost: number; rentalQuoteKnown?: boolean; enabled: boolean; tripIds: string[] };
+export const surveyTripPending = "설문 이동수단 확인 필요";
+export type TransportTrip = { id: string; label: string; direction: Direction; start: number; end: number; startUnknown?: boolean; endUnknown?: boolean;
+  purpose?: string; origin?: string; destination?: string; pickup?: string; mandatoryTime?: boolean };
+export type TransportVehicle = { id: string; label: string; capacity: number; totalSeats?: number; vehicleType?: TransportVehicleType; driverId: string | null; driverName?: string; externalDriverConfirmed?: boolean; rental: boolean; rentalCost: number; rentalQuoteKnown?: boolean; enabled: boolean; tripIds: string[];
+  source?: "private" | "church" | "rental"; rentalCostUnit?: "round-trip" | "one-way" | "day"; rentalDays?: number | null; otherCost?: number | null };
 export type TransportAssignment = { personId: string; tripId: string; vehicleId: string | null };
 export type TransportInput = {
   revision: number; objective: "cost" | "institution"; extraCount: number; extraOutboundTripId: string; extraReturnTripId: string;
@@ -20,6 +28,7 @@ export const entryFor = (person: TransportPerson, direction: Direction) => direc
 const comparable = (value: string) => value.normalize("NFKC").trim().replace(/\s+/g, "").toLowerCase();
 export function resolveTripEntry(trips: TransportTrip[], direction: Direction, value: string): string | null | undefined {
   const normalized = comparable(value);
+  if (normalized === comparable(surveyTripPending)) return undefined;
   if (!normalized || ["개별이동", "왕복개별이동", "자차", "왕복자차"].includes(normalized)) return null;
   const matches = trips.filter((trip) => trip.direction === direction && [trip.label, trip.id].some((name) => comparable(name) === normalized));
   return matches.length === 1 ? matches[0].id : undefined;
@@ -57,6 +66,17 @@ const identifier = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9
 const integer = (value: unknown, min: number, max: number) => Number.isInteger(value) && Number(value) >= min && Number(value) <= max;
 const label = (value: unknown, length = 80) => typeof value === "string" && value.trim().length > 0 && value.length <= length;
 const optionalText = (value: unknown, length: number) => value === undefined || typeof value === "string" && value.length <= length && !value.includes("\u0000");
+const optionalBool = (value: unknown) => value === undefined || typeof value === "boolean";
+
+const participantOverlap = (out: TransportTrip, home: TransportTrip) => !out.endUnknown && !home.startUnknown && out.end > home.start;
+function tripReuseConflict(a: TransportTrip, b: TransportTrip, sameVehicle: boolean) {
+  // Unknown times cannot establish that a driver or vehicle can serve both trips.
+  if (a.startUnknown || a.endUnknown || b.startUnknown || b.endUnknown) return "time-unknown";
+  if (a.start < b.end && b.start < a.end) return "overlap";
+  const [first, second] = a.start <= b.start ? [a, b] : [b, a];
+  if (sameVehicle && first.destination?.trim() && second.origin?.trim() && comparable(first.destination) !== comparable(second.origin)) return "location";
+  return null;
+}
 
 export const transportVehiclePresets = {
   "small-bus": { label: "소형 버스", totalSeats: 25 },
@@ -114,10 +134,15 @@ export function validateTransportInput(value: unknown, { draft = false }: { draf
     const labels = d.trips.filter((trip) => trip.direction === direction && typeof trip.label === "string").map((trip) => comparable(trip.label));
     if (!draft && new Set(labels).size !== labels.length) errors.push("같은 방향에 팀 이름이 중복됩니다.");
   }
-  for (const t of d.trips) if (!label(t.label) || !["outbound", "return"].includes(t.direction) || !integer(t.start, 0, 10080) || !integer(t.end, 1, 10080) || t.start >= t.end) errors.push("이동편 이름·시간 범위를 확인해 주세요.");
+  for (const t of d.trips) {
+    if (!label(t.label) || !["outbound", "return"].includes(t.direction) || !integer(t.start, 0, 10080) || !integer(t.end, 1, 10080) || (!t.startUnknown && !t.endUnknown && t.start >= t.end)) errors.push("이동편 이름·시간 범위를 확인해 주세요.");
+    if (![t.startUnknown, t.endUnknown, t.mandatoryTime].every(optionalBool) || ![t.purpose, t.origin, t.destination, t.pickup].every(value => optionalText(value, 160))) errors.push("이동 목적·장소·운행 조건을 확인해 주세요.");
+    if (!draft && t.mandatoryTime && (t.startUnknown || t.endUnknown) && (d.people.some(p => tripFor(p, t.direction) === t.id) || d.extraCount && [d.extraOutboundTripId, d.extraReturnTripId].includes(t.id))) errors.push(`${t.label}: 필수 운행 시각을 확인해 주세요.`);
+  }
   for (const p of d.people) {
     if (!label(p.name) || !label(p.department, 40) || (p.team !== undefined && p.team !== "" && !label(p.team, 40)) || typeof p.familyId !== "string" || p.familyId.length > 40 || typeof p.companionGroup !== "string" || p.companionGroup.length > 40) errors.push("참가자 이름·소속·팀·동반 묶음을 확인해 주세요.");
     if ([p.outboundCompanionGroup, p.returnCompanionGroup].some((g) => g !== undefined && (typeof g !== "string" || g.length > 40))) errors.push("출발·귀가 동반 묶음을 확인해 주세요.");
+    if (p.gender !== undefined && !isTransportGender(p.gender)) errors.push("참가자 성별 값을 확인해 주세요.");
     for (const dir of ["outbound", "return"] as const) {
       const id = tripFor(p, dir);
       if (id !== null && trips.get(id)?.direction !== dir) errors.push(`${p.name}: 이동편 방향이 올바르지 않습니다.`);
@@ -126,9 +151,10 @@ export function validateTransportInput(value: unknown, { draft = false }: { draf
       else if (!draft && entry) errors.push(`${p.name}: ${dir === "outbound" ? "출발 팀" : "귀가편"} ‘${entry}’을 확인해 주세요.`);
     }
     if (!optionalText(p.movement, 200) || !optionalText(p.lodging, 200) || !optionalText(p.notes, 4000)) errors.push(`${p.name}: 설문 입력 길이를 확인해 주세요.`);
+    if (p.movementPlan !== undefined && !isDirectionalTransportMovement(p.movementPlan)) errors.push(`${p.name}: 방향별 설문 이동 응답을 확인해 주세요.`);
     if (!optionalText(p.roomAssignment, 80)) errors.push(`${p.name}: 방 이름은 80자까지 입력할 수 있습니다.`);
     if (!draft && p.name === transportUnnamedParticipant) errors.push("명단에 이름이 비어 있는 참가자가 있습니다.");
-    if (p.outboundTripId && p.returnTripId && trips.has(p.outboundTripId) && trips.has(p.returnTripId) && trips.get(p.outboundTripId)!.end > trips.get(p.returnTripId)!.start) errors.push(`${p.name}: 출발과 귀가 시간이 겹칩니다.`);
+    if (p.outboundTripId && p.returnTripId && trips.has(p.outboundTripId) && trips.has(p.returnTripId) && participantOverlap(trips.get(p.outboundTripId)!, trips.get(p.returnTripId)!)) errors.push(`${p.name}: 출발과 귀가 시간이 겹칩니다.`);
   }
   for (const v of d.vehicles) {
     if (!label(v.label)) errors.push("차량 이름을 확인해 주세요.");
@@ -136,6 +162,9 @@ export function validateTransportInput(value: unknown, { draft = false }: { draf
     const seatError = transportVehicleSeatError(v, draft);
     if (seatError) errors.push(`${v.label}: ${seatError}`);
     if (typeof v.enabled !== "boolean" || typeof v.rental !== "boolean" || !integer(v.rentalCost, 0, 10_000_000) || (v.rentalQuoteKnown !== undefined && typeof v.rentalQuoteKnown !== "boolean")) errors.push("차량 사용 여부와 대여 견적을 확인해 주세요.");
+    if (v.source !== undefined && (!["private", "church", "rental"].includes(v.source) || (v.source === "rental") !== v.rental)
+      || v.rentalCostUnit !== undefined && !["round-trip", "one-way", "day"].includes(v.rentalCostUnit)
+      || v.rentalDays != null && !integer(v.rentalDays, 1, 30) || v.otherCost != null && !integer(v.otherCost, 0, 10_000_000)) errors.push("차량 출처와 비용 범위를 확인해 주세요.");
     if (!Array.isArray(v.tripIds) || new Set(v.tripIds).size !== v.tripIds.length || v.tripIds.some((id) => !trips.has(id))) errors.push(`${v.label}: 가용 이동편을 확인해 주세요.`);
     if (v.driverId !== null && !people.has(v.driverId)) errors.push(`${v.label}: 운전자 ID를 확인해 주세요.`);
     if (!optionalText(v.driverName, 140)) errors.push(`${v.label}: 운전자 이름을 확인해 주세요.`);
@@ -143,7 +172,7 @@ export function validateTransportInput(value: unknown, { draft = false }: { draf
     if (v.externalDriverConfirmed !== undefined && typeof v.externalDriverConfirmed !== "boolean") errors.push(`${v.label}: 외부 운전자 확인 상태가 올바르지 않습니다.`);
   }
   if (trips.get(d.extraOutboundTripId)?.direction !== "outbound" || trips.get(d.extraReturnTripId)?.direction !== "return") errors.push("가상 인원의 출발·귀가 이동편을 선택해 주세요.");
-  if (d.extraCount > 0 && trips.get(d.extraOutboundTripId) && trips.get(d.extraReturnTripId) && trips.get(d.extraOutboundTripId)!.end > trips.get(d.extraReturnTripId)!.start) errors.push("가상 인원의 출발·귀가 시간이 겹칩니다.");
+  if (d.extraCount > 0 && trips.get(d.extraOutboundTripId) && trips.get(d.extraReturnTripId) && participantOverlap(trips.get(d.extraOutboundTripId)!, trips.get(d.extraReturnTripId)!)) errors.push("가상 인원의 출발·귀가 시간이 겹칩니다.");
   for (const direction of ["outbound", "return"] as const) for (const group of new Set(d.people.map((p) => companionFor(p, direction)).filter(Boolean))) {
     const members = d.people.filter((p) => companionFor(p, direction) === group);
     if (new Set(members.map((p) => tripFor(p, direction))).size > 1) errors.push(`동반 묶음 ${group}: 같은 방향의 이동편이 서로 다릅니다.`);
@@ -220,13 +249,20 @@ export function validateTransportResult(input: TransportInput, result: Transport
     }
     for (const dir of ["outbound", "return"] as const) if ([...tripIds].filter((id) => trips.get(id)?.direction === dir).length > 1) errors.push(`${v.label}: 같은 방향의 여러 이동편에 중복 운행됩니다.`);
     const intervals = [...tripIds].map((id) => trips.get(id)!);
-    if (intervals.some((a, i) => intervals.some((b, j) => i < j && a.start < b.end && b.start < a.end))) errors.push(`${v.label}: 운행 시간이 겹칩니다.`);
+    for (const [index, a] of intervals.entries()) for (const b of intervals.slice(index + 1)) {
+      const conflict = tripReuseConflict(a, b, true);
+      if (conflict === "overlap") errors.push(`${v.label}: 운행 시간이 겹칩니다.`);
+      if (conflict === "time-unknown") errors.push(`${v.label}: 여러 이동편의 운행 시각을 확인해 주세요.`);
+      if (conflict === "location") errors.push(`${v.label}: 이전 도착 장소와 다음 출발 장소가 다릅니다.`);
+    }
   }
   const drivers = input.vehicles.filter((v) => v.driverId && usage.has(v.id));
   for (const a of drivers) for (const b of drivers) if (a.id < b.id && a.driverId === b.driverId) {
     for (const ta of usage.get(a.id)!) for (const tb of usage.get(b.id)!) {
       const x = trips.get(ta)!; const y = trips.get(tb)!;
-      if (x.start < y.end && y.start < x.end) errors.push("운전자가 동시 운행 차량에 중복 배정되었습니다.");
+      const conflict = tripReuseConflict(x, y, false);
+      if (conflict === "overlap") errors.push("운전자가 동시 운행 차량에 중복 배정되었습니다.");
+      if (conflict === "time-unknown") errors.push("같은 운전자의 여러 운행 시각을 확인해 주세요.");
     }
   }
   const actualMissing = input.people.reduce((n, p) => n + (["outbound", "return"] as const).filter((d) => { const tid = tripFor(p, d); return tid && !seen.get(key(p.id, tid))?.vehicleId; }).length, 0);
@@ -256,12 +292,19 @@ export function transportCsv(input: TransportInput, result: TransportResult, dir
   if (!approved) throw new Error("담당자 승인이 필요합니다.");
   const errors = validateTransportResult(input, result);
   if (errors.length) throw new Error(errors.join(" "));
-  const rows: unknown[][] = [["배정버전", "구간", "이동편ID", "이동편", "차량ID", "차량", "참가자ID", "이름", "소속", "가족ID", "상태"]];
+  return transportWorkingCsv(input, result, direction, "확정", input.revision, filter);
+}
+
+export function transportWorkingCsv(input: TransportInput, result: TransportResult, direction: Direction, plan: "초안" | "최적화안" | "확정", version: number, filter = "all"): string {
+  if (result.revision !== input.revision) throw new Error("조회 중인 배정안과 이동 조건의 버전이 다릅니다.");
+  const rows: unknown[][] = [["배정버전", "구간", "이동편ID", "이동편", "차량ID", "차량", "참가자ID", "이름", "소속", "가족ID", "상태", "인원 상태"]];
   for (const p of input.people) {
     const tripId = tripFor(p, direction);
     const a = result.assignments.find((a) => a.personId === p.id && a.tripId === tripId);
     if (filter !== "all" && (filter === "independent" ? tripId !== null : a?.vehicleId !== filter)) continue;
-    rows.push([input.revision, direction === "outbound" ? "출발" : "귀가", tripId ?? "", input.trips.find((t) => t.id === tripId)?.label ?? "개별 이동", a?.vehicleId ?? "", input.vehicles.find((v) => v.id === a?.vehicleId)?.label ?? "개별 이동", p.id, p.name, p.department, p.familyId, "확정"]);
+    const state = entryFor(p, direction) ? "확인 필요" : !tripId ? "개별 이동" : a?.vehicleId ? "탑승" : "미배정";
+    rows.push([version, direction === "outbound" ? "출발" : "귀가", tripId ?? "", input.trips.find((t) => t.id === tripId)?.label ?? state,
+      a?.vehicleId ?? "", input.vehicles.find((v) => v.id === a?.vehicleId)?.label ?? state, p.id, p.name, p.department, p.familyId, plan, state]);
   }
   if (rows.length === 1) throw new Error("선택한 범위에 탑승자가 없습니다.");
   return csvRows(rows);

@@ -12,16 +12,25 @@ export const assistantLengthLabels = {
 
 export const assistantEmojiLabels = {
   off: "사용 안 함",
-  occasional: "가끔 사용",
+  frequency: "사용 빈도 조절",
 } as const;
 
-export type AssistantPreferences = {
+type AssistantStyle = {
   tone: keyof typeof assistantToneLabels;
   length: keyof typeof assistantLengthLabels;
-  emoji: keyof typeof assistantEmojiLabels;
   instructions: string;
   instructionsEnabled: boolean;
 };
+
+export type AssistantPreferences = AssistantStyle & (
+  | { emoji: "off"; emojiFrequency?: never }
+  | { emoji: "frequency"; emojiFrequency: number }
+);
+
+export const defaultAssistantEmojiFrequency = 50;
+export function assistantEmojiIntensity(frequency: number): "minimal" | "occasional" | "frequent" {
+  return frequency < 25 ? "minimal" : frequency < 75 ? "occasional" : "frequent";
+}
 
 export const maxAssistantInstructionsLength = 800;
 export const defaultAssistantPreferences: AssistantPreferences = {
@@ -41,12 +50,26 @@ function hasInstructions(item: Record<string, unknown>): item is Record<string, 
 export function isAssistantPreferences(value: unknown): value is AssistantPreferences {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Record<string, unknown>;
-  return Object.keys(item).length === 5 && hasStyle(item) && hasInstructions(item) &&
-    typeof item.emoji === "string" && Object.hasOwn(assistantEmojiLabels, item.emoji);
+  const count = Object.keys(item).length;
+  return hasStyle(item) && hasInstructions(item) && (
+    item.emoji === "off" && count === 5 && !Object.hasOwn(item, "emojiFrequency") ||
+    item.emoji === "frequency" && count === 6 && typeof item.emojiFrequency === "number" &&
+      Number.isInteger(item.emojiFrequency) && item.emojiFrequency >= 0 && item.emojiFrequency <= 100
+  );
+}
+
+export function parseAssistantPreferences(value: unknown): AssistantPreferences | null {
+  if (isAssistantPreferences(value)) return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as Record<string, unknown>;
+  if (item.emoji !== "occasional" || Object.keys(item).length !== 5 || !hasStyle(item) || !hasInstructions(item)) return null;
+  return { tone: item.tone, length: item.length, instructions: item.instructions, instructionsEnabled: item.instructionsEnabled,
+    emoji: "frequency", emojiFrequency: defaultAssistantEmojiFrequency };
 }
 
 export function normalizeStoredAssistantPreferences(value: unknown): AssistantPreferences {
-  if (isAssistantPreferences(value)) return value;
+  const preferences = parseAssistantPreferences(value);
+  if (preferences) return preferences;
   const item = value as Record<string, unknown> | null;
   if (item && typeof item === "object" && !Array.isArray(item) && hasStyle(item)) {
     const base = { ...defaultAssistantPreferences, tone: item.tone, length: item.length };

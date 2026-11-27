@@ -1,0 +1,150 @@
+.settings-help { container: settings-help / inline-size; min-width: 0; display: grid; gap: 24px; }
+.settings-help :where(h3, h4, p, ul, ol) { margin: 0; }
+.settings-help :where(h3, h4) { font-weight: 700; }
+.settings-help :where(p, li, small) { line-height: 1.6; overflow-wrap: anywhere; }
+.settings-help h3 { font-size: calc(1.125rem * var(--display-scale, 1)); }
+.settings-help h4 { font-size: calc(.9375rem * var(--display-scale, 1)); }
+.settings-help p, .settings-help small { color: hsl(var(--muted-foreground)); }
+.settings-help button { min-width: 0; overflow-wrap: anywhere; }
+.settings-help :where(button, a, summary, select, h3[tabindex]):focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 3px;
+}
+.settings-help-start {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  padding: 14px 0 18px;
+  border-block-end: 1px solid hsl(var(--border));
+}
+.settings-help-start > div { flex: 1 1 200px; min-width: 0; }
+.settings-help-start p { margin-top: 4px; }
+.settings-help-start-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--panel));
+  font-weight: 650;
+  cursor: pointer;
+}
+.settings-help-section { display: grid; gap: 12px; min-width: 0; }
+.settings-help-section > h3 { display: flex; align-items: center; gap: 8px; }
+.settings-help-section > h3 svg { color: hsl(var(--primary)); }
+.settings-help-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 10px;
+  padding: 0;
+  list-style: none;
+}
+.settings-help-grid li { min-width: 0; }
+.settings-help-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 90px;
+  height: 100%;
+  padding: 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--panel));
+  text-align: start;
+  cursor: pointer;
+}
+.settings-help-card:hover, .settings-help-start-action:hover { border-color: hsl(var(--primary) / .55); background: hsl(var(--selection)); }
+.settings-help-card strong, .settings-help-card small { display: block; }
+.settings-help-card small { margin-top: 2px; font-size: calc(.8125rem * var(--display-scale, 1)); }
+.settings-help-card > svg { color: hsl(var(--muted-foreground)); }
+.settings-help-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  inline-size: 40px;
+  block-size: 40px;
+  border-radius: 7px;
+  background: hsl(var(--selection));
+  color: hsl(var(--primary));
+}
+.settings-help-icon:is([data-kind="prepare"], [data-kind="survey"]) { background: hsl(160 58% 42% / .13); color: #086450; }
+.settings-help-icon:is([data-kind="materials"], [data-kind="transport"]) { background: hsl(39 85% 53% / .16); color: #86520a; }
+.dark .settings-help-icon:is([data-kind="prepare"], [data-kind="survey"]) { color: #70d9bd; }
+.dark .settings-help-icon:is([data-kind="materials"], [data-kind="transport"]) { color: #f2bd6d; }
+.settings-help-faq { border-block: 1px solid hsl(var(--border)); }
+.settings-help-faq details + details { border-top: 1px solid hsl(var(--border)); }
+.settings-help-faq summary { padding: 11px 4px; cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+.settings-help-faq p { padding: 0 4px 12px; }
+.settings-help-reader { display: grid; gap: 12px; min-width: 0; }
+.settings-help-reader-top { padding-block-end: 8px; border-block-end: 1px solid hsl(var(--border)); }
+.settings-help-reader-body { display: grid; gap: 18px; align-items: start; min-width: 0; }
+.settings-help-toc { display: none; }
+.settings-help-toc ul { display: grid; gap: 4px; padding: 0; list-style: none; }
+.settings-help-toc h4 { margin-bottom: 6px; }
+.settings-help-toc button {
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  text-align: start;
+  font-size: calc(.875rem * var(--display-scale, 1));
+  cursor: pointer;
+}
+.settings-help-toc button:hover, .settings-help-toc button[aria-current] { background: hsl(var(--selection)); }
+.settings-help-toc button[aria-current] { color: hsl(var(--primary)); font-weight: 700; }
+.settings-help-picker { display: grid; gap: 5px; min-width: 0; }
+.settings-help-picker label { font-weight: 650; }
+.settings-help-picker select {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding: 7px 9px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  color: hsl(var(--foreground));
+  background: hsl(var(--panel));
+}
+.settings-help-article { display: grid; gap: 16px; min-width: 0; }
+.settings-help-article header p { margin-top: 3px; }
+.settings-help-detail-section { display: grid; gap: 8px; padding-top: 13px; border-top: 1px solid hsl(var(--border)); }
+.settings-help-steps { padding-inline-start: 1.4em; list-style: decimal; }
+.settings-help-steps li { padding-inline-start: 4px; }
+.settings-help-steps li + li { margin-top: 8px; }
+.settings-help-steps li::marker { color: hsl(var(--primary)); font-weight: 700; }
+.settings-help-examples { display: grid; gap: 6px; padding: 0; list-style: none; }
+.settings-help-examples li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--surface-input));
+}
+.settings-help-examples p { color: hsl(var(--foreground)); }
+.settings-help-copy {
+  display: grid;
+  place-items: center;
+  inline-size: 38px;
+  block-size: 38px;
+  border-radius: 5px;
+  color: hsl(var(--primary));
+  cursor: pointer;
+}
+.settings-help-copy:hover { background: hsl(var(--selection)); }
+.settings-help-actions, .settings-help-report-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.settings-help .support-email { display: grid; gap: 8px; min-width: 0; }
+.settings-help .support-email-address { color: hsl(var(--foreground)); font-weight: 650; }
+.settings-help-notice, .settings-help .support-email-notice { min-height: 1.5em; font-size: .875rem; }
+@container settings-help (min-width: 660px) {
+  .settings-help-reader-body { grid-template-columns: minmax(150px, 200px) minmax(0, 1fr); }
+  .settings-help-toc { display: block; padding-inline-end: 12px; border-inline-end: 1px solid hsl(var(--border)); }
+  .settings-help-picker { display: none; }
+}

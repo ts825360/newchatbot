@@ -64,8 +64,8 @@ export function PrototypeApp() {
     [state.activeRoomId, state.rooms]
   );
   const { loaded: calendarLoaded, events: activeEvents, error: calendarError, saveEvent: persistEvent, deleteEvent: removeEvent } = usePreparationEvents(state.activeRoomId, state.events[state.activeRoomId] ?? []);
-  const { loaded: checklistLoaded, checklist: activeChecklist, error: materialsError, updateChecklist } = useRoomMaterials(state.activeRoomId, [], privateScope);
-  const { risks: activeRisks, error: riskError, resolve: persistRiskResolution } = useRoomRisks(state.activeRoomId, [], privateScope);
+  const { loaded: checklistLoaded, checklist: activeChecklist, documents: activeDocuments, error: materialsError, updateChecklist } = useRoomMaterials(state.activeRoomId, [], privateScope);
+  const { risks: activeRisks, error: riskError, reviewed: risksReviewed, resolve: persistRiskResolution } = useRoomRisks(state.activeRoomId, [], privateScope);
   const activeMessages = useMemo(() => isBackendConnected() ? [] : state.chatByRoom[state.activeRoomId] ?? [], [state.chatByRoom, state.activeRoomId]);
   const canCreateEvents = state.profile.permissions.includes("createEvent");
   const canEditEvents = state.profile.permissions.includes("editEvent");
@@ -350,7 +350,9 @@ export function PrototypeApp() {
     );
   }
 
-  const renderTools = (mode: "calendar" | "prepare", scope?: ConversationScope, onOpenTimetable?: () => void) => {
+  const canPreviewCalendar = state.profile.permissions.includes("viewCalendar");
+  const canReadChecklist = state.profile.permissions.includes("viewChecklist");
+  const renderTools: React.ComponentProps<typeof EventWorkspace>["renderTools"] = (mode, scope, onOpenTimetable, onAskChecklist, records) => {
     if (mode === "prepare" && (!scope || scopeId(scope) !== privateIdentity)) return null;
     const error = mode === "calendar" ? calendarError : materialsError || riskError;
     return (
@@ -360,10 +362,14 @@ export function PrototypeApp() {
       mode={mode}
       scope={mode === "prepare" ? scope : undefined}
       onOpenTimetable={onOpenTimetable}
+      onOpenPreparationRecord={records?.open}
+      preparationState={mode === "prepare" && records ? { active: records.active, calendarState: !canPreviewCalendar ? "restricted" : calendarError ? "error" : calendarLoaded ? "ready" : "loading",
+        documentsState: materialsError ? "error" : checklistLoaded ? "ready" : "loading", documentCount: activeDocuments.filter(doc => doc.kind !== "sample" && (doc.kind === "file" || doc.id !== "sample-minutes")).length,
+        canReadChecklist, canOpenProposals: true, riskReviewed: risksReviewed, riskError: !!riskError } : undefined}
       room={activeRoom}
       events={activeEvents}
-      checklist={mode === "prepare" ? activeChecklist : []}
-      risks={mode === "prepare" ? activeRisks : []}
+      checklist={mode === "prepare" && canReadChecklist ? activeChecklist : []}
+      risks={mode === "prepare" && canReadChecklist ? activeRisks : []}
       onOpenEvent={openExistingEvent}
       onAddEvent={canCreateEvents ? openAddEvent : undefined}
       canEditEvents={canEditEvents}
@@ -387,12 +393,12 @@ export function PrototypeApp() {
           setChecklistEditor({ ...item });
         }
       }}
+      onAskChecklist={onAskChecklist}
       onResolveRisk={resolveRisk}
     />
     </div>
   ); };
 
-  const canPreviewCalendar = state.profile.permissions.includes("viewCalendar");
   const canOpenOverview = canPreviewCalendar || (state.profile.permissions.includes("chat") && state.profile.permissions.includes("viewChecklist"));
   const overview = (): WorkspaceOverviewData => ({
     calendar: !canPreviewCalendar ? undefined : calendarError ? { state: "error" } : calendarLoaded ? { state: "ready", items: activeEvents } : { state: "loading" },

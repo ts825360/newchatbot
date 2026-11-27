@@ -4,12 +4,13 @@ import type { ProposalDraft } from "./preparation-store";
 import { isTimetable, timetableMorning, type Timetable } from "./timetable";
 import type { ChatMessage } from "./types";
 import { validDate } from "./room-timing";
+import { isSurveyDraft, type SurveyDraft } from "./chat-survey-draft";
 
 export type ChatWorkProposal =
   | { kind: "calendar"; title: string; date: string; time: string; inferredYear: boolean }
   | { kind: "checklist"; confirmed: string[]; items: string[] }
   | { kind: "timetable"; plan: Timetable }
-  | { kind: "survey"; title: string };
+  | { kind: "survey"; title: string; draft?: SurveyDraft };
 
 const isTitle = (value: unknown, limit = 120): value is string => typeof value === "string" && value.length <= limit && !!value.trim() && !/[\p{Cc}\u2028\u2029]/u.test(value);
 const isList = (value: unknown): value is string[] => Array.isArray(value) && value.length <= 8 && new Set(value).size === value.length && value.every(item => isTitle(item));
@@ -23,7 +24,7 @@ export function isChatWorkProposal(value: unknown): value is ChatWorkProposal {
   if (draft.kind === "checklist") return fields("confirmed", "items") && isList(draft.confirmed) && isList(draft.items) && !draft.items.some(item => (draft.confirmed as string[]).includes(item));
   if (draft.kind === "timetable") return fields("plan") && isTimetable(draft.plan) && draft.plan.entries.length > 0 && draft.plan.entries.length <= 140
     && draft.plan.entries.every(entry => isTitle(entry.title) && entry.start >= timetableMorning);
-  return draft.kind === "survey" && fields("title") && isTitle(draft.title, 100);
+  return draft.kind === "survey" && isTitle(draft.title, 100) && (fields("title") || fields("title", "draft") && isSurveyDraft(draft.draft) && draft.draft.title === draft.title);
 }
 
 const calendarMarker = /(?:공용|공동|공유)\s*(?:캘린더|달력)(?:\s*(?:에|으로))?/u;
@@ -34,7 +35,8 @@ export function localWorkIntent(raw: string): "calendar" | "survey" | "timetable
   const message = raw.normalize("NFKC").trim();
   if (!message || message.length > 500 || /방법|사용법|프롬프트|(?:만들|추가|등록|적|넣)(?:하)?지\s*(?:말|마|않)/.test(message)) return null;
   if (calendarMarker.test(message) && commandTail.test(message)) return "calendar";
-  if (/(?:설문\s*(?:폼|지|양식)|(?:구글|Google)\s*폼|참가\s*설문)/i.test(message) && /만들|작성|생성|초안|준비해/.test(message)) return "survey";
+  if (/^(?:우리\s+)?(?:(?:구글|Google)\s*폼(?:에)?\s+(?:새\s+)?설문|참가\s*설문|설문\s*(?:폼|지|양식))(?:을|를)?\s*(?:만들어|작성해|생성해|준비해)\s*(?:줘(?:요)?|주세요)[.!?]*$/i.test(message)
+    || /설문|폼/.test(message) && /만들|작성|생성/.test(message) && requestsAnonymousSurvey(message)) return "survey";
   if ((/타임\s*테이블/.test(message) || /시간표/.test(message) && !/기차|열차|지하철|버스|\b[KS]TX\b|\bSRT\b/i.test(message))
     && /만들|작성|제작|생성|짜\s*(?:줘|주)|초안|구성해/.test(message)) return "timetable";
   if (/(?:우리(?:\s*행사)?|참가자|참석자|참가\s*인원|참석\s*인원|총\s*인원|총\s*몇\s*명)/.test(message)

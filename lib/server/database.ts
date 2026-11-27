@@ -37,6 +37,19 @@ CREATE TABLE IF NOT EXISTS records(
  data_json TEXT NOT NULL CHECK(json_valid(data_json)), revision INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL
 ) STRICT;
 CREATE INDEX IF NOT EXISTS records_by_owner_room ON records(owner_id,room_id);
+CREATE TABLE IF NOT EXISTS user_notifications(
+ id INTEGER PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('calendar','room')),
+ created_at TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS user_notifications_recent ON user_notifications(user_id,id DESC);
+CREATE TABLE IF NOT EXISTS chat_work_versions(
+ owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+ conversation_id TEXT NOT NULL, work_id TEXT NOT NULL, version INTEGER NOT NULL CHECK(version BETWEEN 1 AND 1000),
+ kind TEXT NOT NULL, source_message_id TEXT NOT NULL, data_json TEXT NOT NULL CHECK(json_valid(data_json)), created_at TEXT NOT NULL,
+ PRIMARY KEY(owner_id,room_id,conversation_id,work_id,version)
+) STRICT;
 CREATE TABLE IF NOT EXISTS issue_reports(
  id TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
  request_id TEXT NOT NULL, reporter TEXT NOT NULL, category TEXT NOT NULL,
@@ -132,7 +145,7 @@ export function getDatabase(): DatabaseSync {
   if (!db) { db = createDatabase(filename); cache.set(filename, db); checkedSchema.add(db); }
   else if (!checkedSchema.has(db)) {
     // Development reloads can reuse a connection that predates the new table.
-    if (Number(db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type='table' AND name IN ('conversation_files','google_forms_auth','google_form_draft_auth','google_form_drafts','retreat_report_venues','daily_devotions')").get()?.n) !== 6) db.exec(schema);
+    if (Number(db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type='table' AND name IN ('conversation_files','google_forms_auth','google_form_draft_auth','google_form_drafts','retreat_report_venues','daily_devotions','chat_work_versions')").get()?.n) !== 7) db.exec(schema);
     checkedSchema.add(db);
   }
   return db;

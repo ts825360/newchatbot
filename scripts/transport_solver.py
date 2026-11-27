@@ -1,11 +1,28 @@
 """Bounded local CP-SAT transport allocation. JSON stdin/stdout only."""
 import json
 import sys
+import unicodedata
 from ortools.sat.python import cp_model
 
 
 def companion_for(person, direction):
     return person.get(direction + "CompanionGroup", person["companionGroup"])
+
+
+def participant_overlap(first, second):
+    return not first.get("endUnknown") and not second.get("startUnknown") and first["end"] > second["start"]
+
+
+def reuse_conflicts(first, second, same_vehicle):
+    if first.get("startUnknown") or first.get("endUnknown") or second.get("startUnknown") or second.get("endUnknown"):
+        return True
+    if first["start"] < second["end"] and second["start"] < first["end"]:
+        return True
+    if first["start"] > second["start"]:
+        first, second = second, first
+    destination, origin = first.get("destination", "").strip(), second.get("origin", "").strip()
+    normalize = lambda value: "".join(unicodedata.normalize("NFKC", value).split()).lower()
+    return same_vehicle and destination and origin and normalize(destination) != normalize(origin)
 
 
 def validate(data):
@@ -32,7 +49,12 @@ def validate(data):
     trips = {t["id"]: t for t in data["trips"]}
     vehicles = {v["id"]: v for v in data["vehicles"]}
     for t in trips.values():
-        require(text(t.get("label")) and t.get("direction") in ["outbound", "return"] and integer(t.get("start"), 0, 10080) and integer(t.get("end"), 1, 10080) and t["start"] < t["end"], "이동편 시간·방향을 확인해 주세요.")
+        require(text(t.get("label")) and t.get("direction") in ["outbound", "return"] and integer(t.get("start"), 0, 10080) and integer(t.get("end"), 1, 10080)
+                and (t.get("startUnknown") or t.get("endUnknown") or t["start"] < t["end"]), "이동편 시간·방향을 확인해 주세요.")
+        require(all(type(t.get(k, False)) is bool for k in ["startUnknown", "endUnknown", "mandatoryTime"]), "미정 시각 설정을 확인해 주세요.")
+        require(all(isinstance(t.get(k, ""), str) and len(t.get(k, "")) <= 160 for k in ["purpose", "origin", "destination", "pickup"]), "이동 장소를 확인해 주세요.")
+        required = any(p.get(t["direction"] + "TripId") == t["id"] for p in people.values()) or data["extraCount"] and t["id"] in [data.get("extraOutboundTripId"), data.get("extraReturnTripId")]
+        require(not (required and t.get("mandatoryTime") and (t.get("startUnknown") or t.get("endUnknown"))), "필수 운행 시각을 확인해 주세요.")
     for p in people.values():
         require(text(p.get("name")) and text(p.get("department"), 40), "이름·소속을 확인해 주세요.")
         require(p.get("team", "") == "" or text(p.get("team"), 40), "팀 이름을 확인해 주세요.")
@@ -43,7 +65,7 @@ def validate(data):
             tid = p[direction + "TripId"]
             require(tid is None or (isinstance(tid, str) and tid in trips and trips[tid]["direction"] == direction), "참가자 이동편 방향을 확인해 주세요.")
         if p["outboundTripId"] and p["returnTripId"]:
-            require(trips[p["outboundTripId"]]["end"] <= trips[p["returnTripId"]]["start"], "참가자의 출발·귀가 시간이 겹칩니다.")
+            require(not participant_overlap(trips[p["outboundTripId"]], trips[p["returnTripId"]]), "참가자의 출발·귀가 시간이 겹칩니다.")
     for v in vehicles.values():
         require(text(v.get("label")) and integer(v.get("capacity"), 1, 60), "차량 좌석을 확인해 주세요.")
         if "totalSeats" in v or "vehicleType" in v:
@@ -57,7 +79,7 @@ def validate(data):
         tid = data.get("extra" + direction.capitalize() + "TripId")
         require(isinstance(tid, str) and tid in trips and trips[tid]["direction"] == direction, "가상 인원의 이동편을 확인해 주세요.")
     if data["extraCount"]:
-        require(trips[data["extraOutboundTripId"]]["end"] <= trips[data["extraReturnTripId"]]["start"], "가상 인원의 출발·귀가 시간이 겹칩니다.")
+        require(not participant_overlap(trips[data["extraOutboundTripId"]], trips[data["extraReturnTripId"]]), "가상 인원의 출발·귀가 시간이 겹칩니다.")
     for direction in ["outbound", "return"]:
         for group in {companion_for(p, direction) for p in people.values() if companion_for(p, direction)}:
             members = [p for p in people.values() if companion_for(p, direction) == group]
@@ -116,9 +138,8 @@ def solve(data):
     uses = list(used.items())
     for i, ((ta, va), ya) in enumerate(uses):
         for (tb, vb), yb in uses[i + 1:]:
-            overlap = trips[ta]["start"] < trips[tb]["end"] and trips[tb]["start"] < trips[ta]["end"]
             same_driver = vehicles[va]["driverId"] is not None and vehicles[va]["driverId"] == vehicles[vb]["driverId"]
-            if overlap and (va == vb or same_driver):
+            if (va == vb or same_driver) and reuse_conflicts(trips[ta], trips[tb], va == vb):
                 model.add(ya + yb <= 1)
     for tid in trips:
         groups = {}
@@ -151,11 +172,18 @@ def solve(data):
                         splits.append(g)
     # Optimize actual coverage and virtual coverage before considering preferences/cost.
     rentals = {vid: v for vid, v in vehicles.items() if v["rental"] and v["enabled"] and v["tripIds"]}
-    quotes_known = all(v.get("rentalQuoteKnown", v["rentalCost"] > 0) for v in rentals.values())
+    quotes_known = all(v.get("rentalQuoteKnown", v["rentalCost"] > 0)
+                       and (v.get("rentalCostUnit") != "day" or integer(v.get("rentalDays"), 1, 30)) for v in rentals.values())
     # Missing quotes cannot become cheaper than recorded prices.
     priced = rentals if quotes_known else {}
-    cost = sum(v["rentalCost"] * enabled[vid] for vid, v in priced.items())
-    cost_cap = sum(v["rentalCost"] for v in priced.values())
+    cost = 0
+    cost_cap = 0
+    for vid, v in priced.items():
+        unit = v.get("rentalCostUnit")
+        usage = sum(y for (_, car), y in used.items() if car == vid) if unit == "one-way" else enabled[vid]
+        rate = v["rentalCost"] * (v["rentalDays"] if unit == "day" else 1)
+        cost += rate * usage
+        cost_cap += rate * (2 if unit == "one-way" else 1)
     tie_cap = len(demands) + len(vehicles) + 1
     secondary = cost * tie_cap + sum(changes) + sum(enabled.values())
     secondary_cap = (cost_cap + 1) * tie_cap

@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Clock3, ExternalLink, List, ListChecks, Pencil, Plus, RefreshCw } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Clock3, ExternalLink, List, ListChecks, MessageSquare, Pencil, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { buildCalendarMonth, fromMonthInputValue, shiftCalendarMonth, toMonthInputValue } from "@/lib/calendar-month";
 import { calendarStatusDisplay, normalizeCalendarStatus } from "@/lib/calendar-status";
@@ -8,8 +8,10 @@ import { normalizeCalendarTime, storedCalendarHours } from "@/lib/calendar-time"
 import type { CalendarEvent, ChecklistItem, EventRoom, RiskAlert } from "@/lib/types";
 import { Badge, Button, cn } from "./ui";
 import { RoomDialog } from "./room-dialog";
-import { WorkspacePreparationRecords } from "./workspace-preparation-records";
+import { WorkspacePreparationRecords, type PreparationReadState, type PreparationRecordTarget } from "./workspace-preparation-records";
 import type { ConversationScope } from "@/lib/conversation-scope";
+import { roomTiming, validDate } from "@/lib/room-timing";
+import "./workspace-preparation.css";
 
 const checklistStatusCopy: Record<ChecklistItem["status"], { label: string; tone: "green" | "amber" | "blue" | "red" }> = {
   done: { label: "완료", tone: "green" },
@@ -28,6 +30,8 @@ export function SharedPanel({
   mode = "all",
   scope,
   onOpenTimetable,
+  onOpenPreparationRecord,
+  preparationState,
   room,
   events,
   checklist,
@@ -40,11 +44,14 @@ export function SharedPanel({
   onToggleChecklist,
   onOpenChecklist,
   onAddChecklist,
+  onAskChecklist,
   onResolveRisk
 }: {
   mode?: "all" | "calendar" | "prepare";
   scope?: ConversationScope;
   onOpenTimetable?: () => void;
+  onOpenPreparationRecord?: (target: PreparationRecordTarget) => void;
+  preparationState?: { active: boolean; calendarState: PreparationReadState; documentsState: PreparationReadState; documentCount: number; canOpenProposals: boolean; canReadChecklist: boolean; riskError: boolean; riskReviewed: boolean };
   room: EventRoom;
   events: CalendarEvent[];
   checklist: ChecklistItem[];
@@ -57,9 +64,17 @@ export function SharedPanel({
   onToggleChecklist: (itemId: string) => void;
   onOpenChecklist: (itemId: string) => void;
   onAddChecklist?: () => void;
+  onAskChecklist?: (item: ChecklistItem) => void;
   onResolveRisk: (riskId: string) => void;
 }) {
   const visibleRisks = risks.filter((risk) => !risk.resolved);
+  const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const timing = roomTiming({ date: room.date ?? null, endDate: room.endDate }).key;
+  const actionable = mode === "prepare" && preparationState?.canReadChecklist !== false && timing !== "past"
+    ? checklist.filter(item => item.status === "risk" || (item.status !== "done" && validDate(item.due) && item.due < today)) : [];
+  const outstanding = visibleRisks.length > 0 || actionable.length > 0;
+  const riskLabel = outstanding ? "확인 필요" : preparationState?.riskError ? "읽기 실패"
+    : preparationState?.canReadChecklist === false ? "권한 없음" : preparationState?.riskReviewed || risks.length > 0 ? "기록된 경고 없음" : "미검토";
   const [showEventList, setShowEventList] = useState(false);
   const listedEvents = useMemo(() => [...events].sort((a, b) => b.date.localeCompare(a.date) || (normalizeCalendarTime(a.time) ?? "").localeCompare(normalizeCalendarTime(b.time) ?? "")), [events]);
   const [calendarPointer, setCalendarPointer] = useState(() => {
@@ -86,7 +101,7 @@ export function SharedPanel({
   }, [calendarMonth, events]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-panel">
+    <div className={mode === "calendar" ? "workspace-calendar-surface" : "flex h-full min-h-0 flex-col bg-panel"}>
       {mode === "all" ? (
       <header className="border-b border-border p-4">
         <div className="flex items-start justify-between gap-3">
@@ -119,7 +134,7 @@ export function SharedPanel({
       </header>
       ) : null}
 
-      {mode === "calendar" && <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-4">
+      {mode === "calendar" && <div className="workspace-calendar-actions">
         <p className="text-xs text-muted-foreground">행사 기간 {room.dateLabel}</p>
         <div className="flex flex-wrap gap-2">
           <Button type="button" variant="outline" onClick={() => setShowEventList(true)}><List size={16} aria-hidden="true" />일정 목록</Button>
@@ -133,35 +148,35 @@ export function SharedPanel({
         </div>
       </RoomDialog>}
 
-      <div className="min-h-0 flex-1 overflow-auto p-4">
-        {mode === "prepare" && scope && <WorkspacePreparationRecords scope={scope} room={room} events={events} onOpenTimetable={onOpenTimetable} />}
-        {mode !== "calendar" && <section>
+      <div className={mode === "calendar" ? "workspace-calendar-body" : mode === "prepare" ? "workspace-preparation-scroll" : "min-h-0 flex-1 overflow-auto p-4"}>
+        <div className={mode === "prepare" ? "workspace-preparation-layout" : undefined}>
+        {mode === "prepare" && scope && <WorkspacePreparationRecords scope={scope} room={room} events={events} {...preparationState}
+          transportState={preparationState?.canReadChecklist === false ? "restricted" : "ready"}
+          onOpen={onOpenPreparationRecord ?? (onOpenTimetable ? target => { if (target === "timetable") onOpenTimetable(); } : undefined)} />}
+        {mode !== "calendar" && <section className={mode === "prepare" ? "workspace-preparation-risks" : undefined} aria-label="주의할 항목">
           <div className="mb-3 flex items-center justify-between gap-2">
             <h3 className="flex items-center gap-2 text-sm font-semibold">
               <AlertTriangle size={17} className="text-amber-500" />
               주의할 항목
             </h3>
-            <Badge tone={visibleRisks.length ? "red" : "green"}>{visibleRisks.length ? "확인 필요" : "정상"}</Badge>
+            <Badge tone={outstanding ? "red" : preparationState?.riskError ? "amber" : "neutral"}>{riskLabel}</Badge>
           </div>
           <div className="grid gap-2">
-            {visibleRisks.length ? (
+            {visibleRisks.length > 0 && (
               visibleRisks.map((risk) => (
                 <div key={risk.id} className="rounded-md border border-rose-200 bg-rose-50 p-3 text-sm dark:border-rose-500/25 dark:bg-rose-500/10">
                   <p className="font-semibold text-rose-800 dark:text-rose-200">{risk.title}</p>
                   <p className="mt-1 text-rose-700/80 dark:text-rose-100/80">{risk.detail}</p>
                   {canEditChecklist && <div className="mt-3 flex gap-2">
-                    <Button className="h-8" type="button" variant="outline">
-                      {risk.action}
-                    </Button>
                     <Button className="h-8" type="button" variant="ghost" onClick={() => onResolveRisk(risk.id)}>
                       완료 처리
                     </Button>
                   </div>}
                 </div>
               ))
-            ) : (
-              <div className="rounded-md border border-border bg-muted/50 p-3 text-sm text-muted-foreground">현재 표시할 누락 위험이 없습니다.</div>
             )}
+            {actionable.map(item => <div key={item.id} className="preparation-risk-item"><strong>{item.title}</strong><span>{item.status === "risk" ? "누락 위험으로 표시된 준비 업무" : `마감일 ${item.due} 경과`}</span></div>)}
+            {!outstanding && <p className="workspace-preparation-caption">{riskLabel === "미검토" ? "아직 준비 위험 검토 기록이 없습니다." : riskLabel === "기록된 경고 없음" ? "현재 미해결로 기록된 경고가 없습니다." : riskLabel === "읽기 실패" ? "저장된 검토 기록을 불러오지 못했습니다." : "주의할 항목을 볼 권한이 없습니다."}</p>}
           </div>
         </section>}
 
@@ -182,7 +197,7 @@ export function SharedPanel({
           />
         </section>}
 
-        {mode !== "calendar" && <section className="mt-6">
+        {mode !== "calendar" && <section className={mode === "prepare" ? "workspace-preparation-tasks" : "mt-6"} aria-label="준비 체크리스트">
           <div className="mb-3 flex items-center justify-between gap-2">
             <h3 className="flex items-center gap-2 text-sm font-semibold">
               <ListChecks size={17} className="text-primary" />
@@ -219,18 +234,18 @@ export function SharedPanel({
                       {item.status === "done" ? <CheckCircle2 size={15} /> : null}
                     </button>}
                     {canEditChecklist
-                      ? <button className="min-w-0 flex-1 text-left" type="button" onClick={() => onOpenChecklist(item.id)}>{details}</button>
+                      ? <button className="min-w-0 flex-1 text-left" type="button" aria-label={`${item.title} 수정`} onClick={() => onOpenChecklist(item.id)}>{details}</button>
                       : <div className="min-w-0 flex-1">{details}{item.memo && <p className="mt-1 whitespace-pre-wrap break-words text-xs">{item.memo}</p>}</div>}
-                    {canEditChecklist && <button type="button" className="workspace-icon-button" aria-label={`${item.title} 수정`} title="항목 수정" onClick={() => onOpenChecklist(item.id)}><Pencil size={16} /></button>}
+                    {onAskChecklist && <button type="button" className="workspace-icon-button shrink-0" aria-label={`${item.title} AI 작업 요청`} title="AI 작업 요청을 채팅에 작성" onClick={() => onAskChecklist(item)}><MessageSquare size={16} aria-hidden="true" /></button>}
                   </div>
                 </div>
               );
             })}
-            {!checklist.length && <p className="text-sm text-muted-foreground">준비 항목이 없습니다.</p>}
+            {!checklist.length && <p className="text-sm text-muted-foreground">{preparationState?.canReadChecklist === false ? "준비 항목을 볼 권한이 없습니다." : "준비 항목이 없습니다."}</p>}
           </div>
         </section>}
 
-        {mode !== "calendar" && <section className="mt-6">
+        {mode === "all" && <section className="mt-6">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold">
             <Clock3 size={17} className="text-primary" />
             최근 공동 변경
@@ -260,6 +275,7 @@ export function SharedPanel({
             );})}
           </div>
         </section>}
+        </div>
       </div>
     </div>
   );
@@ -321,15 +337,7 @@ function MonthlyCalendar({
   const selectedEvents = monthEvents.filter(event => event.date === selectedDate);
   return (
     <div className="workspace-calendar-month">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 className="flex items-center gap-2 text-sm font-semibold">
-            <CalendarDays size={17} className="text-primary" />
-            공동 캘린더
-          </h3>
-          <p className="mt-1 text-xl font-semibold">{calendarMonth.label}</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-1">
+      <div className="workspace-calendar-month-toolbar" role="group" aria-label="달력 이동">
           <Button className="h-8 w-8 px-0" type="button" variant="ghost" onClick={onPreviousMonth} aria-label="이전 달">
             <ChevronLeft size={17} />
           </Button>
@@ -350,9 +358,8 @@ function MonthlyCalendar({
           {onRefresh && <Button className="h-8 w-8 shrink-0 px-0" type="button" variant="ghost" onClick={() => void refresh()} disabled={refreshState === "loading"} aria-label="캘린더 새로고침" title="캘린더 새로고침">
             <RefreshCw size={15} className={refreshState === "loading" ? "motion-safe:animate-spin" : ""} aria-hidden="true" />
           </Button>}
-        </div>
       </div>
-      {onRefresh && <p className={cn("mb-2 min-h-4 text-xs", refreshState === "failed" ? "text-danger" : "text-muted-foreground")} role="status">
+      {onRefresh && <p className={cn("workspace-calendar-refresh-state text-xs", refreshState === "failed" ? "text-danger" : "text-muted-foreground")} role="status">
         {refreshState === "loading" ? "새로고침 중" : refreshState === "done" ? "새로고침됨" : refreshState === "failed" ? "새로고침 실패. 다시 시도해 주세요." : ""}
       </p>}
 

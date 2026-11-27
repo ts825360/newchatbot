@@ -17,12 +17,13 @@ function validEditorUrl(value: unknown): value is string {
   return typeof value === "string" && /^https:\/\/docs\.google\.com\/forms\/d\/[A-Za-z0-9_-]{8,128}\/edit$/.test(value);
 }
 
-export function GoogleFormDraftActions({ scope, onUseEditorUrl, showConsent = true, initialTitle = "수련회 참가 설문", initiallyExpanded = false }: {
+export function GoogleFormDraftActions({ scope, onUseEditorUrl, showConsent = true, initialTitle = "수련회 참가 설문", initiallyExpanded = false, work }: {
   showConsent?: boolean;
   scope?: { roomId: string; conversationId: string };
   onUseEditorUrl?: (url: string) => void;
   initialTitle?: string;
   initiallyExpanded?: boolean;
+  work?: { workId: string; version: number };
 }) {
   const manages = !scope;
   const panelId = useId();
@@ -75,7 +76,7 @@ export function GoogleFormDraftActions({ scope, onUseEditorUrl, showConsent = tr
     setBusy("create"); setEditorUrl(""); setError("");
     try {
       if (scope) await flushBackendWrites();
-      const result = await post({ action: "create", title: title.trim(), ...scope });
+      const result = await post(work ? { action: "create-version", ...work, ...scope } : { action: "create", title: title.trim(), ...scope });
       if (!validEditorUrl(result?.editorUrl)) throw new Error("설문 편집 주소를 확인하지 못했습니다.");
       setEditorUrl(result.editorUrl);
       if (typeof result.warning === "string" && result.warning) setError(result.warning);
@@ -119,11 +120,11 @@ export function GoogleFormDraftActions({ scope, onUseEditorUrl, showConsent = tr
       {expanded && status?.connected && <form className="grid w-full min-w-0 gap-2 rounded-md border border-border p-3" onSubmit={(event) => void create(event)}>
         <label className="grid min-w-0 gap-1 text-sm font-medium">설문 제목
           <input type="text" className="w-full min-w-0 rounded-md border border-border bg-panel px-3 py-2" required maxLength={100} value={title} disabled={!!busy}
-            onChange={(event) => { setTitle(event.target.value); setEditorUrl(""); setError(""); }} />
+            readOnly={!!work} onChange={(event) => { setTitle(event.target.value); setEditorUrl(""); setError(""); }} />
         </label>
-        <p className="text-xs text-muted-foreground">새 초안은 게시하지 않습니다. 같은 제목의 기존 설문은 Google에서 게시 상태를 확인해 주세요.</p>
+        <p className="text-xs text-muted-foreground">{work ? `검토 버전 ${work.version}의 문항 그대로 Google Forms에 미게시 초안을 만듭니다.` : "새 초안은 게시하지 않습니다. 같은 제목의 기존 설문은 Google에서 게시 상태를 확인해 주세요."}</p>
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="submit" disabled={!!busy || !title.trim()}><FilePlus2 size={14} aria-hidden="true" />{busy === "create" ? "초안 생성 중" : "초안 생성"}</Button>
+          <Button type="submit" disabled={!!busy || !title.trim()}><FilePlus2 size={14} aria-hidden="true" />{busy === "create" ? "초안 생성 중" : work ? "승인하고 Google Forms에 생성" : "초안 생성"}</Button>
           {editorUrl && <a className="lobby-secondary" href={editorUrl} rel="noopener noreferrer" target="_blank"><ExternalLink size={14} aria-hidden="true" />구글폼에서 설문 편집</a>}
           {editorUrl && onUseEditorUrl && <Button type="button" variant="outline" onClick={() => onUseEditorUrl(editorUrl)}><Link2 size={14} aria-hidden="true" />편집 주소 입력</Button>}
         </div>

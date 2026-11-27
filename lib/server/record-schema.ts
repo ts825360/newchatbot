@@ -8,6 +8,7 @@ import { isTransportResult, validateTransportInput, validateTransportResult } fr
 import { isTransportComparison } from "../transport-comparison";
 import { isTransportSurvey } from "../transport-survey";
 import { isLodgingPlan } from "../lodging-plan";
+import { isTransportVersionLedger } from "../transport-versions";
 import { isTimetable } from "../timetable";
 import { isAdvisorPresentation } from "../chat-advisor";
 import { isChatWorkProposal } from "../chat-work-proposal";
@@ -70,6 +71,7 @@ export function validateRecord(kind: string, value: unknown): void {
       if (value.comparison !== undefined && !isTransportComparison(value.comparison)) break;
       if (value.lodgingPlan !== undefined && !isLodgingPlan(value.lodgingPlan)) break;
       if (value.rosterConfirmation !== undefined && !text(value.rosterConfirmation, 65_000)) break;
+      if (value.versions !== undefined && (value.demo || !isTransportVersionLedger(value.versions))) break;
       valid = !value.approved || !!value.result && validateTransportResult(value.input, value.result).length === 0;
       break;
     }

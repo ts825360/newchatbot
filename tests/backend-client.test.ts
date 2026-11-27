@@ -71,4 +71,27 @@ describe("connected server record storage", () => {
     expect(storage.getItem(key)).toBe("latest");
     expect(getBackendState().pending).toBe(0);
   });
+
+  it("keeps catalog polling and saves separate from the selected workspace scope", async () => {
+    const catalogKey = "church-planner-room-catalog-v1:user-1";
+    const catalog = { key: catalogKey, version: "1:1", value: JSON.stringify({ rooms: [{ id: "room-1" }], selectedRoomId: "room-1" }) };
+    const result = { ...snapshot(), records: [catalog], written: [catalog] };
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => result });
+    vi.stubGlobal("fetch", fetcher);
+    enableBackendConnection(true);
+    configureBackendUser(profile);
+    const oldPath = window.location.pathname;
+    try {
+      window.history.replaceState(null, "", "/rooms");
+      await refreshBackendData();
+      await refreshBackendData();
+      expect(fetcher.mock.calls.map(([path]) => path)).toEqual(["/api/data", "/api/data"]);
+      dataStorage(localStorage).setItem(catalogKey, catalog.value);
+      await flushBackendWrites();
+      expect(JSON.parse(fetcher.mock.calls[2][1].body)).not.toHaveProperty("roomId");
+      window.history.replaceState(null, "", "/workspace");
+      await refreshBackendData();
+      expect(fetcher.mock.calls[3][0]).toBe("/api/data?roomId=room-1");
+    } finally { window.history.replaceState(null, "", oldPath); }
+  });
 });

@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { AdvisorPresentation } from "../chat-advisor";
 import { normalizeCalendarStatus } from "../calendar-status";
-import { readConversationPlaces, verifiedPublicPlace } from "../conversation-places";
+import { verifiedPublicPlace } from "../conversation-places";
 import type { ConversationScope, PrivateToolKind } from "../conversation-scope";
 import { initialLodgingPlan, rosterFingerprint, summarizeLodging } from "../lodging-plan";
 import { validDate } from "../room-timing";
@@ -12,6 +12,7 @@ import type { Actor } from "./auth";
 import { canonicalWorkspaceTool, inheritWorkspaceRecords, requireOwnedConversation } from "./conversation-scope";
 import { ApiError } from "./http";
 import { object, validateRecord } from "./record-schema";
+import { readWorkspacePrimaryPlace } from "./workspace-primary-place";
 
 type RecordRead<T> = { status: "saved"; value: T } | { status: "absent" | "unreadable" };
 const unreadable = "기록을 읽지 못함";
@@ -39,16 +40,16 @@ export function loadPreparationStatus(db: DatabaseSync, actor: Actor, scope: Con
 
   const date = typeof data.date === "string" && validDate(data.date) ? data.date : "";
   const end = typeof data.endDate === "string" && validDate(data.endDate) && data.endDate !== date ? data.endDate : "";
-  const places = read(onWorkspace("location"), raw => readConversationPlaces(JSON.parse(raw)));
+  const primary = readWorkspacePrimaryPlace(db, scope);
   const timetable = read(onWorkspace("timetable"), readTimetable);
   const calendar = actor.permissions.includes("viewCalendar") ? read(onRoom("events"), raw => savedItems<CalendarEvent>("events", raw)) : null;
   const sharedCount = calendar?.status === "saved" ? calendar.value.filter(event => normalizeCalendarStatus(event.status) === "confirmed").length : 0;
-  const place = places.status === "saved" ? places.value[0] : "";
+  const place = primary.state === "saved" ? primary.name : "";
   const timelineDetail = timetable.status === "saved" && timetable.value.entries.length ? `개인 타임테이블 ${timetable.value.entries.length}개`
     : timetable.status === "unreadable" ? `타임테이블 ${unreadable}` : "";
   const schedule = [date ? `행사 기간 ${date}${end ? ` ~ ${end}` : ""}` : "행사 기간 미정",
     calendar?.status === "unreadable" ? `공동 일정 ${unreadable}` : sharedCount ? `공동 일정 확정 ${sharedCount}건` : "",
-    timelineDetail, place ? `장소 ${verifiedPublicPlace(place)?.name ?? "등록됨"}` : places.status === "unreadable" ? `장소 ${unreadable}` : "장소 미등록"];
+    timelineDetail, place ? `장소 ${verifiedPublicPlace(place)?.name ?? "등록됨"}` : primary.state === "unreadable" ? `장소 ${unreadable}` : "장소 미등록"];
 
   const canView = actor.permissions.includes("viewChecklist");
   const transport = canView ? read(onWorkspace("transport"), parseTransportSnapshot) : null;

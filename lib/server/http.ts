@@ -19,7 +19,7 @@ export function assertSameOrigin(request: Request): void {
   } catch { throw new ApiError(403, "요청 출처를 확인해 주세요."); }
 }
 
-export async function readBytes(request: Request, maxBytes: number): Promise<Uint8Array> {
+export async function readBytes(request: Pick<Request, "body">, maxBytes: number): Promise<Uint8Array> {
   const reader = request.body?.getReader();
   if (!reader) throw new ApiError(400, "요청 내용이 없습니다.");
   let timer: ReturnType<typeof setTimeout> | undefined;

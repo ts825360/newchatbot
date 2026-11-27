@@ -62,6 +62,90 @@ const append = (id: string, text: string, reference?: ChatMessageReference) => {
   return send({ ...good, userMessageId: id, userMessageText: text });
 };
 const providerBody = () => JSON.parse(String(fetchProvider.mock.lastCall?.[1]?.body));
+const functionCall = (name: string, args: object, n = 1) => Response.json({ status: "completed", output: [
+  { type: "function_call", call_id: `call_work_${n}`, name, arguments: JSON.stringify(args) },
+] });
+
+it("grounds planning advice in scoped preparation facts without forwarding raw records or creating work", async () => {
+  db.prepare("UPDATE rooms SET data_json=? WHERE id='room'").run(JSON.stringify({ id: "room", category: "retreat", name: "PRIVATE_EVENT_NAME", date: "2027-02-12", endDate: "2027-02-14" }));
+  const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
+  writeBatch(requireUser(request(), db), [{ key: privateToolKey(scope, "location"), version: "0", value: '{"location":"PRIVATE_VENUE_NOTE"}' }], "room", db);
+  fetchProvider.mockResolvedValueOnce(functionCall("get_preparation_status", {})).mockResolvedValueOnce(Response.json(rawReply(JSON.stringify({
+    kind: "plan", title: "설문과 일정 구상을 병행", summary: "응답을 받는 동안 기본 프로그램을 검토하세요.",
+    rows: [{ label: "인원 확인 후", detail: "차량과 객실 수를 확정하세요." }], rationale: "", proposals: [],
+  }))));
+  expect((await append("preparation-plan", "날짜와 장소만 정했는데 지금 무슨 준비부터 하면 좋아?")).status).toBe(200);
+  const output = JSON.parse(providerBody().input.at(-1).output);
+  expect(output).toMatchObject({ event: { category: "수련회", startDate: "2027-02-12", endDate: "2027-02-14" }, venue: { state: "saved" }, pastRecords: "not_searched" });
+  expect(JSON.stringify(fetchProvider.mock.calls)).not.toMatch(/PRIVATE_EVENT_NAME|PRIVATE_VENUE_NOTE|PRIVATE_OTHER_THREAD/);
+  expect(getHistory().conversations[0].messages.at(-1)).toMatchObject({ actions: expect.arrayContaining(["preparation-facts-used"]) });
+  expect(db.prepare("SELECT COUNT(*) AS total FROM chat_work_versions").get()?.total).toBe(0);
+});
+
+it("selects survey creation for a non-keyword request and reopens and patches the scoped work copy", async () => {
+  db.prepare("UPDATE rooms SET data_json=? WHERE id='room'").run(JSON.stringify({ id: "room", name: "PRIVATE_EVENT_LABEL" }));
+  fetchProvider.mockResolvedValueOnce(functionCall("create_survey_draft", {})).mockResolvedValueOnce(Response.json(reply("초안을 준비했어요.")));
+  expect((await append("meaning-work", "이번 행사에 누가 올 수 있는지 확인할 질문지를 준비해 줘")).status).toBe(200);
+  const created = getHistory().conversations[0].messages.at(-1)?.workProposal as any;
+  expect(created).toMatchObject({ kind: "survey", title: "PRIVATE_EVENT_LABEL 참가 설문", draft: { version: 1, items: expect.any(Array) } });
+  expect(JSON.stringify(fetchProvider.mock.calls)).not.toContain("PRIVATE_EVENT_LABEL");
+
+  fetchProvider.mockResolvedValueOnce(functionCall("get_work_draft", { mode: "regenerate" })).mockResolvedValueOnce(Response.json(reply("검토할 초안을 다시 만들었어요.")));
+  expect((await append("reopen-work", "설문 초안 다시 만들어줘")).status).toBe(200);
+  const rebuilt = getHistory().conversations[0].messages.at(-1)?.workProposal as any;
+  expect(rebuilt.draft).toMatchObject({ id: created.draft.id, version: 2, items: created.draft.items });
+
+  fetchProvider.mockResolvedValueOnce(functionCall("get_work_draft", { mode: "read" }))
+    .mockResolvedValueOnce(functionCall("update_survey_draft", { version: 2, operation: "remove", number: 2, title: null, required: null, options: null, other: null }, 2))
+    .mockResolvedValueOnce(Response.json(reply("두 번째 문항만 삭제했어요.")));
+  expect((await append("patch-work", "두 번째 문항은 뺄까 해. 빼줘.")).status).toBe(200);
+  const edited = getHistory().conversations[0].messages.at(-1)?.workProposal as any;
+  expect(edited.draft).toMatchObject({ id: created.draft.id, version: 3 });
+  expect(edited.draft.items).toEqual(created.draft.items.filter((item: { title: string }) => item.title !== "소속"));
+});
+
+it("adopts a title-only survey as a copy without sending its label, and keeps the same ID on another turn", async () => {
+  const history = getHistory();
+  history.conversations[0].messages.push({ id: `prep-${"a".repeat(64)}`, sender: "assistant", time: now, text: "이전 설문", workProposal: { kind: "survey", title: "PRIVATE_LEGACY_LABEL" } });
+  db.prepare("UPDATE records SET data_json=? WHERE key='conversations:alice:room'").run(JSON.stringify(history));
+  fetchProvider.mockResolvedValueOnce(functionCall("get_work_draft", { mode: "show" })).mockResolvedValueOnce(Response.json(reply("이전 초안이에요.")));
+  expect((await append("show-legacy-survey", "아까 만들었던 초안 열어줘")).status).toBe(200);
+  const first = getHistory().conversations[0].messages.at(-1)?.workProposal;
+  expect(first).toMatchObject({ kind: "survey", title: "PRIVATE_LEGACY_LABEL", draft: { version: 1 } });
+  fetchProvider.mockResolvedValueOnce(functionCall("get_work_draft", { mode: "regenerate" })).mockResolvedValueOnce(Response.json(reply("다시 보여드려요.")));
+  expect((await append("renew-legacy-survey", "같은 조건으로 다시 만들어 줘")).status).toBe(200);
+  expect(getHistory().conversations[0].messages.at(-1)?.workProposal).toMatchObject({ draft: { id: first?.kind === "survey" && first.draft?.id, version: 2 } });
+  expect(JSON.stringify(fetchProvider.mock.calls)).not.toContain("PRIVATE_LEGACY_LABEL");
+});
+
+it("never applies an ordinal from a quoted older survey to the latest question ordering", async () => {
+  expect((await append("create-before-edit", "우리 설문폼을 만들어줘")).status).toBe(200);
+  const first = getHistory().conversations[0].messages.at(-1)!;
+  const remove = (version: number, number: number) => ({ version, number, operation: "remove", title: null, required: null, options: null, other: null });
+  fetchProvider.mockResolvedValueOnce(functionCall("get_work_draft", { mode: "read" }))
+    .mockResolvedValueOnce(functionCall("update_survey_draft", remove(1, 4), 2)).mockResolvedValueOnce(Response.json(reply("검토본입니다.")));
+  expect((await append("remove-gender", "4번을 삭제해줘")).status).toBe(200);
+  fetchProvider.mockResolvedValueOnce(functionCall("get_work_draft", { mode: "read" }))
+    .mockResolvedValueOnce(functionCall("update_survey_draft", remove(2, 5), 2)).mockResolvedValueOnce(Response.json(reply("검토본입니다.")));
+  expect((await append("stale-ordinal", "5번 문항 삭제해줘", { kind: "reply", messageId: first.id })).status).toBe(409);
+  expect(db.prepare("SELECT MAX(version) AS latest FROM chat_work_versions").get()?.latest).toBe(2);
+});
+
+it("does not save a staged work version if the model fails, or disclose a draft from an unrelated conversation", async () => {
+  fetchProvider.mockResolvedValueOnce(functionCall("create_survey_draft", {})).mockResolvedValueOnce(Response.json({ status: "failed", output: [] }));
+  expect((await append("model-failed-work", "참석자 접수에 필요한 질문지 준비해 줘.")).status).toBe(502);
+  expect(db.prepare("SELECT COUNT(*) AS total FROM chat_work_versions").get()?.total).toBe(0);
+  expect((await append("local-work-copy", "우리 설문폼을 만들어줘")).status).toBe(200);
+  const history = getHistory();
+  const second = history.conversations[1];
+  const question = "방금 그 초안 다시 보여줘";
+  second.messages.push({ id: "other-work", sender: "user", text: question, time: now });
+  write(history);
+  fetchProvider.mockResolvedValueOnce(functionCall("get_work_draft", { mode: "show" })).mockResolvedValueOnce(Response.json(reply("이 대화에는 이전 작업이 없어요.")));
+  expect((await send({ ...good, conversationId: second.id, userMessageId: "other-work", userMessageText: question })).status).toBe(200);
+  expect(providerBody().input.at(-1)).toMatchObject({ type: "function_call_output", output: JSON.stringify({ found: false, kind: "survey" }) });
+  expect(getHistory().conversations[1].messages.at(-1)?.workProposal).toBeUndefined();
+});
 
 it.each([false, true])("only reuses a previous model response with separate reply-context consent (%s)", async memory => {
   const heading = "2번은 실내 친교 프로그램입니다.";
@@ -156,6 +240,8 @@ it("sends only the confirmed text at the provider boundary and persists one tagg
     model, input: "Synthetic question", instructions: expect.stringContaining("이모지"),
     store: false, reasoning: { effort: "none" }, max_output_tokens: 1200,
     text: { format: expect.objectContaining({ type: "json_schema", strict: true }) },
+    tools: expect.arrayContaining([expect.objectContaining({ name: "create_survey_draft", strict: true })]),
+    tool_choice: "auto", parallel_tool_calls: false,
   });
   const history = getHistory();
   expect(history.conversations[0].messages.at(-1)).toMatchObject({
@@ -368,7 +454,7 @@ it("creates a reviewable timetable plan and a standard survey draft without invo
   expect(getHistory().conversations[0].messages.at(-1)?.workProposal).toMatchObject({ kind: "timetable", plan: { days: 2, startDate: "2027-03-06", entries: expect.arrayContaining([expect.objectContaining({ day: 2 })]) } });
   expect(db.prepare("SELECT COUNT(*) AS total FROM records WHERE kind='timetable'").get()?.total).toBe(0);
   expect((await append("survey-work", "우리 설문폼을 만들어줘")).status).toBe(200);
-  expect(getHistory().conversations[0].messages.at(-1)?.workProposal).toEqual({ kind: "survey", title: "가상행사 참가 설문" });
+  expect(getHistory().conversations[0].messages.at(-1)?.workProposal).toMatchObject({ kind: "survey", title: "가상행사 참가 설문", draft: { version: 1, items: expect.any(Array) } });
   expect(fetchProvider).not.toHaveBeenCalled();
 });
 
@@ -378,6 +464,15 @@ it("does not offer a name-required Google Forms template for an explicit anonymo
   expect(reply?.workProposal).toBeUndefined();
   expect(reply?.text).toContain("익명");
   expect(fetchProvider).not.toHaveBeenCalled();
+});
+
+it("passes the church terminology policy for generated drafts without rewriting quotations", async () => {
+  const answer = "새 안내문은 침례식 안내로 작성합니다. 공식 문서의 제목은 ‘세례식 안내’입니다.";
+  fetchProvider.mockResolvedValueOnce(Response.json(reply(answer)));
+  expect((await append("terms", "교회 안내문 표현을 추천해 줘")).status).toBe(200);
+  expect(providerBody().instructions).toContain("침례, 침례식, 침례 요한, 침례 교육");
+  expect(providerBody().instructions).toContain("제목·직접 인용·원문은 임의로 바꾸지 마세요");
+  expect(getHistory().conversations[0].messages.at(-1)?.text).toBe(answer);
 });
 
 it("looks up the same room's public venue from a new chat without forwarding other records", async () => {
@@ -395,14 +490,20 @@ it("looks up the same room's public venue from a new chat without forwarding oth
   expect((await send({ ...good, conversationId: "other", userMessageId: "new", userMessageText: question })).status).toBe(200);
   expect(fetchProvider).toHaveBeenCalledTimes(2);
   const payloads = fetchProvider.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
-  expect(payloads[0]).toMatchObject({ input: question, tools: [{ type: "function", name: call.name, strict: true }], parallel_tool_calls: false });
-  expect(payloads[1]).toMatchObject({ store: false, tool_choice: "none", input: expect.arrayContaining([expect.objectContaining({
+  expect(payloads[0]).toMatchObject({ input: question, tools: expect.arrayContaining([expect.objectContaining({ type: "function", name: call.name, strict: true })]), parallel_tool_calls: false });
+  expect(payloads[1]).toMatchObject({ store: false, tool_choice: "auto", input: expect.arrayContaining([expect.objectContaining({
     type: "function_call_output", call_id: "call_venue", output: expect.stringContaining(name),
   })]) });
   expect(JSON.stringify(payloads[1])).toContain("해수욕장3길 11-10");
   expect(JSON.stringify(payloads)).not.toMatch(/PRIVATE_|\balice\b|\bthread\b|previous_response_id/);
   const saved = getHistory().conversations[1].messages.at(-1);
   expect(saved?.actions).toContain("event-public-venue-used");
+});
+
+it("does not send a personal gender disclosure or a request for individual room assignments to OpenAI", async () => {
+  expect((await append("private-gender", "제 성별은 여성입니다.")).status).toBe(422);
+  expect((await append("private-rooms", "참가자별 숙소 배정을 보여줘")).status).toBe(422);
+  expect(fetchProvider).not.toHaveBeenCalled();
 });
 
 it("answers a public lodging and travel question locally after refusing a private request", async () => {
@@ -840,7 +941,7 @@ it("does not publish an unverified saved venue or even offer the venue tool", as
   const scope = { accountId: "alice", roomId: "room", conversationId: "thread" };
   writeBatch(requireUser(request(), db), [{ key: privateToolKey(scope, "location"), version: "0", value: '{"location":"PRIVATE_HOME"}' }], "room", db);
   expect((await send()).status).toBe(200);
-  expect(providerBody()).not.toHaveProperty("tools");
+  expect(providerBody().tools.map((tool: { name: string }) => tool.name)).not.toContain("get_current_event_venue");
   expect(JSON.stringify(providerBody())).not.toContain("PRIVATE_HOME");
 });
 
@@ -909,8 +1010,9 @@ it("keeps validated preferences in SQLite per account and rejects unknown keys, 
   expect((await preferences(alice, { ...saved, instructions: "가".repeat(801) })).status).toBe(400);
   expect((await preferences(alice, { ...saved, instructions: "가".repeat(800) })).status).toBe(200);
   expect((await preferences(alice, saved, { origin: "https://unrelated.invalid" })).status).toBe(403);
-  expect(await (await preferences(alice, saved)).json()).toEqual(saved);
-  expect(await (await preferences()).json()).toEqual(saved);
+  const canonical = { ...saved, emoji: "frequency", emojiFrequency: 50 };
+  expect(await (await preferences(alice, saved)).json()).toEqual(canonical);
+  expect(await (await preferences()).json()).toEqual(canonical);
   expect(await (await preferences(bob)).json()).toEqual(defaults);
   expect(await (await preferences(alice, defaults)).json()).toEqual(defaults);
   expect(await (await preferences()).json()).toEqual(defaults);
@@ -975,15 +1077,64 @@ it("keeps previously saved instructions when the emoji option is introduced", as
   expect(await (await preferences()).json()).toEqual({ ...old, emoji: "off" });
 });
 
-it.each([["off", "안내 1 준비 완료 ©"], ["occasional", "안내 1️⃣ 👩‍💻 🇰🇷 준비 완료 ©"]])("applies %s only to the assistant's reply", async (emoji, expected) => {
+it("reads a saved occasional setting as frequency 50 without losing other reply preferences", async () => {
+  const legacy = { tone: "direct", length: "detailed", instructions: "기존 지침", instructionsEnabled: true, emoji: "occasional" };
+  db.prepare("INSERT INTO records(key,owner_id,kind,data_json,updated_at) VALUES(?,?,?,?,?)")
+    .run("assistant-preferences:alice", "alice", "assistant-preferences", JSON.stringify(legacy), now);
+  expect(await (await preferences()).json()).toEqual({ ...legacy, emoji: "frequency", emojiFrequency: 50 });
+});
+
+it("stores adjustable zero and maximum separately from off, scoped to the signed-in account", async () => {
+  const settings = { tone: "friendly", length: "brief", instructions: "", instructionsEnabled: false };
+  const zero = { ...settings, emoji: "frequency", emojiFrequency: 0 };
+  const bob = cookie("bob");
+  expect(await (await preferences(alice, zero)).json()).toEqual(zero);
+  expect(await (await preferences(alice)).json()).toEqual(zero);
+  expect(JSON.parse(String(db.prepare("SELECT data_json FROM records WHERE kind='assistant-preferences' AND owner_id='alice'").get()?.data_json))).toEqual(zero);
+  expect(await (await preferences(bob)).json()).toMatchObject({ emoji: "off" });
+  const high = { ...zero, emojiFrequency: 100 };
+  expect(await (await preferences(bob, high)).json()).toEqual(high);
+  expect(await (await preferences(alice)).json()).toEqual(zero);
+  expect(await (await preferences(alice, { ...settings, emoji: "off" })).json()).toEqual({ ...settings, emoji: "off" });
+  expect(await (await preferences(bob)).json()).toEqual(high);
+});
+
+it.each([-1, 101, 50.5, "50", null, undefined])("rejects invalid emoji frequency %s", async emojiFrequency => {
+  expect((await preferences(alice, { tone: "standard", length: "balanced", instructions: "", instructionsEnabled: false, emoji: "frequency", emojiFrequency })).status).toBe(400);
+});
+
+it.each(["off", "occasional"])("rejects a frequency paired with the %s mode", async emoji => {
+  expect((await preferences(alice, { tone: "standard", length: "balanced", instructions: "", instructionsEnabled: false, emoji, emojiFrequency: 1 })).status).toBe(400);
+});
+
+it.each([
+  [{ emoji: "off" }, "사용하지 마세요", "안내 1 준비 완료 ©"],
+  [{ emoji: "frequency", emojiFrequency: 0 }, "최소한", "안내 1️⃣ 👩‍💻 🇰🇷 준비 완료 ©"],
+  [{ emoji: "occasional" }, "가끔", "안내 1️⃣ 👩‍💻 🇰🇷 준비 완료 ©"],
+  [{ emoji: "frequency", emojiFrequency: 100 }, "더 자주", "안내 1️⃣ 👩‍💻 🇰🇷 준비 완료 ©"],
+] as const)("applies %j only to the assistant's reply", async (emoji, rule, expected) => {
   const raw = "안내 1️⃣ 👩‍💻 🇰🇷 준비 완료 ©";
-  await preferences(alice, { tone: "standard", length: "balanced", instructions: "", instructionsEnabled: false, emoji });
+  const instructions = "PRIVATE_EMOJI_TEST_INSTRUCTIONS";
+  expect((await preferences(alice, { tone: "friendly", length: "brief", instructions, instructionsEnabled: true, ...emoji })).status).toBe(200);
   fetchProvider.mockResolvedValueOnce(Response.json(reply(raw)));
   expect((await send()).status).toBe(200);
   const data = providerBody();
-  expect(data.instructions).toContain(emoji === "off" ? "사용하지 마세요" : "가끔");
+  for (const phrase of [rule, "친근", "간결", "안전", "개인정보", "심각한 오류", "공식 문서"]) expect(data.instructions).toContain(phrase);
+  if (emoji.emoji !== "off") expect(data.instructions).toContain("정확한 개수나 확률이 아닙니다");
+  expect(JSON.stringify(data)).not.toContain(instructions);
   expect(data.input).toBe("Synthetic question");
   expect(getHistory().conversations[0].messages.at(-1)?.text).toBe(expected);
+});
+
+it("does not bypass output privacy checks at maximum emoji frequency", async () => {
+  expect((await preferences(alice, { tone: "standard", length: "balanced", instructions: "", instructionsEnabled: false, emoji: "frequency", emojiFrequency: 100 })).status).toBe(200);
+  const original = getHistory();
+  const phone = "010-1111-2222";
+  fetchProvider.mockResolvedValueOnce(Response.json(reply("📞 참가자 연락처: " + phone)));
+  const response = await send();
+  expect(response.status).toBe(502);
+  expect(await response.text()).not.toContain(phone);
+  expect(getHistory()).toEqual(original);
 });
 
 it("rejects wrong permissions, scope, origin, stale turns and extra input before inference", async () => {

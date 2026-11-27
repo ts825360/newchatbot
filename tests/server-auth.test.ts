@@ -59,6 +59,17 @@ beforeEach(() => {
 });
 afterEach(() => { db.close(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
+it("exposes only the signed-in account's login name and rejects a stale account header", async () => {
+  const first = await seed("first-fixture");
+  const second = await seed("second-fixture");
+  expect((await get("account", first.cookie)).body).toEqual({ username: "first-fixture" });
+  expect((await get("account")).response.status).toBe(401);
+  const mismatch = await authGet(request("account", undefined, second.cookie, { "x-account-id": "first-fixture" }), "account", db);
+  expect(mismatch.status).toBe(409);
+  const body = await mismatch.json();
+  expect(body).not.toHaveProperty("username");
+});
+
 it("records the optional external chat consent at signup for only the consenting account", async () => {
   const manager = await seed();
   for (const [username, optIn] of [["opted-in", true], ["opted-out", false]] as const) {

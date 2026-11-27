@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { retreatSurveyTemplate } from "../retreat-survey-template";
+import { retreatSurveyTemplateV2, type SurveyItem } from "../retreat-survey-template";
 import { requirePermission, type Actor } from "./auth";
 import { requireOwnedConversation } from "./conversation-scope";
-import { getDatabase } from "./database";
+import { getDatabase, transaction } from "./database";
 import { assertGoogleFormDraftPermission, getGoogleFormDraftConnection } from "./google-form-drafts-auth";
 import { ApiError } from "./http";
+import { readSurveyWorkVersion, requireSurveyWorkVersion } from "./chat-work-store";
 
 const formsUrl = "https://forms.googleapis.com/v1/forms";
 const editorUrl = (id: string) => `https://docs.google.com/forms/d/${id}/edit`;
@@ -18,7 +19,7 @@ export class GoogleFormDraftEditorError extends Error {
   }
 }
 
-type WorkspaceScope = { roomId: string; conversationId: string };
+type WorkspaceScope = { roomId: string; conversationId: string; review?: { workId: unknown; version: unknown } };
 type FormMetadata = {
   formId?: unknown;
   revisionId?: unknown;
@@ -33,18 +34,29 @@ function normalizeTitle(value: unknown) {
   return title;
 }
 
-function templateRequests() {
-  return retreatSurveyTemplate.map((entry, index) => {
+function templateRequests(template: readonly SurveyItem[], description = "") {
+  const branches = template.some(item => item.kind === "choice" && item.options.some(option => option.goToSection));
+  const sectionIds = new Map(branches ? template.flatMap((item, index) => item.kind === "section"
+    ? [[item.id, (0x71000000 + index).toString(16)] as const] : []) : []);
+  const requests = template.map((entry, index) => {
     const { title } = entry;
-    const location = { index };
-    if (entry.kind === "section") return { createItem: { item: { title, pageBreakItem: {} }, location } };
+    const location = { index: branches ? 0 : index };
+    if (entry.kind === "section") return { createItem: { item: { title, pageBreakItem: {}, ...(branches && { itemId: sectionIds.get(entry.id) }) }, location } };
     const { required, description } = entry;
     const question = entry.kind === "choice"
-      ? { required, choiceQuestion: { type: "RADIO", options: entry.options } }
+      ? { required, choiceQuestion: { type: "RADIO", options: entry.options.map(({ goToSection, ...option }) => {
+        if (!goToSection) return option;
+        const goToSectionId = sectionIds.get(goToSection);
+        if (!goToSectionId) throw new Error("Missing Forms branch destination");
+        return { ...option, goToSectionId };
+      }) } }
       : { required, textQuestion: { paragraph: entry.paragraph } };
     const item = { title, questionItem: { question }, ...(description && { description }) };
     return { createItem: { item, location } };
   });
+  // Insert from the end so every forward jump already has a section in this single revision-guarded batch.
+  if (branches) requests.reverse();
+  return description ? [{ updateFormInfo: { info: { description }, updateMask: "description" } }, ...requests] : requests;
 }
 
 function formsRequest(url: string, token: string, body?: object) {
@@ -77,6 +89,7 @@ async function readDraftMetadata(formId: string, token: string) {
 }
 
 export async function createGoogleFormDraft(actor: Actor, value: unknown, scope: WorkspaceScope | undefined, recheck: () => Actor, db = getDatabase()) {
+  const workScope = scope && { roomId: scope.roomId, conversationId: scope.conversationId, accountId: actor.id };
   const assertScope = () => {
     const current = recheck();
     if (current.id !== actor.id) throw new ApiError(401, "로그인 계정이 변경되었습니다.");
@@ -87,11 +100,13 @@ export async function createGoogleFormDraft(actor: Actor, value: unknown, scope:
     }
   };
   assertScope();
-  const title = normalizeTitle(value);
+  const work = scope?.review && workScope ? readSurveyWorkVersion(db, workScope, scope.review.workId, scope.review.version) : undefined;
+  const title = work?.title ?? normalizeTitle(value);
   const connection = getGoogleFormDraftConnection(actor, db);
   const assertCurrent = () => { assertScope(); connection.assertCurrent(); };
+  const assertLatest = () => { if (work && workScope) requireSurveyWorkVersion(db, workScope, work.id, work.version); };
   const key = [actor.id, connection.subjectHash, scope ? JSON.stringify([scope.roomId, scope.conversationId]) : "",
-    createHash("sha256").update(title).digest("hex")] as const;
+    createHash("sha256").update(work ? JSON.stringify(["survey-work", work.id, work.version]) : title).digest("hex")] as const;
   const where = "user_id=? AND google_subject_hash=? AND scope_key=? AND title_hash=?";
   const existingDraft = () => {
     const row = db.prepare(`SELECT form_id,completed FROM google_form_drafts WHERE ${where}`).get(...key);
@@ -100,15 +115,21 @@ export async function createGoogleFormDraft(actor: Actor, value: unknown, scope:
     if (!row.completed) throw new GoogleFormDraftEditorError(String(row.form_id));
     return { editorUrl: editorUrl(String(row.form_id)) };
   };
+  assertCurrent();
   const existing = existingDraft();
   if (existing) return existing;
+  assertLatest();
 
   const token = await connection.accessToken().catch(error => { assertScope(); throw error; });
   assertCurrent();
-  // The durable claim stays in place if the Google create outcome is unknown, including after a restart.
-  const claim = db.prepare(`INSERT INTO google_form_drafts(user_id,google_subject_hash,scope_key,title_hash)
-    VALUES(?,?,?,?) ON CONFLICT DO NOTHING`).run(...key);
-  if (!claim.changes) {
+  // Approve this immutable snapshot at claim time. Later edits require their own claim.
+  const claim = transaction(db, () => {
+    if (existingDraft()) return false;
+    assertLatest();
+    return db.prepare(`INSERT INTO google_form_drafts(user_id,google_subject_hash,scope_key,title_hash)
+      VALUES(?,?,?,?) ON CONFLICT DO NOTHING`).run(...key).changes === 1;
+  });
+  if (!claim) {
     const concurrent = existingDraft();
     if (concurrent) return concurrent;
     throw new ApiError(409, unknownDraft);
@@ -150,7 +171,7 @@ export async function createGoogleFormDraft(actor: Actor, value: unknown, scope:
   let updated = false;
   try {
     const batch = await formsRequest(`${formsUrl}/${formId}:batchUpdate`, token, {
-      writeControl: { requiredRevisionId: revisionId }, requests: templateRequests(),
+      writeControl: { requiredRevisionId: revisionId }, requests: templateRequests(work?.items ?? retreatSurveyTemplateV2, work?.description),
     });
     updated = batch.ok;
     await batch.body?.cancel();

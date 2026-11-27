@@ -1,7 +1,9 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ProposalPanel } from "../components/proposal-panel";
+import { ChatWorkCard } from "../components/chat-work-card";
 import { createPreparationStore } from "../lib/preparation-store";
+import type { ChatMessage } from "../lib/types";
 
 const backend = vi.hoisted(() => ({ connected: false }));
 vi.mock("../lib/backend-client", async original => ({
@@ -10,6 +12,67 @@ vi.mock("../lib/backend-client", async original => ({
 beforeEach(() => { localStorage.clear(); backend.connected = false; });
 afterEach(cleanup);
 const room = { id: "test-room", name: "수련회", date: "2026-11-16" };
+const reviewScope = { accountId: "test", roomId: room.id, conversationId: "current" };
+const reviewMessages: ChatMessage[] = [
+  { id: `prep-${"1".repeat(64)}`, sender: "assistant", time: "", text: "행사 날짜를 기준으로 일정을 구성했습니다.",
+    advisor: { kind: "plan", title: "일정 계획", rows: [{ label: "집합 조건", detail: "오전 집합" }], rationale: "이동 시간을 확보합니다.", proposals: [] },
+    workProposal: { kind: "calendar", title: "가상 집합 일정", date: "2026-11-16", time: "09:00", inferredYear: false } },
+  { id: `prep-${"2".repeat(64)}`, sender: "assistant", time: "", text: "준비 점검입니다.",
+    workProposal: { kind: "checklist", confirmed: [], items: ["차량 확인"] } },
+  { id: `prep-${"3".repeat(64)}`, sender: "assistant", time: "", text: "시간표를 제안합니다.",
+    workProposal: { kind: "timetable", plan: { version: 1, days: 3, startDate: "2026-11-16",
+      entries: [{ id: "last", day: 3, start: 540, end: 600, kind: "program", title: "마지막 날 프로그램" }] } } },
+  { id: `prep-${"4".repeat(64)}`, sender: "assistant", time: "", text: "설문을 제안합니다.",
+    workProposal: { kind: "survey", title: "가상 참가자 설문" } },
+];
+
+it("keeps proposal order and exposes wide survey and timetable cards to the review grid", () => {
+  backend.connected = true;
+  const { container } = render(<ProposalPanel room={room} scope={reviewScope} onApply={() => true} messages={reviewMessages} />);
+  const grid = container.querySelector(".proposal-grid");
+  expect(Array.from(grid?.children ?? []).map(card => card.getAttribute("data-proposal-span"))).toEqual(["full", "full", null, null]);
+  const survey = screen.getByRole("region", { name: "수련회 설문 미리보기" });
+  expect(within(survey).getByText("가상 참가자 설문")).toBeDefined();
+  expect(within(survey).getByText("Google Forms", { exact: false, selector: ".proposal-destination" })).toBeDefined();
+  const timetable = screen.getByRole("region", { name: "타임테이블 추가 제안" });
+  const finalDay = within(timetable).getByText(/3일차/).closest("details");
+  expect(finalDay?.open).toBe(false);
+  expect(finalDay?.textContent).toContain("마지막 날 프로그램");
+});
+
+it("keeps the detailed AI answer and evidence collapsed without hiding the target or core proposal", () => {
+  backend.connected = true;
+  render(<ProposalPanel room={room} scope={reviewScope} onApply={() => true} messages={reviewMessages.slice(0, 1)} />);
+  const card = screen.getByRole("region", { name: "공동 캘린더 추가 제안" });
+  expect(within(card).getByRole("heading", { name: "가상 집합 일정" })).toBeDefined();
+  expect(within(card).getByText("반영 위치: 공동 캘린더")).toBeDefined();
+  expect(within(card).getByText("승인 대기")).toBeDefined();
+  const answer = within(card).getByText("상세 AI 답변").closest("details");
+  expect(answer?.open).toBe(false);
+  expect(answer?.textContent).toContain(reviewMessages[0].text);
+  expect(answer?.textContent).toContain("오전 집합");
+  expect(answer?.textContent).toContain("이동 시간을 확보합니다.");
+});
+
+it("only presents review metadata in the proposal panel, not in inline chat cards", () => {
+  backend.connected = true;
+  render(<ChatWorkCard scope={reviewScope} message={reviewMessages[0]} onApply={() => true} />);
+  expect(screen.queryByText("상세 AI 답변")).toBeNull();
+  expect(screen.getByText("공동 캘린더 · 일정 추가 제안")).toBeDefined();
+});
+
+it("preserves read-only access to proposal content and the target without enabling approval", () => {
+  backend.connected = true;
+  const apply = vi.fn(() => true);
+  render(<ProposalPanel room={room} scope={reviewScope} onApply={apply} messages={reviewMessages.slice(1, 2)} canApprove={() => false} />);
+  const card = screen.getByRole("region", { name: "준비 체크리스트 추가 제안" });
+  expect(within(card).getByText("반영 위치: 이 대화의 체크리스트")).toBeDefined();
+  expect(within(card).getByText("이 제안을 반영할 권한이 없습니다.")).toBeDefined();
+  expect((within(card).getByRole("checkbox", { name: "차량 확인" }) as HTMLInputElement).disabled).toBe(true);
+  expect(within(card).queryByRole("button", { name: /승인|거절/ })).toBeNull();
+  expect(apply).not.toHaveBeenCalled();
+});
+
 it("shows real proposals in the private connected panel and never adds them without approval", () => {
   backend.connected = true;
   const scope = { accountId: "test", roomId: room.id, conversationId: "current" };

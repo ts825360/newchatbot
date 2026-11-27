@@ -1,0 +1,64 @@
+.transport-compare-plan h4,
+.transport-compare-details {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.transport-compare-details summary {
+  width: fit-content;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.transport-compare-details dl {
+  margin-top: 8px;
+}
+
+.transport-compare-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-top: 14px;
+}
+
+.transport-compare-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  text-align: start;
+}
+
+.transport-compare-table :is(th, td) {
+  min-width: 156px;
+  max-width: 250px;
+  padding: 7px 10px;
+  border-bottom: 1px solid hsl(var(--border));
+  text-align: start;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+
+.transport-compare-table :is(thead th, th:first-child) {
+  background: hsl(var(--panel));
+}
+
+.transport-compare-table th:first-child {
+  position: sticky;
+  inset-inline-start: 0;
+  min-width: 110px;
+  width: 110px;
+}
+
+.transport-compare-table small {
+  display: block;
+  margin-top: 3px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.transport-compare-table input {
+  width: 98px;
+  max-width: 100%;
+}

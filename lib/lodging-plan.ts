@@ -9,6 +9,13 @@ const kinds = Object.keys(roomKindLabel);
 const size = (n: unknown): n is number => Number.isInteger(n) && Number(n) >= 1 && Number(n) <= 250;
 const text = (s: unknown, max: number): s is string => typeof s === "string" && s.length <= max && !s.includes("\u0000");
 
+export function lodgingGroupLabel(group: string) {
+  const [departmentOrGroup, genderGroup] = group.split(":");
+  const gender = genderGroup ?? departmentOrGroup;
+  const label = gender === "men" ? "남성" : gender === "women" ? "여성" : "그룹 확인 필요";
+  return genderGroup ? `${departmentOrGroup} · ${label}` : label;
+}
+
 export function isLodgingPlan(raw: unknown): raw is LodgingPlan {
   if (!raw || typeof raw !== "object") return false;
   const plan = raw as LodgingPlan;
@@ -38,7 +45,12 @@ export function lodgingPreference(person: TransportPerson, override?: LodgingCho
   if (kind === "personal") return { kind, group: person.id } as const;
   if (kind === "family") return person.familyId.trim() ? { kind, group: person.familyId.trim() } as const : { kind, issue: "가족 ID 확인 필요" } as const;
   if (kind === "group") {
-    const department = person.department.trim();
+    const department = person.department.normalize("NFKC").replace(/\s+/g, "");
+    if (department === "청년부" || department === "청소년부") {
+      const group = override?.group ?? (person.gender === "male" ? "men" : person.gender === "female" ? "women" : undefined);
+      return group ? { kind, group: `${department}:${group}` } as const : { kind, issue: "성별 또는 운영진 지정 확인 필요" } as const;
+    }
+    // Older rosters used an explicit group label in the department column.
     const group = override?.group ?? (["남자", "남성", "남"].includes(department) ? "men" : ["여자", "여성", "여"].includes(department) ? "women" : undefined);
     return group ? { kind, group } as const : { kind, issue: "남자·여자 그룹 확인 필요" } as const;
   }

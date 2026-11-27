@@ -9,7 +9,6 @@ const stageColor = (id: RoomStage) => `var(--lobby-stage-${id})`;
 const navLinks = [
   { hash: "#lobby-home", label: "홈", Icon: House },
   { hash: "#rooms-panel", label: "행사방", Icon: Folder },
-  { hash: "#lobby-today", label: "오늘의 행사", Icon: CalendarDays },
 ] as const;
 
 export function AppRailBrand() {
@@ -65,7 +64,7 @@ export function LobbyOverview({ stages, total, today, busy, onEnter }: {
       <h2 id="lobby-today-title"><CalendarDays size={21} aria-hidden="true" />오늘의 행사</h2>
       {today.length ? <ul className="lobby-today-list">{today.map(room => <li key={room.id}>
         <button type="button" disabled={busy} onClick={() => onEnter(room.id)} aria-label={room.name}>
-          <span className="lobby-status-dot" aria-hidden="true" /><span>{room.name}</span><ArrowRight size={16} aria-hidden="true" />
+          <span className="lobby-status-dot" aria-hidden="true" /><span>{room.name}{room.location && <small className="lobby-today-location">{room.location}</small>}</span><ArrowRight size={16} aria-hidden="true" />
         </button>
       </li>)}</ul> : <p className="lobby-summary-empty">오늘 진행하는 행사가 없습니다.</p>}
     </section>

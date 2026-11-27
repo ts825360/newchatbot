@@ -1,7 +1,7 @@
 "use client";
 
 import { CalendarClock, Check, CircleCheck, ClipboardList, Pencil, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { flushBackendWrites, hasPendingBackendWrites, isBackendConnected } from "@/lib/backend-client";
 import { chatWorkDraft } from "@/lib/chat-work-proposal";
 import { privateCalendarSourceId } from "@/lib/chat-calendar";
@@ -22,21 +22,39 @@ const calendarDayLabel = (date: string) => {
   return { year, month, day, weekday: calendarLabels.format(new Date(`${date}T00:00:00Z`)) };
 };
 
-export function ChatWorkCard({ message, scope, onApply, canApprove = true, remember = true }: {
+export function ChatWorkCard({ message, scope, onApply, canApprove = true, remember = true, review = false }: {
   message: ChatMessage; scope: ConversationScope; onApply: (draft: ProposalDraft) => ProposalApplyResult | Promise<ProposalApplyResult>;
-  canApprove?: boolean; remember?: boolean;
+  canApprove?: boolean; remember?: boolean; review?: boolean;
 }) {
   const draft = useMemo(() => chatWorkDraft(message), [message]);
   const work = message.workProposal;
-  if (work?.kind === "survey") return <div className="chat-work-card"><ChatSurveyProposal scope={scope} title={work.title} /></div>;
+  const reviewAnswer = review ? <ProposalAnswer message={message} /> : undefined;
+  if (work?.kind === "survey") return <div className="chat-work-card" data-proposal-span={review ? "full" : undefined}>
+    <ChatSurveyProposal scope={scope} title={work.title} draft={work.draft} reviewAnswer={reviewAnswer} />
+  </div>;
   if (!work || !draft) return null;
-  return <ApprovalCard work={work} initial={draft} scope={scope} onApply={onApply} canApprove={canApprove} remember={remember} />;
+  return <ApprovalCard work={work} initial={draft} scope={scope} onApply={onApply} canApprove={canApprove} remember={remember} reviewAnswer={reviewAnswer} />;
 }
 
-function ApprovalCard({ work, initial, scope, onApply, canApprove, remember }: {
+function ProposalAnswer({ message }: { message: ChatMessage }) {
+  const rows = message.advisor?.rows ?? [];
+  const rationale = message.advisor?.rationale;
+  if (!message.text.trim() && !rows.length && !rationale) return null;
+  return <details className="proposal-answer">
+    <summary>상세 AI 답변</summary>
+    <div className="proposal-answer-body" tabIndex={0}>
+      {message.text.trim() && <p className="proposal-answer-text">{message.text}</p>}
+      {rows.length > 0 && <dl>{rows.map(({ label, detail }, index) => <div key={index}><dt>{label}</dt><dd>{detail}</dd></div>)}</dl>}
+      {rationale && <p><strong>추천 근거</strong> {rationale}</p>}
+    </div>
+  </details>;
+}
+
+function ApprovalCard({ work, initial, scope, onApply, canApprove, remember, reviewAnswer }: {
   work: Exclude<NonNullable<ChatMessage["workProposal"]>, { kind: "survey" }>;
   initial: ProposalDraft; scope: ConversationScope; canApprove: boolean; remember: boolean;
   onApply: (draft: ProposalDraft) => ProposalApplyResult | Promise<ProposalApplyResult>;
+  reviewAnswer?: ReactNode;
 }) {
   const [draft, setDraft] = useState(initial);
   const [status, setStatus] = useState<ProposalDecision["status"] | null>(null);
@@ -100,15 +118,18 @@ function ApprovalCard({ work, initial, scope, onApply, canApprove, remember }: {
     } finally { setBusy(false); }
   }
 
-  return <section className={`chat-work-card work-${work.kind}`} aria-label={heading}>
+  return <section className={`chat-work-card work-${work.kind}`} aria-label={heading} data-proposal-span={reviewAnswer && work.kind === "timetable" ? "full" : undefined}>
     {work.kind === "calendar" ? <div className="chat-work-calendar">
       <div className="chat-work-date" aria-hidden="true">{day ? <><span>{day.month}월</span><strong>{day.day}</strong><span>{day.weekday}</span></> : <CalendarClock size={26} />}</div>
-      <div className="chat-work-calendar-main"><h3>{draft.title || "일정 제목 미정"}</h3><p>{day ? `${day.year}년 ${day.month}월 ${day.day}일` : "날짜 미정"} · {draft.time || "시간 미정"}</p><p>공동 캘린더 · 일정 추가 제안</p></div>
+      <div className="chat-work-calendar-main"><h3>{draft.title || "일정 제목 미정"}</h3><p>{day ? `${day.year}년 ${day.month}월 ${day.day}일` : "날짜 미정"} · {draft.time || "시간 미정"}</p>
+        {reviewAnswer ? <p className="proposal-destination">반영 위치: 공동 캘린더</p> : <p>공동 캘린더 · 일정 추가 제안</p>}
+      </div>
       <span className="chat-work-status" data-status={status ?? undefined}>{status ? statusLabels[status] : "상태 확인 중"}</span>
     </div> : <header className="chat-work-heading">
       {work.kind === "checklist" ? <ClipboardList size={22} aria-hidden="true" /> : <CalendarClock size={22} aria-hidden="true" />}
       <h3>{heading}</h3><span className="chat-work-status" data-status={status ?? undefined}>{status ? statusLabels[status] : "상태 확인 중"}</span>
     </header>}
+    {reviewAnswer && work.kind !== "calendar" && <p className="proposal-destination">반영 위치: {work.kind === "checklist" ? "이 대화의 체크리스트" : "이 대화의 타임테이블"}</p>}
     {editing && work.kind === "calendar" && <div className="chat-work-edit">
       <Field label="일정 제목"><input className={inputClass} maxLength={120} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></Field>
       <Field label="날짜"><input className={inputClass} type="date" value={draft.date} onChange={event => setDraft({ ...draft, date: event.target.value })} /></Field>
@@ -132,6 +153,7 @@ function ApprovalCard({ work, initial, scope, onApply, canApprove, remember }: {
       </div>}
     </>}
     {work.kind === "timetable" && <TimetablePreview plan={work.plan} />}
+    {reviewAnswer}
     {error && <p className="documents-error" role="alert">{error}</p>}
     {notice && <p className="chat-work-muted" role="status">{notice}</p>}
     {(status === "pending" || status === null) && <footer>

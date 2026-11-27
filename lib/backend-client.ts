@@ -61,6 +61,7 @@ function catalogKey() { return profile?.accountId ? `church-planner-room-catalog
 function selectedRoom(): string | undefined {
   try { const value = JSON.parse(records.get(catalogKey())?.value ?? "null"); return typeof value?.selectedRoomId === "string" ? value.selectedRoomId : undefined; } catch { return undefined; }
 }
+const pageRoom = () => typeof window !== "undefined" && window.location.pathname === "/rooms" ? undefined : selectedRoom();
 function mergeValue(record: ServerRecord): string | null {
   if (record.key !== catalogKey() || !record.value) return record.value;
   try {
@@ -117,7 +118,7 @@ export function followBackendConversation(scope: ConversationScope) {
 export async function refreshBackendData(roomOverride?: string, conversationOverride?: string | null): Promise<void> {
   if (!connected || !profile) return;
   const currentEpoch = epoch;
-  const room = roomOverride ?? selectedRoom();
+  const room = roomOverride ?? pageRoom();
   const conversation = conversationOverride === undefined
     ? followedConversation?.accountId === profile.accountId && followedConversation?.roomId === room ? followedConversation?.conversationId : undefined
     : conversationOverride;
@@ -172,7 +173,7 @@ export function flushBackendWrites(): Promise<void> {
         publish("saving", "");
         const batch = new Map([...drafts].map(([key, value]) => [key, { ...value }]));
         const writes: ServerWrite[] = [...batch].map(([key, draft]) => ({ key, value: draft.value, version: draft.version }));
-        const snapshot = await backendFetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ writes, roomId: selectedRoom() }) });
+        const snapshot = await backendFetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ writes, roomId: pageRoom() }) });
         if (currentEpoch !== epoch) return;
         const writtenKeys = new Set((snapshot.written ?? []).map((r: ServerRecord) => r.key));
         if (writes.some((w) => !writtenKeys.has(w.key))) throw new BackendError("서버 저장 확인이 누락되었습니다. 다시 확인해 주세요.");
@@ -187,6 +188,21 @@ export function flushBackendWrites(): Promise<void> {
   inFlight = run;
   void run.finally(() => { if (inFlight === run) inFlight = null; }).catch(() => {});
   return run;
+}
+
+export async function writeConfirmedBackendRecord(key: string, matches: (value: string | null) => boolean, next: unknown): Promise<void> {
+  const currentEpoch = epoch;
+  await flushBackendWrites();
+  const previous = records.get(key);
+  if (!profile || currentEpoch !== epoch) throw new BackendError("접속 계정이 변경되었습니다.", 401);
+  if (!previous || drafts.has(key) || !matches(previous.value)) throw new BackendError("확정 대상이 변경되었습니다. 최신 배정안을 다시 확인해 주세요.", 409);
+  const value = JSON.stringify(next);
+  if (value.length > 2_000_000) throw new BackendError("자료 크기가 너무 큽니다.");
+  const snapshot: ServerSnapshot = await backendFetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ writes: [{ key, value, version: previous.version }], roomId: pageRoom() }) });
+  if (currentEpoch !== epoch) throw new BackendError("접속 계정이 변경되었습니다.", 401);
+  if (!snapshot.written?.some(record => record.key === key && record.value === value)) throw new BackendError("서버의 확정 결과를 다시 확인해 주세요.");
+  hydrate(snapshot);
 }
 
 export function exportBackendDrafts(): string { return JSON.stringify([...drafts].map(([key, d]) => ({ key, value: d.value, baseVersion: d.version })), null, 2); }

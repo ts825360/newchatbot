@@ -25,6 +25,17 @@ def fixture():
 
 
 class TransportSolverTests(unittest.TestCase):
+    def test_compares_rental_units_over_the_actual_trip_count(self):
+        data = fixture()
+        data["vehicles"][0].update(rentalCost=60, rentalCostUnit="one-way")
+        data["vehicles"].append(dict(data["vehicles"][0], id="V2", rentalCost=100, rentalCostUnit="round-trip"))
+        self.assertEqual(solver()(data)["usedVehicleIds"], ["V2"])
+
+    def test_unknown_schedule_does_not_allow_unsafe_vehicle_reuse(self):
+        data = fixture()
+        data["trips"][1]["startUnknown"] = True
+        self.assertEqual(solver()(data)["unassignedCount"], 1)
+
     def test_complete_roundtrip(self):
         result = solver()(fixture())
         self.assertIn(result["status"], ["optimal", "feasible"])

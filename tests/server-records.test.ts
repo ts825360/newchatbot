@@ -11,6 +11,9 @@ import { createTransportDraft } from "@/lib/transport";
 import { putFile, getFile } from "@/lib/server/files";
 import { canonicalPrivateTool } from "@/lib/server/conversation-scope";
 import { loadPreparationStatus } from "@/lib/server/preparation-status";
+import { readPublicEventVenue } from "@/lib/server/chat-venue-tool";
+import { readPreparationFacts } from "@/lib/server/chat-preparation-tool";
+import { readPreparationSurveyCounts } from "@/lib/server/preparation-surveys";
 const databases: DatabaseSync[] = [];
 afterEach(() => databases.splice(0).forEach((db) => db.close()));
 function setup() {
@@ -25,6 +28,84 @@ function setup() {
   return { db, actor, key, room };
 }
 describe("authoritative shared/private records", () => {
+  it("limits survey counts and AI place facts to authorized scope without sending private notes or aliases", () => {
+    const { db, actor, room } = setup();
+    const scope = { accountId: actor.id, roomId: room.id, conversationId: `initial-${room.id}` };
+    const key = privateToolKey(scope, "location");
+    readSnapshot(actor, room.id, db, scope.conversationId);
+    writeBatch(actor, [{ key, version: "0", value: JSON.stringify({ location: "PRIVATE_ALIAS", places: ["PRIVATE_ALIAS"],
+      placeMetadata: [{ name: "PRIVATE_ALIAS", category: "lodging", googlePlaceId: "ChIJ_TEST_MAPS_ID", privateMemo: { text: "PRIVATE_COMMENT", authorId: actor.id, updatedAt: "2026-11-27T00:00:00.000Z" } }] }) }], room.id, db);
+    const forms = db.prepare("INSERT INTO google_form_drafts(user_id,google_subject_hash,scope_key,title_hash,form_id,completed) VALUES(?,?,?,?,?,?)");
+    forms.run(actor.id, "hash", JSON.stringify([room.id, scope.conversationId]), "own", "form", 1);
+    forms.run(actor.id, "hash", JSON.stringify([room.id, scope.conversationId]), "unfinished", "form2", 0);
+    forms.run(actor.id, "hash", JSON.stringify([room.id, "other"]), "other", "form3", 1);
+    expect(readPreparationSurveyCounts(db, actor, scope)).toEqual({ drafts: 0, forms: 1 });
+    expect(() => readPreparationSurveyCounts(db, { ...actor, permissions: ["viewRoom"] }, scope)).toThrow();
+    const facts = readPreparationFacts(db, actor, scope);
+    expect(facts.venue).toMatchObject({ state: "saved", count: 1, categories: { lodging: 1 }, privateNotesIncluded: false });
+    expect(facts.survey).toMatchObject({ forms: 1, drafts: 0 });
+    expect(JSON.stringify(facts)).not.toMatch(/PRIVATE_ALIAS|PRIVATE_COMMENT|ChIJ_TEST_MAPS_ID/);
+  });
+  it("projects only the viewer's primary venue and the assigned owner's live display name into the catalog", () => {
+    const { db, actor, room } = setup();
+    const peer: Actor = { ...actor, id: "peer", name: "다른 담당자", username: "another-login", grade: 2 };
+    db.prepare("INSERT INTO users SELECT ?,?,?,grade,role,permissions_json,salt,password_hash,access_expires_at,suspended,session_version,invite_id,created_at FROM users WHERE id=?").run(peer.id, peer.name, peer.username, actor.id);
+    const other = { ...room, id: "other-room", name: "별도 행사", ownerId: peer.id, owner: "이전 이름" };
+    db.prepare("INSERT INTO rooms(id,data_json) VALUES(?,?)").run(other.id, JSON.stringify(other));
+    db.prepare("UPDATE users SET name=? WHERE id=?").run("새 담당자 이름", actor.id);
+    const scope = { accountId: actor.id, roomId: room.id, conversationId: "initial-room-1" };
+    const location = privateToolKey(scope, "location");
+    const venue = "한화리조트 대천 파로스";
+    const catalog = (who: Actor) => JSON.parse(readSnapshot(who, undefined, db).records[0].value!).rooms;
+    const placeWrite = (value: unknown, version: string) => writeBatch(actor, [{ key: location, value: JSON.stringify(value), version }], room.id, db);
+    db.prepare("INSERT INTO records(key,owner_id,room_id,kind,data_json,updated_at) VALUES(?,?,?,?,?,?)").run(
+      "private-v1:manager:room-1:legacy:location", actor.id, room.id, "location", JSON.stringify({ location: venue }), "2026-11-18");
+    expect(catalog(actor).find(({ id }: { id: string }) => id === room.id)).toMatchObject({ location: venue, ownerId: actor.id, owner: "새 담당자 이름" });
+    expect(catalog(peer).find(({ id }: { id: string }) => id === room.id)).toMatchObject({ location: "" });
+    expect(catalog(actor).find(({ id }: { id: string }) => id === other.id)).toMatchObject({ location: "", ownerId: peer.id, owner: peer.name });
+    expect(readPublicEventVenue(db, scope)?.name).toBe(venue);
+    readSnapshot(actor, room.id, db, scope.conversationId);
+    placeWrite({ location: "가상 새 장소", details: [{ name: "가상 새 장소", address: "PRIVATE_ADDRESS", notes: "PRIVATE_NOTE" }] }, "1");
+    const next = catalog(actor);
+    expect(next.find(({ id }: { id: string }) => id === room.id).location).toBe("가상 새 장소");
+    expect(JSON.stringify(next)).not.toMatch(/PRIVATE_ADDRESS|PRIVATE_NOTE/);
+    expect(readPublicEventVenue(db, scope)).toBeNull();
+    expect(loadPreparationStatus(db, actor, scope).advisor?.rows[0].detail).toContain("장소 등록됨");
+    placeWrite({ location: "" }, "2");
+    expect(catalog(actor).find(({ id }: { id: string }) => id === room.id).location).toBe("");
+    expect(readPublicEventVenue(db, scope)).toBeNull();
+  });
+
+  it("counts unique participating accounts with current access, not roster or other-room rows", () => {
+    const { db, actor, key, room } = setup();
+    const otherRoom = { ...room, id: "elsewhere", name: "다른 방" };
+    db.prepare("INSERT INTO rooms(id,data_json) VALUES(?,?)").run(otherRoom.id, JSON.stringify(otherRoom));
+    const add = db.prepare("INSERT INTO users(id,name,username,grade,role,permissions_json,salt,password_hash,access_expires_at,suspended,created_at) VALUES(?,?,?,3,'',?,'x','x',?,?,?)");
+    const visit = db.prepare("INSERT INTO room_visits VALUES(?,?,?)");
+    for (const [id, access, expires, suspended, rid] of [
+      ["peer", '["viewRoom"]', null, 0, room.id],
+      ["blocked", '["viewRoom"]', null, 1, room.id],
+      ["expired", '["viewRoom"]', "2000-11-18", 0, room.id],
+      ["restricted", '[]', null, 0, room.id],
+      ["wrong-shape", '"viewRoom"', null, 0, room.id],
+      ["outside", '["viewRoom"]', null, 0, otherRoom.id],
+      ["unjoined", '["viewRoom"]', null, 0, null],
+    ] as const) {
+      add.run(id, id, id, access, expires, suspended, "2026-01-01");
+      if (rid) visit.run(rid, id, "2026-01-01");
+    }
+    const current = () => readSnapshot(actor, undefined, db).records[0];
+    const count = () => JSON.parse(current().value!).rooms.find(({ id }: { id: string }) => id === room.id).memberCount;
+    expect(count()).toBe(2);
+    writeBatch(actor, [{ key, version: current().version, value: current().value! }], room.id, db);
+    expect(count()).toBe(2);
+    db.prepare("UPDATE users SET permissions_json='[]' WHERE id='peer'").run();
+    expect(count()).toBe(1);
+    db.prepare("UPDATE users SET permissions_json='[\"viewRoom\"]' WHERE id='peer'").run();
+    expect(count()).toBe(2);
+    db.prepare("DELETE FROM room_visits WHERE room_id=? AND user_id=?").run(room.id, "peer");
+    expect(count()).toBe(1);
+  });
   it("restores favorite order only for the account that pinned the rooms", () => {
     const { db, actor, key, room } = setup();
     const other = { ...room, id: "room-2", name: "두 번째 방" };

@@ -8,10 +8,12 @@
 
 ## 코드 검토 시작점
 
-ChatGPT나 다른 개발 도구에서 최신 개발 소스를 검토할 때는 기본 브랜치 `main`을 선택하세요. 현재 버전은 [`package.json`](package.json), 변경 내역은 [변경 이력](CHANGELOG.md)에서 확인할 수 있습니다. 특정 배포판을 재현할 때는 해당 버전 태그를 사용하세요.
+ChatGPT나 다른 개발 도구에서 `0.2.0-rc.25` 개발 상태를 검토할 때는 **`codex/handoff-rc25`** 브랜치의 [개발 인수인계](docs/development-handoff.md)부터 읽으세요. `main`은 이 인수인계와 별도로 유지되는 검토 기준 브랜치입니다. 작업 기준은 브랜치명과 커밋 SHA로 확인하고, 버전은 [`package.json`](package.json), 변경 내역은 [변경 이력](CHANGELOG.md)에서 확인하세요.
 
 | 찾는 내용 | 경로 |
 | --- | --- |
+| rc.25 소스와 검증 범위, 데이터 경계, 후속 이슈 | [개발 인수인계](docs/development-handoff.md) |
+| 비밀값이 없는 로컬·Docker 환경 설정 예시 | [local.env.example](config/local.env.example) |
 | AI 판단 원칙, 현재 연결 범위, 다음 개선 작업 | [AI 개선 로드맵](docs/assistant-improvement-roadmap.md) |
 | 구현·검토할 때 유지할 프로젝트 규칙 | [AGENTS.md](AGENTS.md) |
 | 사용자 요구사항 ID, 검증 범위와 다음 작업 | [요구사항 추적](docs/requirements/traceability.md) |

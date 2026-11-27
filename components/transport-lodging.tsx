@@ -2,8 +2,8 @@
 
 import { BedDouble, LockKeyhole, Plus, Sparkles, Unlock } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { calculateLodging, initialLodgingPlan, lodgingPreference, moveLodgingPerson, reconcileLodging, roomKindLabel, summarizeLodging, type LodgingChoice, type LodgingPlan } from "@/lib/lodging-plan";
-import type { TransportPerson } from "@/lib/transport";
+import { calculateLodging, initialLodgingPlan, lodgingGroupLabel, lodgingPreference, moveLodgingPerson, reconcileLodging, roomKindLabel, summarizeLodging, type LodgingChoice, type LodgingPlan } from "@/lib/lodging-plan";
+import { transportGenderLabels, type TransportPerson } from "@/lib/transport";
 import { TransportText } from "./transport-input";
 
 export function TransportLodging({ people, demo, saved, onChange, onPeople }: {
@@ -26,7 +26,7 @@ export function TransportLodging({ people, demo, saved, onChange, onPeople }: {
   const roomByPerson = new Map(plan.rooms.flatMap(room => room.people.map(id => [id, room] as const)));
   const overrides = new Map(plan.overrides.map(x => [x.id, x]));
   const preference = (person: TransportPerson) => lodgingPreference(person, overrides.get(person.id));
-  const roomLabel = (room: LodgingPlan["rooms"][number]) => room.number || `${roomKindLabel[room.kind]}${room.kind === "group" ? room.group === "men" ? " · 남자" : " · 여자" : ""} ${plan.rooms.indexOf(room) + 1}`;
+  const roomLabel = (room: LodgingPlan["rooms"][number]) => room.number || `${roomKindLabel[room.kind]}${room.kind === "group" ? ` · ${lodgingGroupLabel(room.group)}` : ""} ${plan.rooms.indexOf(room) + 1}`;
   const update = (next: LodgingPlan) => { setError(""); onChange(next); };
   const configure = (person: TransportPerson, choice: string) => {
     if (roomByPerson.has(person.id)) { setError("이미 방에 있는 참가자는 방에서 뺀 뒤 숙소 유형을 변경해 주세요."); return; }
@@ -73,12 +73,12 @@ export function TransportLodging({ people, demo, saved, onChange, onPeople }: {
       <details className="lodging-roster"><summary>숙소 유형 및 미배정 확인 · {pending}명 미배정</summary>
         <label className="lodging-filter"><input type="checkbox" checked={pendingOnly} onChange={event => setPendingOnly(event.target.checked)} />미배정만 보기</label>
         <div className="transport-table-scroll" role="region" tabIndex={0} aria-label="참가자 숙소 유형"><table className="transport-lodging-table">
-          <thead><tr>{["이름", "가족 ID", "설문 희망", "운영진 지정", "배정 상태"].map(name => <th key={name} scope="col">{name}</th>)}</tr></thead>
+          <thead><tr>{["이름", "성별", "가족 ID", "설문 희망", "운영진 지정", "배정 상태"].map(name => <th key={name} scope="col">{name}</th>)}</tr></thead>
           <tbody>{people.filter(person => !pendingOnly || !roomByPerson.has(person.id)).map(person => {
             const chosen = overrides.get(person.id);
             const room = roomByPerson.get(person.id);
             const pref = preference(person);
-            return <tr key={person.id}><th scope="row">{person.name}</th><td>{person.familyId || "미기록"}</td><td>{person.lodging || "미응답"}</td>
+            return <tr key={person.id}><th scope="row">{person.name}</th><td>{person.gender ? transportGenderLabels[person.gender] : "미확인"}</td><td>{person.familyId || "미기록"}</td><td>{person.lodging || "미응답"}</td>
               <td><select aria-label={`${person.name} 숙소 유형`} value={chosen?.group ?? chosen?.kind ?? ""} disabled={!!room} onChange={event => configure(person, event.target.value)}>
                 <option value="">설문 기준</option><option value="personal">개인방</option><option value="family">가족방</option><option value="men">단체방 · 남자</option><option value="women">단체방 · 여자</option>
               </select></td><td>{room ? roomLabel(room) : pref.issue || "미배정 · 정원 및 기존 방 확인"}</td></tr>;

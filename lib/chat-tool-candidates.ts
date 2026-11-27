@@ -26,6 +26,8 @@ export const isPreparationChat = (value: string) => value.trim() === preparation
 export function isPreparationStatusChat(value: string) {
   const question = value.normalize("NFKC").trim();
   if (question.length > 350 || /[\r\n]/.test(question)) return false;
+  // Mixed advice requests need the model's planning tools, not a status-only response.
+  if (/뭐(?:부터|를\s*먼저)|무엇을?\s*(?:부터|먼저)|우선순위|준비\s*순서|병행|선행\s*작업/.test(question)) return false;
   if (!/(알려|보여|확인|요약|정리|어디까지|어떤\s*상태|어떻게\s*됐|됐어|되어\s*있)/.test(question)) return false;
   if (/프롬프트|구현\s*방법|계산\s*(?:법|방식|방법|기준)|설계|사용법/.test(question)) return false;
   if (/가상의?\s*(?:행사|모임)|가정해|예시로/.test(question) && !/저장된|우리\s*행사방/.test(question)) return false;
